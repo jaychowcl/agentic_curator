@@ -1,0 +1,29 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Thematic Reviewer: local fixture",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "agentic_curator.cli_thematic_reviewer",
+            "python": "${workspaceFolder}/.env/bin/python",
+            "args": [
+                "--publication-text-file",
+                ".dev/thematic_reviewer_publication_text.txt",
+                "--theme-file",
+                "src/agentic_curator/prompts/theme.md",
+                "--metadata-file",
+                ".dev/thematic_reviewer_metadata.json",
+                "--title-file",
+                ".dev/thematic_reviewer_title.txt",
+                "--out",
+                ".dev/thematic_reviewer_decision.json"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        }
+    ]
+}

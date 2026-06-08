@@ -19,8 +19,10 @@ venv/
 env/
 
 # Local environment and editor files
+.dev/
 .env
 .env.*
 .DS_Store
 .idea/
-.vscode/
+.vscode/*
+!.vscode/launch.json
