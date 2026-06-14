@@ -1,7 +1,9 @@
 import importlib
+import pytest
 from importlib.resources import files
 
-from agentic_curator import ThematicReviewer
+from agentic_curator import ThematicReviewer as RootThematicReviewer
+from agentic_curator.curators import ThematicReviewer
 
 
 EVIDENCE_EXTRACTION_PROMPT = files("agentic_curator").joinpath(
@@ -35,6 +37,10 @@ class FakeLLM:
 
 def test_thematic_reviewer_can_be_instantiated() -> None:
     assert isinstance(ThematicReviewer(), ThematicReviewer)
+
+
+def test_thematic_reviewer_remains_exported_from_package_root() -> None:
+    assert RootThematicReviewer is ThematicReviewer
 
 
 def test_review_relevancy_returns_evidence_decision() -> None:
@@ -361,7 +367,12 @@ def test_evidence_prompt_formats_dict_metadata_as_sorted_json() -> None:
 
 
 def test_thematic_reviewer_import_has_no_dev_atlas_side_effect() -> None:
-    module = importlib.import_module("agentic_curator.thematic_reviewer")
+    module = importlib.import_module("agentic_curator.curators.thematic_reviewer")
 
     assert not hasattr(module, "atlas_data")
     assert not hasattr(module, "thematic_reviewer")
+
+
+def test_old_flat_thematic_reviewer_module_was_removed() -> None:
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("agentic_curator.thematic_reviewer")

@@ -19,7 +19,7 @@ dependencies = [
 dev = ["pytest>=8"]
 
 [project.scripts]
-cli_thematic_reviewer = "agentic_curator.cli_thematic_reviewer:main"
+cli_thematic_reviewer = "agentic_curator.cli.cli_thematic_reviewer:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

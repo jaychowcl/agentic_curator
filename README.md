@@ -15,7 +15,7 @@ Claude on Vertex AI. Tests use fake clients and do not require live model calls.
 ## Python API
 
 ```python
-from agentic_curator import ThematicReviewer
+from agentic_curator.curators import ThematicReviewer
 
 reviewer = ThematicReviewer()
 result = reviewer.review_relevancy(
@@ -25,6 +25,9 @@ result = reviewer.review_relevancy(
     title="Fibrosis atlas publication",
 )
 ```
+
+`ThematicReviewer` is also exported from the package root for convenience:
+`from agentic_curator import ThematicReviewer`.
 
 `review_relevancy()` returns a dictionary with raw generated text under
 `evidences` and `judgement`. The reviewer requests JSON responses from the

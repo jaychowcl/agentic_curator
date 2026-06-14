@@ -22,8 +22,12 @@ docs/
   index.md
 src/agentic_curator/
   __init__.py
-  cli_thematic_reviewer.py
-  thematic_reviewer.py
+  cli/
+    __init__.py
+    cli_thematic_reviewer.py
+  curators/
+    __init__.py
+    thematic_reviewer.py
   prompts/
     evidence_extraction.md
     judge_evidence.md
@@ -52,7 +56,7 @@ The package uses a `src/` layout with setuptools:
 - Python requirement: `>=3.10`
 - runtime dependencies: `anthropic[vertex]>=0.107,<1` and `google-genai>=1.72,<2`
 - dev extra: `pytest>=8`
-- console script: `cli_thematic_reviewer = "agentic_curator.cli_thematic_reviewer:main"`
+- console script: `cli_thematic_reviewer = "agentic_curator.cli.cli_thematic_reviewer:main"`
 - package data: `agentic_curator/prompts/*.md`
 
 The local development convention is to use `.env/bin/python`. A typical setup
@@ -65,11 +69,14 @@ command is:
 <a id="public-api"></a>
 ## Public API
 
-`agentic_curator.__init__` exports `ThematicReviewer`:
+The canonical reviewer import is:
 
 ```python
-from agentic_curator import ThematicReviewer
+from agentic_curator.curators import ThematicReviewer
 ```
+
+`agentic_curator.__init__` also exports `ThematicReviewer`, so
+`from agentic_curator import ThematicReviewer` remains supported.
 
 `ThematicReviewer(llm=None)` accepts an optional LLM-like object. If no object is
 provided, the reviewer lazily creates `agentic_curator.wrappers.LLM()`.
@@ -218,7 +225,7 @@ The installed console command is `cli_thematic_reviewer`. The module can also be
 run directly:
 
 ```bash
-.env/bin/python -m agentic_curator.cli_thematic_reviewer --help
+.env/bin/python -m agentic_curator.cli.cli_thematic_reviewer --help
 ```
 
 Inputs may be provided directly or from UTF-8 files:
@@ -301,13 +308,13 @@ Run tests:
 Run CLI help:
 
 ```bash
-.env/bin/python -m agentic_curator.cli_thematic_reviewer --help
+.env/bin/python -m agentic_curator.cli.cli_thematic_reviewer --help
 ```
 
 Run the CLI against local fixtures, if present:
 
 ```bash
-.env/bin/python -m agentic_curator.cli_thematic_reviewer \
+.env/bin/python -m agentic_curator.cli.cli_thematic_reviewer \
   --publication-text-file .dev/thematic_reviewer_publication_text.txt \
   --theme-file src/agentic_curator/prompts/theme.md \
   --metadata-file .dev/thematic_reviewer_metadata.json \

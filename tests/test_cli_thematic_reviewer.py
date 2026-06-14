@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from agentic_curator import cli_thematic_reviewer
+from agentic_curator.cli import cli_thematic_reviewer
 
 
 class RecordingReviewer:

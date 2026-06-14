@@ -1,3 +1,3 @@
-from agentic_curator.thematic_reviewer import ThematicReviewer
+from agentic_curator.curators import ThematicReviewer
 
 __all__ = ["ThematicReviewer"]

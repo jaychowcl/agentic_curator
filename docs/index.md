@@ -10,13 +10,13 @@ the task.
 | --- | --- | --- | --- |
 | `project-purpose-and-layout` | [Project Purpose And Layout](codebase.md#project-purpose-and-layout) | Repository purpose, tracked layout, and ignored local artifacts. | layout, purpose, files, ignored, .dev, .env, .vscode |
 | `runtime-and-packaging` | [Runtime And Packaging](codebase.md#runtime-and-packaging) | Packaging metadata, dependencies, console script, package data, and editable install. | pyproject, setuptools, dependencies, google-genai, anthropic, pytest, package-data |
-| `public-api` | [Public API](codebase.md#public-api) | Main exported API and raw generated-text contract. | ThematicReviewer, review_relevancy, extract_evidence, judge_evidence, raw text |
+| `public-api` | [Public API](codebase.md#public-api) | Main exported API and raw generated-text contract. | ThematicReviewer, curators, review_relevancy, extract_evidence, judge_evidence, raw text |
 | `reviewer-workflow` | [Reviewer Workflow](codebase.md#reviewer-workflow) | Two-step evidence extraction and evidence judging flow, prompt labels, response schemas. | workflow, evidence, judgement, response_schema, prompt, metadata |
 | `prompts` | [Prompts](codebase.md#prompts) | Packaged Markdown prompts and the local fibrosis theme example. | prompts, evidence_extraction, judge_evidence, theme.md, fibrosis |
 | `llm-wrapper` | [LLM Wrapper](codebase.md#llm-wrapper) | Provider routing facade and Claude model auto-routing behavior. | LLM, routing, gemini_enterprise, claude_vertex, claude model |
 | `gemini-enterprise-platform` | [Gemini Enterprise Platform](codebase.md#gemini-enterprise-platform) | Google Gen AI client creation, request shape, config merging, response parsing. | GeminiEnterprisePlatform, google.genai, generate_content, vertexai, enterprise |
 | `claude-vertex-platform` | [Claude Vertex Platform](codebase.md#claude-vertex-platform) | Anthropic Vertex client creation, Messages request shape, schema normalization. | ClaudeVertexPlatform, AnthropicVertex, messages.create, output_config, json_schema |
-| `cli` | [CLI](codebase.md#cli) | Command-line inputs, file precedence, stdout/outfile behavior. | cli_thematic_reviewer, argparse, publication-text-file, metadata-file, out |
+| `cli` | [CLI](codebase.md#cli) | Command-line inputs, file precedence, stdout/outfile behavior. | cli, cli_thematic_reviewer, argparse, publication-text-file, metadata-file, out |
 | `tests` | [Tests](codebase.md#tests) | Pytest coverage and fake-client strategy. | tests, pytest, fake clients, wrapper tests, CLI tests |
 | `local-development` | [Local Development](codebase.md#local-development) | Local ignored fixtures, VS Code conventions, status checks. | local, .dev, .env, .vscode, fixtures, git status |
 | `common-commands` | [Common Commands](codebase.md#common-commands) | Frequently used install, test, CLI, and fixture commands. | commands, install, pytest, CLI, fixtures |
