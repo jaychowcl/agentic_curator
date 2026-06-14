@@ -7,10 +7,10 @@ from agentic_curator.curators import ThematicReviewer
 
 
 EVIDENCE_EXTRACTION_PROMPT = files("agentic_curator").joinpath(
-    "prompts/evidence_extraction.md"
+    "curators/thematic_reviewer/prompts/evidence_extraction.md"
 ).read_text(encoding="utf-8").strip()
 JUDGE_EVIDENCE_PROMPT = files("agentic_curator").joinpath(
-    "prompts/judge_evidence.md"
+    "curators/thematic_reviewer/prompts/judge_evidence.md"
 ).read_text(encoding="utf-8").strip()
 
 
@@ -366,9 +366,10 @@ def test_evidence_prompt_formats_dict_metadata_as_sorted_json() -> None:
     )
 
 
-def test_thematic_reviewer_import_has_no_dev_atlas_side_effect() -> None:
+def test_thematic_reviewer_package_exports_reviewer_without_dev_atlas_side_effect() -> None:
     module = importlib.import_module("agentic_curator.curators.thematic_reviewer")
 
+    assert module.ThematicReviewer is ThematicReviewer
     assert not hasattr(module, "atlas_data")
     assert not hasattr(module, "thematic_reviewer")
 

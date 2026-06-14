@@ -29,6 +29,9 @@ result = reviewer.review_relevancy(
 `ThematicReviewer` is also exported from the package root for convenience:
 `from agentic_curator import ThematicReviewer`.
 
+The thematic reviewer implementation and its packaged Markdown prompts live
+together under `agentic_curator.curators.thematic_reviewer`.
+
 `review_relevancy()` returns a dictionary with raw generated text under
 `evidences` and `judgement`. The reviewer requests JSON responses from the
 configured model but intentionally leaves parsing and validation to callers.

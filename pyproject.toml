@@ -25,7 +25,7 @@ cli_thematic_reviewer = "agentic_curator.cli.cli_thematic_reviewer:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-agentic_curator = ["prompts/*.md"]
+agentic_curator = ["curators/*/prompts/*.md"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

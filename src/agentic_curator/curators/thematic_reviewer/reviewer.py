@@ -7,6 +7,9 @@ from typing import Any
 from agentic_curator.wrappers import LLM
 
 
+PROMPT_PACKAGE = "agentic_curator.curators.thematic_reviewer"
+
+
 class ThematicReviewer:
     """Assess publication relevance to a thematic curation target."""
 
@@ -82,7 +85,7 @@ class ThematicReviewer:
         metadata: str | dict[str, Any] | list[Any] | None = None,
         title: str | None = None,
     ) -> str:
-        initial_prompt = files("agentic_curator").joinpath(
+        initial_prompt = files(PROMPT_PACKAGE).joinpath(
             "prompts/evidence_extraction.md"
         ).read_text(encoding="utf-8").strip()
         prompt_parts = [
@@ -107,7 +110,7 @@ class ThematicReviewer:
         theme: str | None = None,
         title: str | None = None,
     ) -> str:
-        initial_prompt = files("agentic_curator").joinpath(
+        initial_prompt = files(PROMPT_PACKAGE).joinpath(
             "prompts/judge_evidence.md"
         ).read_text(encoding="utf-8").strip()
         prompt_parts = [

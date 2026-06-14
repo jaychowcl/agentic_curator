@@ -27,11 +27,13 @@ src/agentic_curator/
     cli_thematic_reviewer.py
   curators/
     __init__.py
-    thematic_reviewer.py
-  prompts/
-    evidence_extraction.md
-    judge_evidence.md
-    theme.md
+    thematic_reviewer/
+      __init__.py
+      reviewer.py
+      prompts/
+        evidence_extraction.md
+        judge_evidence.md
+        theme.md
   wrappers/
     __init__.py
     claude_vertex.py
@@ -57,7 +59,7 @@ The package uses a `src/` layout with setuptools:
 - runtime dependencies: `anthropic[vertex]>=0.107,<1` and `google-genai>=1.72,<2`
 - dev extra: `pytest>=8`
 - console script: `cli_thematic_reviewer = "agentic_curator.cli.cli_thematic_reviewer:main"`
-- package data: `agentic_curator/prompts/*.md`
+- package data: `agentic_curator/curators/*/prompts/*.md`
 
 The local development convention is to use `.env/bin/python`. A typical setup
 command is:
@@ -95,11 +97,12 @@ parsing and validation are caller responsibilities in the current implementation
 
 `review_relevancy()` performs two model calls:
 
-1. `extract_evidence()` builds a prompt from `prompts/evidence_extraction.md`,
-   then appends labeled `Theme`, `Title`, `Publication Text`, and `Metadata`
-   blocks.
-2. `judge_evidence()` builds a prompt from `prompts/judge_evidence.md`, then
-   appends labeled `Theme`, `Title`, and `Evidences` blocks.
+1. `extract_evidence()` builds a prompt from the thematic reviewer package's
+   `prompts/evidence_extraction.md`, then appends labeled `Theme`, `Title`,
+   `Publication Text`, and `Metadata` blocks.
+2. `judge_evidence()` builds a prompt from the thematic reviewer package's
+   `prompts/judge_evidence.md`, then appends labeled `Theme`, `Title`, and
+   `Evidences` blocks.
 
 `review_relevancy()` returns:
 
@@ -123,7 +126,9 @@ The judge response schema asks for required `judgement`, `reasoning`, and
 <a id="prompts"></a>
 ## Prompts
 
-Packaged prompt files live under `src/agentic_curator/prompts/`.
+Each curator owns its packaged prompt files inside its own subpackage. The
+thematic reviewer prompts live under
+`src/agentic_curator/curators/thematic_reviewer/prompts/`.
 
 - `evidence_extraction.md` instructs the model to extract direct or indirect
   evidence statements verbatim and return an evidence list.
@@ -316,7 +321,7 @@ Run the CLI against local fixtures, if present:
 ```bash
 .env/bin/python -m agentic_curator.cli.cli_thematic_reviewer \
   --publication-text-file .dev/thematic_reviewer_publication_text.txt \
-  --theme-file src/agentic_curator/prompts/theme.md \
+  --theme-file src/agentic_curator/curators/thematic_reviewer/prompts/theme.md \
   --metadata-file .dev/thematic_reviewer_metadata.json \
   --title-file .dev/thematic_reviewer_title.txt \
   --out .dev/thematic_reviewer_decision.json
