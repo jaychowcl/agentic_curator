@@ -126,6 +126,28 @@ array. Each evidence item requires `evidence`, `judgement`, `confidence`, and
 `reason` string fields. The judge schema asks for required `judgement`,
 `reasoning`, and `confidence` string fields.
 
+<a id="code-flow"></a>
+## Code Flow
+
+Major orchestration flow:
+
+1. CLI users call `cli_thematic_reviewer`, which reads direct or UTF-8 file
+   inputs and passes strings into `ThematicReviewer.review_relevancy(...)`.
+2. `review_relevancy()` calls `extract_evidence(...)`, then passes that raw
+   evidence result into `judge_evidence(...)`.
+3. Each reviewer primitive loads its packaged Markdown prompt, appends labeled
+   input blocks, then calls `self._llm().generate_response(...)` with a JSON
+   response schema.
+4. `LLM.generate_response(...)` delegates to the configured platform. Claude
+   model names are routed to `ClaudeVertexPlatform` when the default platform is
+   Gemini.
+5. Provider adapters construct SDK-specific requests, call the injected or
+   lazily created client, and normalize the provider response to a raw text
+   string.
+
+The current code does not parse model JSON responses, configure logging, or wrap
+provider exceptions. Those responsibilities stay with callers.
+
 <a id="prompts"></a>
 ## Prompts
 
