@@ -78,10 +78,13 @@ from agentic_curator.curators import ThematicReviewer
 ```
 
 `agentic_curator.__init__` also exports `ThematicReviewer`, so
-`from agentic_curator import ThematicReviewer` remains supported.
+`from agentic_curator import ThematicReviewer` remains supported. The old flat
+module import `agentic_curator.thematic_reviewer` is intentionally absent after
+the curator subpackage refactor.
 
 `ThematicReviewer(llm=None)` accepts an optional LLM-like object. If no object is
-provided, the reviewer lazily creates `agentic_curator.wrappers.LLM()`.
+provided, the reviewer lazily creates `agentic_curator.wrappers.LLM()` on the
+first generation call.
 
 Main methods:
 
@@ -89,20 +92,20 @@ Main methods:
 - `extract_evidence(publication_text=None, theme=None, metadata=None, title=None) -> str`
 - `judge_evidence(evidences, theme=None, title=None) -> str`
 
-The reviewer asks providers for JSON output but returns raw generated text. JSON
-parsing and validation are caller responsibilities in the current implementation.
+`metadata` may be a string, dictionary, list, or `None` when used by reviewer
+prompt helpers. The reviewer asks providers for JSON output but returns raw
+generated text. JSON parsing and validation are caller responsibilities in the
+current implementation.
 
 <a id="reviewer-workflow"></a>
 ## Reviewer Workflow
 
 `review_relevancy()` performs two model calls:
 
-1. `extract_evidence()` builds a prompt from the thematic reviewer package's
-   `prompts/evidence_extraction.md`, then appends labeled `Theme`, `Title`,
-   `Publication Text`, and `Metadata` blocks.
-2. `judge_evidence()` builds a prompt from the thematic reviewer package's
-   `prompts/judge_evidence.md`, then appends labeled `Theme`, `Title`, and
-   `Evidences` blocks.
+1. `extract_evidence()` reads `prompts/evidence_extraction.md`, then appends
+   labeled `Theme`, `Title`, `Publication Text`, and `Metadata` blocks.
+2. `judge_evidence()` reads `prompts/judge_evidence.md`, then appends labeled
+   `Theme`, `Title`, and `Evidences` blocks.
 
 `review_relevancy()` returns:
 
@@ -114,14 +117,14 @@ parsing and validation are caller responsibilities in the current implementation
 ```
 
 Prompt values that are dictionaries or lists are serialized as sorted,
-indented JSON. `None` prompt values become empty strings.
+indented JSON. `None` prompt values become empty strings and all other values
+are converted with `str(...)`.
 
-The evidence response schema asks for an object with a required `evidences`
+Both model calls pass `response_mime_type="application/json"` and a response
+schema. The evidence schema asks for an object with a required `evidences`
 array. Each evidence item requires `evidence`, `judgement`, `confidence`, and
-`reason` string fields.
-
-The judge response schema asks for required `judgement`, `reasoning`, and
-`confidence` string fields.
+`reason` string fields. The judge schema asks for required `judgement`,
+`reasoning`, and `confidence` string fields.
 
 <a id="prompts"></a>
 ## Prompts
@@ -133,7 +136,7 @@ thematic reviewer prompts live under
 - `evidence_extraction.md` instructs the model to extract direct or indirect
   evidence statements verbatim and return an evidence list.
 - `judge_evidence.md` instructs the model to judge whether extracted evidence
-  satisfies the theme criteria.
+  satisfies the theme criteria and return relevance, reasoning, and confidence.
 - `theme.md` is a fibrosis theme example used by local development fixtures and
   manual CLI runs. It is packaged but not loaded automatically by
   `ThematicReviewer`.
@@ -156,10 +159,15 @@ Defaults:
 - default Gemini model: `gemini-2.5-flash`
 - default Claude model: `claude-opus-4-8`
 
+`LLM(platform="gemini_enterprise", **platform_options)` creates a Gemini
+platform by default. `LLM(platform="claude_vertex", **platform_options)` creates
+a Claude Vertex platform. Unknown platform names raise `ValueError`.
+
 If a call-level `model` starts with `claude-` and the default platform is not
 already `claude_vertex`, `LLM` lazily routes that call to a Claude Vertex
 platform. The Claude-routed platform drops Gemini-only options such as
-`enterprise`, `client`, and a default model when deriving platform options.
+`enterprise`, `client`, and a default model when deriving platform options, but
+keeps shared options such as `project` and `location`.
 
 <a id="gemini-enterprise-platform"></a>
 ## Gemini Enterprise Platform
@@ -172,7 +180,8 @@ from agentic_curator.wrappers import GeminiEnterprisePlatform
 
 It lazily creates `google.genai.Client(...)` only when a real client is needed.
 By default the client is created with `vertexai=True`. Passing `enterprise=True`
-uses `enterprise=True` instead.
+uses `enterprise=True` instead. Injecting `client=` avoids live SDK/client
+creation and is how tests exercise request construction.
 
 Generation requests call:
 
@@ -186,12 +195,15 @@ client.models.generate_content(
 ```
 
 Default generation config includes temperature `0.2`, max output tokens `8192`,
-candidate count `1`, and optional response schema/mime fields. Call-level config
-overrides instance config for that request. `None` config values are removed
-before the provider call.
+candidate count `1`, and optional response schema/mime/safety fields. Instance
+config is merged with defaults, call-level config overrides instance config for
+that request, and `None` config values are removed before the provider call.
+Template tools are used unless call-level `tools` are supplied.
 
 Gemini responses prefer the first candidate content part text, then fall back to
-`text`, `response`, and finally `str(response)`.
+`text`, `response`, and finally `str(response)`. If a Gemini platform is asked
+to use a `claude-` model directly, it selects the Claude response adapter for
+parsing.
 
 <a id="claude-vertex-platform"></a>
 ## Claude Vertex Platform
@@ -203,7 +215,8 @@ from agentic_curator.wrappers import ClaudeVertexPlatform
 ```
 
 It lazily creates `anthropic.AnthropicVertex(project_id=..., region=...)` only
-when a real client is needed. The default location is `global`.
+when a real client is needed. The default location is `global`. Injecting
+`client=` avoids live SDK/client creation.
 
 Generation requests call:
 
@@ -215,13 +228,16 @@ client.messages.create(
 )
 ```
 
-Claude config maps `max_output_tokens` to `max_tokens`, preserves temperature,
-and translates `response_schema` to an `output_config` JSON schema format. Schema
-`type` values are normalized from Vertex-style uppercase strings to lowercase
-JSON Schema strings.
+Claude config maps `max_output_tokens` to `max_tokens`, allows `max_tokens` to
+override that mapping, preserves temperature, and translates `response_schema`
+to an `output_config` JSON schema format. Gemini-specific options such as
+`response_mime_type`, `candidate_count`, and `safety_settings` are not forwarded
+by the Claude config mapper. Schema `type` values are normalized from
+Vertex-style uppercase strings to lowercase JSON Schema strings.
 
 Claude responses join text content blocks, then fall back through the shared
-model adapter behavior.
+adapter behavior: `text`, `response`, candidate content part text, then
+`str(response)`.
 
 <a id="cli"></a>
 ## CLI
@@ -240,8 +256,9 @@ Inputs may be provided directly or from UTF-8 files:
 - `--metadata` or `--metadata-file`
 - `--title` or `--title-file`
 
-For each input, the file option takes precedence over the direct value. Metadata
-files are passed through as strings; they are not parsed as JSON by the CLI.
+For each input, the file option takes precedence over the direct value.
+Metadata files are read as UTF-8 text and passed through as strings; they are
+not parsed as JSON by the CLI.
 
 By default the CLI writes pretty JSON to stdout. When `--out` is provided, it
 writes pretty JSON to that file and keeps stdout quiet.
@@ -254,14 +271,14 @@ clients and fake LLM objects.
 
 Test coverage includes:
 
-- reviewer instantiation, prompt construction, schema construction, and call
-  ordering
-- CLI direct inputs, file inputs, file precedence, and output writing
-- provider facade selection and Claude model routing
-- Gemini and Claude request construction
+- reviewer instantiation, public exports, missing legacy module, prompt
+  construction, schema construction, and two-call ordering
+- CLI direct inputs, UTF-8 file inputs, file precedence, stdout output, and
+  `--out` writing
+- provider facade selection, Claude model routing, request construction, config
+  merging, schema normalization, tool overrides, and lazy import errors
 - response adapter behavior for dicts, namespaces, candidate parts, Claude
   content blocks, and fallback string conversion
-- lazy import error messages for missing provider SDKs
 
 Run the suite with:
 
