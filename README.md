@@ -2,7 +2,7 @@
 
 LLM-assisted thematic relevance review for life science publications.
 
-## Longer Description
+## Description
 
 `agentic-curator` reviews publication text against a thematic curation target.
 The current package provides a thematic reviewer that first extracts relevant
