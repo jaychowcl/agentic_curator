@@ -6,10 +6,10 @@ a compact handoff for humans and agents working in this repository.
 <a id="project-purpose-and-layout"></a>
 ## Project Purpose And Layout
 
-`agentic-curator` provides an LLM-assisted reviewer for assessing whether life
-science publications are relevant to a thematic curation target. The current
-package focuses on publication evidence extraction, final relevance judging,
-and provider adapters for Gemini and Claude on Vertex AI.
+`agentic-curator` provides LLM-assisted curation utilities for life science
+publications. The current package focuses on publication evidence extraction,
+final relevance judging, a placeholder ontology harmonizer, and provider
+adapters for Gemini and Claude on Vertex AI.
 
 Tracked project layout:
 
@@ -27,6 +27,9 @@ src/agentic_curator/
     cli_thematic_reviewer.py
   curators/
     __init__.py
+    ontology_harmonizer/
+      __init__.py
+      harmonizer.py
     thematic_reviewer/
       __init__.py
       reviewer.py
@@ -42,6 +45,7 @@ src/agentic_curator/
 tests/
   test_cli_thematic_reviewer.py
   test_curator_llm_wrappers.py
+  test_ontology_harmonizer.py
   test_thematic_reviewer.py
 ```
 
@@ -74,13 +78,13 @@ command is:
 The canonical reviewer import is:
 
 ```python
-from agentic_curator.curators import ThematicReviewer
+from agentic_curator.curators import OntologyHarmonizer, ThematicReviewer
 ```
 
-`agentic_curator.__init__` also exports `ThematicReviewer`, so
-`from agentic_curator import ThematicReviewer` remains supported. The old flat
-module import `agentic_curator.thematic_reviewer` is intentionally absent after
-the curator subpackage refactor.
+`agentic_curator.__init__` also exports both curator classes, so
+`from agentic_curator import ThematicReviewer, OntologyHarmonizer` remains
+supported. The old flat module import `agentic_curator.thematic_reviewer` is
+intentionally absent after the curator subpackage refactor.
 
 `ThematicReviewer(llm=None)` accepts an optional LLM-like object. If no object is
 provided, the reviewer lazily creates `agentic_curator.wrappers.LLM()` on the
@@ -96,6 +100,33 @@ Main methods:
 prompt helpers. The reviewer asks providers for JSON output but returns raw
 generated text. JSON parsing and validation are caller responsibilities in the
 current implementation.
+
+<a id="ontology-harmonizer"></a>
+## Ontology Harmonizer
+
+`agentic_curator.curators.ontology_harmonizer.OntologyHarmonizer` is a
+placeholder curator for future ontology term harmonization. It has no LLM,
+prompt, provider, or CLI integration yet.
+
+Public method:
+
+- `harmonize(terms=None, ontology=None, context=None) -> dict`
+
+The method returns a stable placeholder envelope:
+
+```python
+{
+    "status": "placeholder",
+    "terms": terms or [],
+    "ontology": ontology,
+    "context": context,
+    "matches": [],
+}
+```
+
+`terms` is intended to be a list of strings, `ontology` is an optional ontology
+name or identifier, and `context` may be a string, dictionary, or `None`.
+`matches` remains empty until real harmonization behavior is implemented.
 
 <a id="reviewer-workflow"></a>
 ## Reviewer Workflow
@@ -147,6 +178,10 @@ Major orchestration flow:
 
 The current code does not parse model JSON responses, configure logging, or wrap
 provider exceptions. Those responsibilities stay with callers.
+
+`OntologyHarmonizer.harmonize(...)` is separate from this LLM flow. It returns a
+placeholder dictionary directly and does not call `LLM`, provider adapters, or
+prompt files.
 
 <a id="prompts"></a>
 ## Prompts
@@ -295,6 +330,7 @@ Test coverage includes:
 
 - reviewer instantiation, public exports, missing legacy module, prompt
   construction, schema construction, and two-call ordering
+- ontology harmonizer imports, root exports, and placeholder envelope behavior
 - CLI direct inputs, UTF-8 file inputs, file precedence, stdout output, and
   `--out` writing
 - provider facade selection, Claude model routing, request construction, config

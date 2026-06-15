@@ -6,7 +6,9 @@ LLM-assisted thematic relevance review for life science publications.
 
 `agentic-curator` reviews publication text against a thematic curation target.
 The current package provides a thematic reviewer that first extracts relevant
-evidence statements, then judges whether those evidences satisfy the theme.
+evidence statements, then judges whether those evidences satisfy the theme. It
+also exposes an ontology harmonizer placeholder so downstream callers can start
+integrating against a stable harmonization API.
 
 The reviewer requests JSON-formatted model responses but returns raw generated
 text to callers. Parsing, validation, and downstream storage are left to the
@@ -98,7 +100,7 @@ The main API is exported from both `agentic_curator` and
 `agentic_curator.curators`.
 
 ```python
-from agentic_curator import ThematicReviewer
+from agentic_curator import OntologyHarmonizer, ThematicReviewer
 from agentic_curator.wrappers import LLM
 ```
 
@@ -108,6 +110,8 @@ from agentic_curator.wrappers import LLM
 | --- | --- | --- | --- |
 | `ThematicReviewer(llm=None)` | Optional LLM-like object with `generate_response(...)`. | Reviewer instance. | Lazily creates `LLM()` if no object is supplied. |
 | `review_relevancy(publication_text=None, theme=None, metadata=None, title=None)` | Publication text, theme, metadata, and title. | `{"evidences": str, "judgement": str}`. | Calls evidence extraction first, then evidence judging. |
+| `OntologyHarmonizer()` | No constructor inputs. | Harmonizer instance. | Placeholder curator with no LLM or provider calls. |
+| `harmonize(terms=None, ontology=None, context=None)` | Optional terms, ontology name, and string or dictionary context. | `{"status": "placeholder", "terms": list, "ontology": str | None, "context": str | dict | None, "matches": []}`. | Returns a stable placeholder envelope for integration work. |
 
 ### Reviewer Primitives
 
@@ -118,6 +122,21 @@ from agentic_curator.wrappers import LLM
 
 `metadata` may be a string, dictionary, list, or `None` in reviewer calls.
 Dictionary and list values are inserted into prompts as sorted, indented JSON.
+
+Ontology harmonization is currently a placeholder:
+
+```python
+from agentic_curator import OntologyHarmonizer
+
+harmonizer = OntologyHarmonizer()
+result = harmonizer.harmonize(
+    terms=["lung fibrosis", "fibroblast"],
+    ontology="UBERON",
+    context={"organism": "human", "tissue": "lung"},
+)
+```
+
+`result["matches"]` is an empty list until real harmonization behavior is added.
 
 ### LLM Facade And Providers
 

@@ -1,3 +1,3 @@
-from agentic_curator.curators import ThematicReviewer
+from agentic_curator.curators import OntologyHarmonizer, ThematicReviewer
 
-__all__ = ["ThematicReviewer"]
+__all__ = ["OntologyHarmonizer", "ThematicReviewer"]
