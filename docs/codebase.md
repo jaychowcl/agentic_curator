@@ -156,6 +156,13 @@ escaped path segments (`~` becomes `~0`, `/` becomes `~1`). These coordinates
 are intended to let future harmonization results edit both field names and
 label values back into structured metadata.
 
+`_extract_harmonization_targets(metadata, start_paths=None)` can also receive a
+list of JSON Pointer start paths. When `start_paths` is omitted, extraction
+starts at the metadata root. When paths are provided, only those resolved
+subtrees are traversed, output target paths remain absolute from the metadata
+root, and missing, invalid, scalar, or unresolvable start paths are skipped.
+The empty string `""` means the metadata root.
+
 <a id="reviewer-workflow"></a>
 ## Reviewer Workflow
 

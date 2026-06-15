@@ -196,3 +196,132 @@ def test_harmonize_includes_extracted_harmonization_targets() -> None:
     result = harmonizer.harmonize(metadata=metadata)
 
     assert result["targets"] == harmonizer._extract_harmonization_targets(metadata)
+
+
+def test_extract_harmonization_targets_starts_from_selected_subtree() -> None:
+    assert OntologyHarmonizer()._extract_harmonization_targets(
+        {
+            "publication": {"year": 2026},
+            "sample": {"tissue": "lung"},
+        },
+        start_paths=["/sample"],
+    ) == [
+        {
+            "id": "target-0",
+            "source": "metadata",
+            "field": "tissue",
+            "label": "lung",
+            "field_path": "/sample/tissue",
+            "label_path": "/sample/tissue",
+            "parent_path": "/sample",
+            "key": "tissue",
+            "value": "lung",
+        }
+    ]
+
+
+def test_extract_harmonization_targets_starts_from_list_item() -> None:
+    assert OntologyHarmonizer()._extract_harmonization_targets(
+        {"samples": [{"tissue": "lung"}, {"tissue": "heart"}]},
+        start_paths=["/samples/1"],
+    ) == [
+        {
+            "id": "target-0",
+            "source": "metadata",
+            "field": "tissue",
+            "label": "heart",
+            "field_path": "/samples/1/tissue",
+            "label_path": "/samples/1/tissue",
+            "parent_path": "/samples/1",
+            "key": "tissue",
+            "value": "heart",
+        }
+    ]
+
+
+def test_extract_harmonization_targets_uses_multiple_start_paths_in_order() -> None:
+    assert OntologyHarmonizer()._extract_harmonization_targets(
+        {
+            "publication": {"organism": "human"},
+            "sample": {"tissue": "lung"},
+        },
+        start_paths=["/sample", "/publication"],
+    ) == [
+        {
+            "id": "target-0",
+            "source": "metadata",
+            "field": "tissue",
+            "label": "lung",
+            "field_path": "/sample/tissue",
+            "label_path": "/sample/tissue",
+            "parent_path": "/sample",
+            "key": "tissue",
+            "value": "lung",
+        },
+        {
+            "id": "target-1",
+            "source": "metadata",
+            "field": "organism",
+            "label": "human",
+            "field_path": "/publication/organism",
+            "label_path": "/publication/organism",
+            "parent_path": "/publication",
+            "key": "organism",
+            "value": "human",
+        },
+    ]
+
+
+def test_extract_harmonization_targets_empty_start_path_uses_metadata_root() -> None:
+    metadata = {"sample": {"tissue": "lung"}}
+    harmonizer = OntologyHarmonizer()
+
+    assert harmonizer._extract_harmonization_targets(
+        metadata,
+        start_paths=[""],
+    ) == harmonizer._extract_harmonization_targets(metadata)
+
+
+def test_extract_harmonization_targets_resolves_escaped_start_path() -> None:
+    assert OntologyHarmonizer()._extract_harmonization_targets(
+        {"sample/type": {"label~name": "lung"}},
+        start_paths=["/sample~1type"],
+    ) == [
+        {
+            "id": "target-0",
+            "source": "metadata",
+            "field": "label~name",
+            "label": "lung",
+            "field_path": "/sample~1type/label~0name",
+            "label_path": "/sample~1type/label~0name",
+            "parent_path": "/sample~1type",
+            "key": "label~name",
+            "value": "lung",
+        }
+    ]
+
+
+def test_extract_harmonization_targets_skips_unresolvable_start_paths() -> None:
+    harmonizer = OntologyHarmonizer()
+    metadata = {
+        "sample": {"tissue": "lung"},
+        "samples": [{"tissue": "heart"}],
+    }
+
+    assert harmonizer._extract_harmonization_targets(
+        metadata,
+        start_paths=[
+            "/missing",
+            "/samples/not-an-index",
+            "/samples/3",
+            "/sample/tissue",
+        ],
+    ) == []
+    assert harmonizer._extract_harmonization_targets(
+        None,
+        start_paths=[""],
+    ) == []
+    assert harmonizer._extract_harmonization_targets(
+        "raw metadata",
+        start_paths=[""],
+    ) == []

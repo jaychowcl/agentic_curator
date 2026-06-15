@@ -29,11 +29,25 @@ class OntologyHarmonizer:
     def _extract_harmonization_targets(
         self,
         metadata: str | dict[str, Any] | list[Any] | None,
+        start_paths: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         targets: list[dict[str, Any]] = []
 
-        if isinstance(metadata, (dict, list)):
+        if not isinstance(metadata, (dict, list)):
+            return targets
+
+        if start_paths is None:
             self._collect_targets(value=metadata, path="", targets=targets)
+            return targets
+
+        for start_path in start_paths:
+            resolved = self._resolve_json_pointer(metadata, start_path)
+            if isinstance(resolved, (dict, list)):
+                self._collect_targets(
+                    value=resolved,
+                    path=start_path,
+                    targets=targets,
+                )
 
         return targets
 
@@ -105,3 +119,40 @@ class OntologyHarmonizer:
     @staticmethod
     def _escape_json_pointer_segment(segment: str) -> str:
         return segment.replace("~", "~0").replace("/", "~1")
+
+    @classmethod
+    def _resolve_json_pointer(
+        cls,
+        value: dict[str, Any] | list[Any],
+        pointer: str,
+    ) -> Any:
+        if pointer == "":
+            return value
+        if not pointer.startswith("/"):
+            return None
+
+        current: Any = value
+        for raw_segment in pointer.split("/")[1:]:
+            segment = cls._unescape_json_pointer_segment(raw_segment)
+            if isinstance(current, dict):
+                if segment not in current:
+                    return None
+                current = current[segment]
+                continue
+
+            if isinstance(current, list):
+                if not segment.isdecimal():
+                    return None
+                index = int(segment)
+                if index >= len(current):
+                    return None
+                current = current[index]
+                continue
+
+            return None
+
+        return current
+
+    @staticmethod
+    def _unescape_json_pointer_segment(segment: str) -> str:
+        return segment.replace("~1", "/").replace("~0", "~")
