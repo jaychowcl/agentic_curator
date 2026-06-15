@@ -14,20 +14,25 @@ def test_ontology_harmonizer_is_exported_from_package_root() -> None:
 
 
 def test_harmonize_returns_placeholder_envelope_with_supplied_inputs() -> None:
-    terms = ["lung fibrosis", "fibroblast"]
-    context = {"organism": "human", "tissue": "lung"}
+    metadata = {"organism": "human", "tissue": "lung"}
+    ontology_frameworks = {
+        "anatomy": "UBERON",
+        "cell_type": "CL",
+    }
 
     result = OntologyHarmonizer().harmonize(
-        terms=terms,
-        ontology="UBERON",
-        context=context,
+        publication_text="Full publication text",
+        metadata=metadata,
+        title="Fibrosis atlas publication",
+        ontology_frameworks=ontology_frameworks,
     )
 
     assert result == {
         "status": "placeholder",
-        "terms": terms,
-        "ontology": "UBERON",
-        "context": context,
+        "publication_text": "Full publication text",
+        "metadata": metadata,
+        "title": "Fibrosis atlas publication",
+        "ontology_frameworks": ontology_frameworks,
         "matches": [],
     }
 
@@ -37,8 +42,9 @@ def test_harmonize_defaults_to_empty_placeholder_values() -> None:
 
     assert result == {
         "status": "placeholder",
-        "terms": [],
-        "ontology": None,
-        "context": None,
+        "publication_text": None,
+        "metadata": None,
+        "title": None,
+        "ontology_frameworks": {},
         "matches": [],
     }

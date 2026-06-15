@@ -105,28 +105,30 @@ current implementation.
 ## Ontology Harmonizer
 
 `agentic_curator.curators.ontology_harmonizer.OntologyHarmonizer` is a
-placeholder curator for future ontology term harmonization. It has no LLM,
-prompt, provider, or CLI integration yet.
+placeholder curator for future ontology harmonization from publication text. It
+has no LLM, prompt, provider, or CLI integration yet.
 
 Public method:
 
-- `harmonize(terms=None, ontology=None, context=None) -> dict`
+- `harmonize(publication_text=None, metadata=None, title=None, ontology_frameworks=None) -> dict`
 
 The method returns a stable placeholder envelope:
 
 ```python
 {
     "status": "placeholder",
-    "terms": terms or [],
-    "ontology": ontology,
-    "context": context,
+    "publication_text": publication_text,
+    "metadata": metadata,
+    "title": title,
+    "ontology_frameworks": ontology_frameworks or {},
     "matches": [],
 }
 ```
 
-`terms` is intended to be a list of strings, `ontology` is an optional ontology
-name or identifier, and `context` may be a string, dictionary, or `None`.
-`matches` remains empty until real harmonization behavior is implemented.
+`publication_text` and `title` may be strings or `None`, `metadata` may be a
+string, dictionary, or `None`, and `ontology_frameworks` is a dictionary of
+framework names or configuration. `matches` remains empty until real
+harmonization behavior is implemented.
 
 <a id="reviewer-workflow"></a>
 ## Reviewer Workflow
