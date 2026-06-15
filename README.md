@@ -111,7 +111,7 @@ from agentic_curator.wrappers import LLM
 | `ThematicReviewer(llm=None)` | Optional LLM-like object with `generate_response(...)`. | Reviewer instance. | Lazily creates `LLM()` if no object is supplied. |
 | `review_relevancy(publication_text=None, theme=None, metadata=None, title=None)` | Publication text, theme, metadata, and title. | `{"evidences": str, "judgement": str}`. | Calls evidence extraction first, then evidence judging. |
 | `OntologyHarmonizer()` | No constructor inputs. | Harmonizer instance. | Placeholder curator with no LLM or provider calls. |
-| `harmonize(publication_text=None, metadata=None, title=None, ontology_frameworks=None)` | Publication text, metadata, title, and ontology framework dictionary. | `{"status": "placeholder", "publication_text": str | None, "metadata": str | dict | None, "title": str | None, "ontology_frameworks": dict, "matches": []}`. | Returns a stable placeholder envelope for integration work. |
+| `harmonize(publication_text=None, metadata=None, title=None, ontology_frameworks=None)` | Publication text, metadata, title, and ontology framework dictionary. | `{"status": "placeholder", "publication_text": str | None, "metadata": str | dict | None, "title": str | None, "ontology_frameworks": dict, "matches": [], "targets": list}`. | Returns a stable placeholder envelope and editable metadata targets for integration work. |
 
 ### Reviewer Primitives
 
@@ -138,6 +138,9 @@ result = harmonizer.harmonize(
 ```
 
 `result["matches"]` is an empty list until real harmonization behavior is added.
+`result["targets"]` lists scalar metadata field-label pairs with JSON Pointer
+paths so future harmonized field names and labels can be edited back into
+structured metadata. Raw string metadata produces no targets.
 
 ### LLM Facade And Providers
 

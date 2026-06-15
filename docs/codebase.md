@@ -122,6 +122,7 @@ The method returns a stable placeholder envelope:
     "title": title,
     "ontology_frameworks": ontology_frameworks or {},
     "matches": [],
+    "targets": [...],
 }
 ```
 
@@ -129,6 +130,31 @@ The method returns a stable placeholder envelope:
 string, dictionary, or `None`, and `ontology_frameworks` is a dictionary of
 framework names or configuration. `matches` remains empty until real
 harmonization behavior is implemented.
+
+`harmonize()` calls the private helper `_extract_harmonization_targets(...)` to
+walk structured metadata and expose editable scalar field-label targets. The
+helper traverses dictionaries and lists, skips raw string metadata, skips
+`None`, and does not create targets for scalar list items without an object key.
+Each target includes:
+
+```python
+{
+    "id": "target-0",
+    "source": "metadata",
+    "field": "tissue",
+    "label": "lung",
+    "field_path": "/sample/tissue",
+    "label_path": "/sample/tissue",
+    "parent_path": "/sample",
+    "key": "tissue",
+    "value": "lung",
+}
+```
+
+`field_path`, `label_path`, and `parent_path` use JSON Pointer-style paths with
+escaped path segments (`~` becomes `~0`, `/` becomes `~1`). These coordinates
+are intended to let future harmonization results edit both field names and
+label values back into structured metadata.
 
 <a id="reviewer-workflow"></a>
 ## Reviewer Workflow
