@@ -325,3 +325,145 @@ def test_extract_harmonization_targets_skips_unresolvable_start_paths() -> None:
         "raw metadata",
         start_paths=[""],
     ) == []
+
+
+def test_extract_harmonization_targets_uses_tag_value_path_specs() -> None:
+    assert OntologyHarmonizer()._extract_harmonization_targets(
+        {
+            "characteristics": [
+                {"tag": "disease state", "value": "Normal Oral mucosa"},
+                {"tag": "tissue", "value": "Oral buccal mucosa"},
+            ]
+        },
+        start_paths=[{"path": "/characteristics", "mode": "tag_value"}],
+    ) == [
+        {
+            "id": "target-0",
+            "source": "metadata",
+            "field": "disease state",
+            "label": "Normal Oral mucosa",
+            "field_path": "/characteristics/0/tag",
+            "label_path": "/characteristics/0/value",
+            "parent_path": "/characteristics/0",
+            "key": "disease state",
+            "value": "Normal Oral mucosa",
+        },
+        {
+            "id": "target-1",
+            "source": "metadata",
+            "field": "tissue",
+            "label": "Oral buccal mucosa",
+            "field_path": "/characteristics/1/tag",
+            "label_path": "/characteristics/1/value",
+            "parent_path": "/characteristics/1",
+            "key": "tissue",
+            "value": "Oral buccal mucosa",
+        },
+    ]
+
+
+def test_extract_harmonization_targets_uses_container_value_path_specs() -> None:
+    assert OntologyHarmonizer()._extract_harmonization_targets(
+        {"organism": [{"taxid": "9606", "value": "Homo sapiens"}]},
+        start_paths=[{"path": "/organism", "mode": "container_value"}],
+    ) == [
+        {
+            "id": "target-0",
+            "source": "metadata",
+            "field": "organism",
+            "label": "Homo sapiens",
+            "field_path": "/organism",
+            "label_path": "/organism/0/value",
+            "parent_path": "/organism/0",
+            "key": "organism",
+            "value": "Homo sapiens",
+        }
+    ]
+
+
+def test_extract_harmonization_targets_mixes_path_spec_modes_in_order() -> None:
+    assert OntologyHarmonizer()._extract_harmonization_targets(
+        {
+            "source": "Oral buccal mucosa",
+            "organism": [{"taxid": "9606", "value": "Homo sapiens"}],
+            "characteristics": [
+                {"tag": "tissue", "value": "Oral buccal mucosa"},
+            ],
+        },
+        start_paths=[
+            {"path": "/characteristics", "mode": "tag_value"},
+            {"path": "/organism", "mode": "container_value"},
+            "/source",
+        ],
+    ) == [
+        {
+            "id": "target-0",
+            "source": "metadata",
+            "field": "tissue",
+            "label": "Oral buccal mucosa",
+            "field_path": "/characteristics/0/tag",
+            "label_path": "/characteristics/0/value",
+            "parent_path": "/characteristics/0",
+            "key": "tissue",
+            "value": "Oral buccal mucosa",
+        },
+        {
+            "id": "target-1",
+            "source": "metadata",
+            "field": "organism",
+            "label": "Homo sapiens",
+            "field_path": "/organism",
+            "label_path": "/organism/0/value",
+            "parent_path": "/organism/0",
+            "key": "organism",
+            "value": "Homo sapiens",
+        },
+    ]
+
+
+def test_extract_harmonization_targets_defaults_path_specs_to_scalar_mode() -> None:
+    assert OntologyHarmonizer()._extract_harmonization_targets(
+        {"sample": {"tissue": "lung"}},
+        start_paths=[{"path": "/sample"}],
+    ) == [
+        {
+            "id": "target-0",
+            "source": "metadata",
+            "field": "tissue",
+            "label": "lung",
+            "field_path": "/sample/tissue",
+            "label_path": "/sample/tissue",
+            "parent_path": "/sample",
+            "key": "tissue",
+            "value": "lung",
+        }
+    ]
+
+
+def test_extract_harmonization_targets_skips_invalid_path_specs() -> None:
+    metadata = {
+        "characteristics": [
+            {"tag": "tissue"},
+            {"value": "Oral buccal mucosa"},
+            {"tag": {"nested": "field"}, "value": "Oral buccal mucosa"},
+            {"tag": "tissue", "value": ["Oral buccal mucosa"]},
+        ],
+        "organism": [
+            {"taxid": "9606"},
+            {"value": {"nested": "Homo sapiens"}},
+        ],
+        "sample": {"tissue": "lung"},
+    }
+
+    assert OntologyHarmonizer()._extract_harmonization_targets(
+        metadata,
+        start_paths=[
+            {"path": "/characteristics", "mode": "tag_value"},
+            {"path": "/organism", "mode": "container_value"},
+            {"path": "/sample", "mode": "missing_mode"},
+            {"path": "/sample/tissue", "mode": "tag_value"},
+            {"mode": "tag_value"},
+            "/sample/tissue",
+            123,
+        ],
+    ) == []

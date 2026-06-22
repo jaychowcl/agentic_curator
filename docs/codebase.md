@@ -157,11 +157,38 @@ are intended to let future harmonization results edit both field names and
 label values back into structured metadata.
 
 `_extract_harmonization_targets(metadata, start_paths=None)` can also receive a
-list of JSON Pointer start paths. When `start_paths` is omitted, extraction
-starts at the metadata root. When paths are provided, only those resolved
-subtrees are traversed, output target paths remain absolute from the metadata
-root, and missing, invalid, scalar, or unresolvable start paths are skipped.
-The empty string `""` means the metadata root.
+list of JSON Pointer start paths or path specs. When `start_paths` is omitted,
+extraction starts at the metadata root. Plain string paths use the default
+`scalar` mode and preserve the original behavior: only resolved dictionaries or
+lists are traversed, output target paths remain absolute from the metadata root,
+and missing, invalid, scalar, or unresolvable start paths are skipped. The empty
+string `""` means the metadata root.
+
+Path specs allow selected metadata subtrees to use domain-aware extraction
+modes:
+
+```python
+start_paths=[
+    "/sample",
+    {"path": "/characteristics", "mode": "tag_value"},
+    {"path": "/organism", "mode": "container_value"},
+]
+```
+
+Supported modes:
+
+- `scalar`: default mode; extracts each scalar dictionary field as a separate
+  target.
+- `tag_value`: for objects such as `{"tag": "tissue", "value": "lung"}`;
+  emits one target with `field_path` pointing to `tag` and `label_path` pointing
+  to `value`.
+- `container_value`: for containers such as
+  `"organism": [{"taxid": "9606", "value": "Homo sapiens"}]`; emits one target
+  per nested object with a scalar `value`, using the selected container path as
+  the field path.
+
+Invalid path specs, unsupported modes, missing `tag`/`value` fields, non-scalar
+labels, and scalar start paths are skipped.
 
 <a id="reviewer-workflow"></a>
 ## Reviewer Workflow
