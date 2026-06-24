@@ -2,44 +2,44 @@ from __future__ import annotations
 
 from typing import Any
 
+from agentic_curator.curators.ontology_harmonizer.ontology_store import OntoStore
+
 
 ScalarMetadataValue = str | int | float | bool
 StartPathSpec = str | dict[str, Any]
+OntologyFrameworks = dict[str, Any] | OntoStore
 
 
 class OntologyHarmonizer:
-    """Placeholder curator for harmonizing publication text against ontologies."""
+    """Curator for harmonizing publication metadata against ontologies."""
 
     DEFAULT_TARGET_PATHS: list[StartPathSpec] = [
         {"path": "/organism", "mode": "container_value"},
         {"path": "/characteristics", "mode": "tag_value"},
     ]
 
+    def __init__(self, ontology_frameworks: OntologyFrameworks | None = None) -> None:
+        self.ontology_frameworks = (
+            OntoStore() if ontology_frameworks is None else ontology_frameworks
+        )
+
     def harmonize(
         self,
         publication_text: str | None = None,
         metadata: str | dict[str, Any] | list[Any] | None = None,
         title: str | None = None,
-        ontology_frameworks: dict[str, Any] | None = None,
+        ontology_frameworks: OntologyFrameworks | None = None,
         target_paths: list[StartPathSpec] | None = None,
     ) -> dict[str, Any]:
-        selected_target_paths = (
-            self.DEFAULT_TARGET_PATHS if target_paths is None else target_paths
+        _ = publication_text, title, target_paths
+        effective_ontology_frameworks = (
+            self.ontology_frameworks
+            if ontology_frameworks is None
+            else ontology_frameworks
         )
-        targets = self._extract_harmonization_targets(
-            metadata,
-            start_paths=selected_target_paths,
-        )
+        _ = effective_ontology_frameworks
 
-        return {
-            "status": "placeholder",
-            "publication_text": publication_text,
-            "metadata": metadata,
-            "title": title,
-            "ontology_frameworks": ontology_frameworks or {},
-            "matches": [],
-            "targets": targets,
-        }
+        return {"metadata": metadata}
 
     def _extract_harmonization_targets(
         self,

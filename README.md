@@ -7,8 +7,7 @@ LLM-assisted thematic relevance review for life science publications.
 `agentic-curator` reviews publication text against a thematic curation target.
 The current package provides a thematic reviewer that first extracts relevant
 evidence statements, then judges whether those evidences satisfy the theme. It
-also exposes an ontology harmonizer placeholder so downstream callers can start
-integrating against a stable harmonization API.
+also exposes an ontology harmonizer API for metadata harmonization work.
 
 The reviewer requests JSON-formatted model responses but returns raw generated
 text to callers. Parsing, validation, and downstream storage are left to the
@@ -110,8 +109,8 @@ from agentic_curator.wrappers import LLM
 | --- | --- | --- | --- |
 | `ThematicReviewer(llm=None)` | Optional LLM-like object with `generate_response(...)`. | Reviewer instance. | Lazily creates `LLM()` if no object is supplied. |
 | `review_relevancy(publication_text=None, theme=None, metadata=None, title=None)` | Publication text, theme, metadata, and title. | `{"evidences": str, "judgement": str}`. | Calls evidence extraction first, then evidence judging. |
-| `OntologyHarmonizer()` | No constructor inputs. | Harmonizer instance. | Placeholder curator with no LLM or provider calls. |
-| `harmonize(publication_text=None, metadata=None, title=None, ontology_frameworks=None, target_paths=None)` | Publication text, metadata, title, ontology framework dictionary, and optional target path specs. | `{"status": "placeholder", "publication_text": str | None, "metadata": str | dict | None, "title": str | None, "ontology_frameworks": dict, "matches": [], "targets": list}`. | Returns a stable placeholder envelope and editable metadata targets for integration work. |
+| `OntologyHarmonizer(ontology_frameworks=None)` | Optional ontology framework dictionary or `OntoStore`. | Harmonizer instance. | Creates a default `OntoStore` if none is supplied. |
+| `harmonize(publication_text=None, metadata=None, title=None, ontology_frameworks=None, target_paths=None)` | Publication text, metadata, title, optional ontology framework dictionary or `OntoStore`, and optional target path specs. | `{"metadata": str | dict | list | None}`. | Returns only the metadata wrapper; ontology framework inputs are accepted for future harmonization behavior. |
 
 ### Reviewer Primitives
 
@@ -123,12 +122,13 @@ from agentic_curator.wrappers import LLM
 `metadata` may be a string, dictionary, list, or `None` in reviewer calls.
 Dictionary and list values are inserted into prompts as sorted, indented JSON.
 
-Ontology harmonization is currently a placeholder:
+Ontology harmonization currently returns metadata only:
 
 ```python
 from agentic_curator import OntologyHarmonizer
+from agentic_curator.curators.ontology_harmonizer import OntoStore
 
-harmonizer = OntologyHarmonizer()
+harmonizer = OntologyHarmonizer(ontology_frameworks=OntoStore())
 result = harmonizer.harmonize(
     publication_text="Full publication text",
     metadata={
@@ -140,13 +140,10 @@ result = harmonizer.harmonize(
 )
 ```
 
-`result["matches"]` is an empty list until real harmonization behavior is added.
-`result["targets"]` lists metadata field-label pairs with JSON Pointer paths so
-future harmonized field names and labels can be edited back into structured
-metadata. By default, `harmonize()` uses `DEFAULT_TARGET_PATHS` for
-`/organism` container values and `/characteristics` tag/value pairs. Passing
-`target_paths` overrides those defaults for a call. Raw string metadata produces
-no targets.
+`result` is `{"metadata": ...}`. `OntoStore` is currently empty and reserved for
+future methods that download, parse, and serve ontologies. The harmonizer still
+accepts ontology framework input at construction time or per `harmonize()` call
+so future behavior can use either a dictionary configuration or an `OntoStore`.
 
 ### LLM Facade And Providers
 

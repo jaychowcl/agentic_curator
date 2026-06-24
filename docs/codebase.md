@@ -8,7 +8,7 @@ a compact handoff for humans and agents working in this repository.
 
 `agentic-curator` provides LLM-assisted curation utilities for life science
 publications. The current package focuses on publication evidence extraction,
-final relevance judging, a placeholder ontology harmonizer, and provider
+final relevance judging, ontology harmonizer scaffolding, and provider
 adapters for Gemini and Claude on Vertex AI.
 
 Tracked project layout:
@@ -30,6 +30,7 @@ src/agentic_curator/
     ontology_harmonizer/
       __init__.py
       harmonizer.py
+      ontology_store.py
     thematic_reviewer/
       __init__.py
       reviewer.py
@@ -104,37 +105,36 @@ current implementation.
 <a id="ontology-harmonizer"></a>
 ## Ontology Harmonizer
 
-`agentic_curator.curators.ontology_harmonizer.OntologyHarmonizer` is a
-placeholder curator for future ontology harmonization from publication text. It
-has no LLM, prompt, provider, or CLI integration yet.
+`agentic_curator.curators.ontology_harmonizer.OntologyHarmonizer` is the
+metadata harmonization curator. It has no LLM, prompt, provider, or CLI
+integration yet.
 
 Public method:
 
 - `harmonize(publication_text=None, metadata=None, title=None, ontology_frameworks=None, target_paths=None) -> dict`
 
-The method returns a stable placeholder envelope:
+The method currently returns only a metadata wrapper:
 
 ```python
-{
-    "status": "placeholder",
-    "publication_text": publication_text,
-    "metadata": metadata,
-    "title": title,
-    "ontology_frameworks": ontology_frameworks or {},
-    "matches": [],
-    "targets": [...],
-}
+{"metadata": metadata}
 ```
 
 `publication_text` and `title` may be strings or `None`, `metadata` may be a
-string, dictionary, or `None`, and `ontology_frameworks` is a dictionary of
-framework names or configuration. `matches` remains empty until real
-harmonization behavior is implemented.
+string, dictionary, list, or `None`, and `ontology_frameworks` may be a
+dictionary of framework names/configuration or an `OntoStore`.
 
-`harmonize()` first selects target extraction paths, then calls the private
-helper `_extract_harmonization_targets(metadata, start_paths=selected_paths)`.
-When `target_paths` is omitted, it uses the developer-configurable class
-default `DEFAULT_TARGET_PATHS`:
+`OntologyHarmonizer(ontology_frameworks=None)` creates a default `OntoStore`
+when no framework object is supplied. A per-call `ontology_frameworks` argument
+can override the constructor value for future harmonization behavior. The
+effective ontology framework object is accepted but not used yet.
+
+`OntoStore` is exported from `agentic_curator.curators.ontology_harmonizer`.
+It is currently empty and reserved for methods that download, parse, and serve
+ontologies.
+
+The harmonizer keeps private target extraction helpers for future metadata edit
+planning. They are not returned by `harmonize()`. The developer-configurable
+class default `DEFAULT_TARGET_PATHS` is:
 
 ```python
 [
@@ -143,8 +143,7 @@ default `DEFAULT_TARGET_PATHS`:
 ]
 ```
 
-Passing `target_paths=[]` returns no targets. Passing a custom list of paths or
-path specs overrides the defaults for that call. The helper traverses
+`_extract_harmonization_targets(metadata, start_paths=...)` traverses
 dictionaries and lists, skips raw string metadata, skips `None`, and does not
 create targets for scalar list items without an object key. Each target
 includes:
@@ -253,8 +252,8 @@ Major orchestration flow:
 The current code does not parse model JSON responses, configure logging, or wrap
 provider exceptions. Those responsibilities stay with callers.
 
-`OntologyHarmonizer.harmonize(...)` is separate from this LLM flow. It returns a
-placeholder dictionary directly and does not call `LLM`, provider adapters, or
+`OntologyHarmonizer.harmonize(...)` is separate from this LLM flow. It returns
+`{"metadata": metadata}` directly and does not call `LLM`, provider adapters, or
 prompt files.
 
 <a id="prompts"></a>
@@ -404,7 +403,8 @@ Test coverage includes:
 
 - reviewer instantiation, public exports, missing legacy module, prompt
   construction, schema construction, and two-call ordering
-- ontology harmonizer imports, root exports, and placeholder envelope behavior
+- ontology harmonizer imports, root exports, metadata-only return behavior, and
+  `OntoStore` defaults/overrides
 - CLI direct inputs, UTF-8 file inputs, file precedence, stdout output, and
   `--out` writing
 - provider facade selection, Claude model routing, request construction, config

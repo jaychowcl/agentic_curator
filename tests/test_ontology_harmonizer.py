@@ -1,6 +1,7 @@
 from agentic_curator import OntologyHarmonizer as RootOntologyHarmonizer
 from agentic_curator.curators import OntologyHarmonizer
 from agentic_curator.curators.ontology_harmonizer import (
+    OntoStore,
     OntologyHarmonizer as SubpackageOntologyHarmonizer,
 )
 
@@ -13,7 +14,11 @@ def test_ontology_harmonizer_is_exported_from_package_root() -> None:
     assert RootOntologyHarmonizer is OntologyHarmonizer
 
 
-def test_harmonize_returns_placeholder_envelope_with_supplied_inputs() -> None:
+def test_ontostore_can_be_imported_from_subpackage() -> None:
+    assert OntoStore.__name__ == "OntoStore"
+
+
+def test_harmonize_returns_metadata_only() -> None:
     metadata = {
         "organism": [{"taxid": "9606", "value": "Homo sapiens"}],
         "characteristics": [
@@ -33,63 +38,45 @@ def test_harmonize_returns_placeholder_envelope_with_supplied_inputs() -> None:
         ontology_frameworks=ontology_frameworks,
     )
 
-    assert result == {
-        "status": "placeholder",
-        "publication_text": "Full publication text",
-        "metadata": metadata,
-        "title": "Fibrosis atlas publication",
-        "ontology_frameworks": ontology_frameworks,
-        "matches": [],
-        "targets": [
-            {
-                "id": "target-0",
-                "source": "metadata",
-                "field": "organism",
-                "label": "Homo sapiens",
-                "field_path": "/organism",
-                "label_path": "/organism/0/value",
-                "parent_path": "/organism/0",
-                "key": "organism",
-                "value": "Homo sapiens",
-            },
-            {
-                "id": "target-1",
-                "source": "metadata",
-                "field": "disease state",
-                "label": "Normal Oral mucosa",
-                "field_path": "/characteristics/0/tag",
-                "label_path": "/characteristics/0/value",
-                "parent_path": "/characteristics/0",
-                "key": "disease state",
-                "value": "Normal Oral mucosa",
-            },
-            {
-                "id": "target-2",
-                "source": "metadata",
-                "field": "tissue",
-                "label": "lung",
-                "field_path": "/characteristics/1/tag",
-                "label_path": "/characteristics/1/value",
-                "parent_path": "/characteristics/1",
-                "key": "tissue",
-                "value": "lung",
-            },
-        ],
-    }
+    assert result == {"metadata": metadata}
 
 
-def test_harmonize_defaults_to_empty_placeholder_values() -> None:
+def test_harmonize_defaults_to_none_metadata() -> None:
     result = OntologyHarmonizer().harmonize()
 
-    assert result == {
-        "status": "placeholder",
-        "publication_text": None,
-        "metadata": None,
-        "title": None,
-        "ontology_frameworks": {},
-        "matches": [],
-        "targets": [],
-    }
+    assert result == {"metadata": None}
+
+
+def test_harmonizer_creates_default_ontostore() -> None:
+    assert isinstance(OntologyHarmonizer().ontology_frameworks, OntoStore)
+
+
+def test_harmonizer_accepts_ontostore_in_constructor() -> None:
+    store = OntoStore()
+
+    harmonizer = OntologyHarmonizer(ontology_frameworks=store)
+
+    assert harmonizer.ontology_frameworks is store
+
+
+def test_harmonizer_accepts_dict_ontology_frameworks_in_constructor() -> None:
+    ontology_frameworks = {"anatomy": "UBERON"}
+
+    harmonizer = OntologyHarmonizer(ontology_frameworks=ontology_frameworks)
+
+    assert harmonizer.ontology_frameworks is ontology_frameworks
+
+
+def test_harmonize_accepts_ontostore_override() -> None:
+    metadata = {"organism": [{"taxid": "9606", "value": "Homo sapiens"}]}
+    store = OntoStore()
+
+    result = OntologyHarmonizer().harmonize(
+        metadata=metadata,
+        ontology_frameworks=store,
+    )
+
+    assert result == {"metadata": metadata}
 
 
 def test_extract_harmonization_targets_from_flat_metadata() -> None:
@@ -206,49 +193,7 @@ def test_extract_harmonization_targets_skips_uneditable_metadata() -> None:
     assert harmonizer._extract_harmonization_targets({"samples": []}) == []
 
 
-def test_harmonize_includes_extracted_harmonization_targets() -> None:
-    harmonizer = OntologyHarmonizer()
-    metadata = {
-        "organism": [{"taxid": "9606", "value": "Homo sapiens"}],
-        "characteristics": [{"tag": "tissue", "value": "lung"}],
-    }
-
-    result = harmonizer.harmonize(metadata=metadata)
-
-    assert result["targets"] == harmonizer._extract_harmonization_targets(
-        metadata,
-        start_paths=harmonizer.DEFAULT_TARGET_PATHS,
-    )
-
-
-def test_harmonize_target_paths_override_default_paths() -> None:
-    metadata = {
-        "sample": {"tissue": "lung"},
-        "organism": [{"taxid": "9606", "value": "Homo sapiens"}],
-        "characteristics": [{"tag": "disease state", "value": "normal"}],
-    }
-
-    result = OntologyHarmonizer().harmonize(
-        metadata=metadata,
-        target_paths=["/sample"],
-    )
-
-    assert result["targets"] == [
-        {
-            "id": "target-0",
-            "source": "metadata",
-            "field": "tissue",
-            "label": "lung",
-            "field_path": "/sample/tissue",
-            "label_path": "/sample/tissue",
-            "parent_path": "/sample",
-            "key": "tissue",
-            "value": "lung",
-        }
-    ]
-
-
-def test_harmonize_empty_target_paths_returns_no_targets() -> None:
+def test_harmonize_accepts_target_paths_without_returning_targets() -> None:
     metadata = {
         "organism": [{"taxid": "9606", "value": "Homo sapiens"}],
         "characteristics": [{"tag": "tissue", "value": "lung"}],
@@ -259,7 +204,7 @@ def test_harmonize_empty_target_paths_returns_no_targets() -> None:
         target_paths=[],
     )
 
-    assert result["targets"] == []
+    assert result == {"metadata": metadata}
 
 
 def test_extract_harmonization_targets_starts_from_selected_subtree() -> None:
