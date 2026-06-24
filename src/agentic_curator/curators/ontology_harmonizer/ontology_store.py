@@ -21,7 +21,42 @@ class OntoStore:
         "mondo": {
             "url": "http://purl.obolibrary.org/obo/mondo/releases/2026-06-02/mondo-international.owl",
             "version": "2026-06-02",
-        }
+        },
+        "uberon": {
+            "url": "http://purl.obolibrary.org/obo/uberon/releases/2026-04-01/uberon.owl",
+            "version": "2026-04-01",
+        },
+        "hfo": {
+            "url": "http://purl.obolibrary.org/obo/hp/releases/2026-06-06/hp-international.owl",
+            "version": "2026-06-06",
+        },
+        "cl": {
+            "url": "http://purl.obolibrary.org/obo/cl/releases/2026-06-08/cl.owl",
+            "version": "2026-06-08",
+        },
+        "chebi": {
+            "url": "http://purl.obolibrary.org/obo/chebi/252/chebi.owl",
+            "version": "252",
+        },
+        "pato": {
+            "url": "http://purl.obolibrary.org/obo/pato/releases/2025-05-14/pato.owl",
+            "version": "2025-05-14",
+        },
+        "obi": {
+            "url": "http://purl.obolibrary.org/obo/obi/2026-05-08/obi.owl",
+            "version": "2026-05-08",
+            "description" :"Ontology for Biomedical Investigations. An ontology for representing biomedical investigations, including study designs, the collection and preparation of the targets of investigation, assays, instrumentation and reagents used, as well as the data generated and the types of analysis performed on the data to reach conclusions, and their documentation."
+        },
+        "snomed": {
+            "url": "http://snomed.info/sct/900000000000207008/version/20251017",
+            "version": "20251017",
+            "description" : "SNOMED CT (International Edition). SNOMED CT or SNOMED Clinical Terms is a systematically organized computer processable collection of medical terms providing codes, terms, synonyms and definitions used in clinical documentation and reporting."
+        },
+        "ncit": {
+            "url": "http://purl.obolibrary.org/obo/ncit/releases/2026-03-19/ncit.owl",
+            "version": "26.02d",
+            "description": "NCI Thesaurus OBO Edition NCI Thesaurus, a controlled vocabulary in support of NCI administrative and scientific activities. Produced by the Enterprise Vocabulary System (EVS), a project by the NCI Center for Biomedical Informatics and Information Technology. National Cancer Institute, National Institutes of Health, Bethesda, MD 20892, U.S.A."
+        },
     }
     DEFAULT_STORAGE_DIR = Path(__file__).resolve().parent / "ontology_frameworks"
 
