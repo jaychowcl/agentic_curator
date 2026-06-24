@@ -33,14 +33,19 @@ def test_ontostore_can_be_imported_from_subpackage() -> None:
     assert OntoStore.__name__ == "OntoStore"
 
 
-def test_ontostore_initializes_with_empty_frameworks(tmp_path: Path) -> None:
+def test_ontostore_initializes_with_default_frameworks(tmp_path: Path) -> None:
     store = OntoStore(storage_dir=tmp_path)
 
-    assert store.ontology_frameworks == {}
+    assert store.ontology_frameworks == {
+        "efo": {
+            "url": "http://www.ebi.ac.uk/efo/efo.owl",
+            "version": "v3.91.0",
+        }
+    }
     assert store.storage_dir == tmp_path
 
 
-def test_ontostore_accepts_constructor_frameworks(tmp_path: Path) -> None:
+def test_ontostore_constructor_frameworks_extend_defaults(tmp_path: Path) -> None:
     ontology_frameworks = {"CL": {"url": "https://example.org/cl.owl"}}
 
     store = OntoStore(
@@ -48,16 +53,40 @@ def test_ontostore_accepts_constructor_frameworks(tmp_path: Path) -> None:
         storage_dir=tmp_path,
     )
 
-    assert store.ontology_frameworks == ontology_frameworks
+    assert store.ontology_frameworks == {
+        "efo": {
+            "url": "http://www.ebi.ac.uk/efo/efo.owl",
+            "version": "v3.91.0",
+        },
+        "CL": {"url": "https://example.org/cl.owl"},
+    }
+
+
+def test_constructor_framework_can_override_default(tmp_path: Path) -> None:
+    store = OntoStore(
+        ontology_frameworks={
+            "efo": {
+                "url": "https://example.org/custom-efo.owl",
+                "version": "custom",
+            }
+        },
+        storage_dir=tmp_path,
+    )
+
+    assert store.ontology_frameworks["efo"] == {
+        "url": "https://example.org/custom-efo.owl",
+        "version": "custom",
+    }
 
 
 def test_add_url_adds_single_framework_url(tmp_path: Path) -> None:
     store = OntoStore(storage_dir=tmp_path)
 
-    store.add_url("CL", "https://example.org/cl.owl")
+    store.add_url("CL", "https://example.org/cl.owl", version="v1")
 
-    assert store.ontology_frameworks == {
-        "CL": {"url": "https://example.org/cl.owl"}
+    assert store.ontology_frameworks["CL"] == {
+        "url": "https://example.org/cl.owl",
+        "version": "v1",
     }
 
 
@@ -70,9 +99,32 @@ def test_add_urls_merges_frameworks(tmp_path: Path) -> None:
     store.add_urls({"UBERON": {"url": "https://example.org/uberon.owl"}})
 
     assert store.ontology_frameworks == {
+        "efo": {
+            "url": "http://www.ebi.ac.uk/efo/efo.owl",
+            "version": "v3.91.0",
+        },
         "CL": {"url": "https://example.org/cl.owl"},
         "UBERON": {"url": "https://example.org/uberon.owl"},
     }
+
+
+def test_download_uses_default_efo_url(monkeypatch, tmp_path: Path) -> None:
+    calls = []
+
+    def fake_get(url, *, timeout):
+        calls.append({"url": url, "timeout": timeout})
+        return FakeResponse(content=b"efo ontology")
+
+    monkeypatch.setattr(ontology_store.requests, "get", fake_get)
+    store = OntoStore(storage_dir=tmp_path)
+
+    result = store.download("efo")
+
+    assert result == tmp_path / "efo.owl"
+    assert result.read_bytes() == b"efo ontology"
+    assert calls == [
+        {"url": "http://www.ebi.ac.uk/efo/efo.owl", "timeout": 30}
+    ]
 
 
 def test_download_uses_framework_name_to_route_to_url(monkeypatch, tmp_path: Path) -> None:

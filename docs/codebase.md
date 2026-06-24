@@ -136,12 +136,18 @@ Framework config uses a nested dictionary:
 
 ```python
 {
+    "efo": {
+        "url": "http://www.ebi.ac.uk/efo/efo.owl",
+        "version": "v3.91.0",
+    },
     "CL": {"url": "https://example.org/cl.owl"},
     "UBERON": {"url": "https://example.org/uberon.owl"},
 }
 ```
 
-`OntoStore.add_url(name, url)` adds or replaces one framework URL, and
+Every `OntoStore` starts with EFO registered as version `v3.91.0` unless a
+caller overrides the `efo` entry in the constructor. `OntoStore.add_url(name,
+url, version=None)` adds or replaces one framework URL, and
 `OntoStore.add_urls(ontology_frameworks)` merges a framework dictionary into
 the store. `OntoStore.download(name)` looks up
 `self.ontology_frameworks[name]["url"]`, downloads only that named framework

@@ -158,10 +158,13 @@ store = OntoStore(
         "UBERON": {"url": "https://example.org/uberon.owl"},
     }
 )
-store.add_url("PATO", "https://example.org/pato.owl")
-path = store.download("CL")
+store.add_url("PATO", "https://example.org/pato.owl", version="v1")
+path = store.download("efo")
 ```
 
+Stores include EFO by default as
+`{"url": "http://www.ebi.ac.uk/efo/efo.owl", "version": "v3.91.0"}`, so
+`OntoStore().download("efo")` works without adding a URL first.
 `download(name)` resolves `name` through `store.ontology_frameworks[name]["url"]`,
 downloads with `requests`, and saves the response body using the URL basename
 under `src/agentic_curator/curators/ontology_harmonizer/ontology_frameworks/`.
