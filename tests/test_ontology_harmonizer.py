@@ -14,7 +14,13 @@ def test_ontology_harmonizer_is_exported_from_package_root() -> None:
 
 
 def test_harmonize_returns_placeholder_envelope_with_supplied_inputs() -> None:
-    metadata = {"organism": "human", "tissue": "lung"}
+    metadata = {
+        "organism": [{"taxid": "9606", "value": "Homo sapiens"}],
+        "characteristics": [
+            {"tag": "disease state", "value": "Normal Oral mucosa"},
+            {"tag": "tissue", "value": "lung"},
+        ],
+    }
     ontology_frameworks = {
         "anatomy": "UBERON",
         "cell_type": "CL",
@@ -39,21 +45,32 @@ def test_harmonize_returns_placeholder_envelope_with_supplied_inputs() -> None:
                 "id": "target-0",
                 "source": "metadata",
                 "field": "organism",
-                "label": "human",
+                "label": "Homo sapiens",
                 "field_path": "/organism",
-                "label_path": "/organism",
-                "parent_path": "",
+                "label_path": "/organism/0/value",
+                "parent_path": "/organism/0",
                 "key": "organism",
-                "value": "human",
+                "value": "Homo sapiens",
             },
             {
                 "id": "target-1",
                 "source": "metadata",
+                "field": "disease state",
+                "label": "Normal Oral mucosa",
+                "field_path": "/characteristics/0/tag",
+                "label_path": "/characteristics/0/value",
+                "parent_path": "/characteristics/0",
+                "key": "disease state",
+                "value": "Normal Oral mucosa",
+            },
+            {
+                "id": "target-2",
+                "source": "metadata",
                 "field": "tissue",
                 "label": "lung",
-                "field_path": "/tissue",
-                "label_path": "/tissue",
-                "parent_path": "",
+                "field_path": "/characteristics/1/tag",
+                "label_path": "/characteristics/1/value",
+                "parent_path": "/characteristics/1",
                 "key": "tissue",
                 "value": "lung",
             },
@@ -191,11 +208,58 @@ def test_extract_harmonization_targets_skips_uneditable_metadata() -> None:
 
 def test_harmonize_includes_extracted_harmonization_targets() -> None:
     harmonizer = OntologyHarmonizer()
-    metadata = {"sample": {"tissue": "lung"}}
+    metadata = {
+        "organism": [{"taxid": "9606", "value": "Homo sapiens"}],
+        "characteristics": [{"tag": "tissue", "value": "lung"}],
+    }
 
     result = harmonizer.harmonize(metadata=metadata)
 
-    assert result["targets"] == harmonizer._extract_harmonization_targets(metadata)
+    assert result["targets"] == harmonizer._extract_harmonization_targets(
+        metadata,
+        start_paths=harmonizer.DEFAULT_TARGET_PATHS,
+    )
+
+
+def test_harmonize_target_paths_override_default_paths() -> None:
+    metadata = {
+        "sample": {"tissue": "lung"},
+        "organism": [{"taxid": "9606", "value": "Homo sapiens"}],
+        "characteristics": [{"tag": "disease state", "value": "normal"}],
+    }
+
+    result = OntologyHarmonizer().harmonize(
+        metadata=metadata,
+        target_paths=["/sample"],
+    )
+
+    assert result["targets"] == [
+        {
+            "id": "target-0",
+            "source": "metadata",
+            "field": "tissue",
+            "label": "lung",
+            "field_path": "/sample/tissue",
+            "label_path": "/sample/tissue",
+            "parent_path": "/sample",
+            "key": "tissue",
+            "value": "lung",
+        }
+    ]
+
+
+def test_harmonize_empty_target_paths_returns_no_targets() -> None:
+    metadata = {
+        "organism": [{"taxid": "9606", "value": "Homo sapiens"}],
+        "characteristics": [{"tag": "tissue", "value": "lung"}],
+    }
+
+    result = OntologyHarmonizer().harmonize(
+        metadata=metadata,
+        target_paths=[],
+    )
+
+    assert result["targets"] == []
 
 
 def test_extract_harmonization_targets_starts_from_selected_subtree() -> None:

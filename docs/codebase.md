@@ -110,7 +110,7 @@ has no LLM, prompt, provider, or CLI integration yet.
 
 Public method:
 
-- `harmonize(publication_text=None, metadata=None, title=None, ontology_frameworks=None) -> dict`
+- `harmonize(publication_text=None, metadata=None, title=None, ontology_frameworks=None, target_paths=None) -> dict`
 
 The method returns a stable placeholder envelope:
 
@@ -131,11 +131,23 @@ string, dictionary, or `None`, and `ontology_frameworks` is a dictionary of
 framework names or configuration. `matches` remains empty until real
 harmonization behavior is implemented.
 
-`harmonize()` calls the private helper `_extract_harmonization_targets(...)` to
-walk structured metadata and expose editable scalar field-label targets. The
-helper traverses dictionaries and lists, skips raw string metadata, skips
-`None`, and does not create targets for scalar list items without an object key.
-Each target includes:
+`harmonize()` first selects target extraction paths, then calls the private
+helper `_extract_harmonization_targets(metadata, start_paths=selected_paths)`.
+When `target_paths` is omitted, it uses the developer-configurable class
+default `DEFAULT_TARGET_PATHS`:
+
+```python
+[
+    {"path": "/organism", "mode": "container_value"},
+    {"path": "/characteristics", "mode": "tag_value"},
+]
+```
+
+Passing `target_paths=[]` returns no targets. Passing a custom list of paths or
+path specs overrides the defaults for that call. The helper traverses
+dictionaries and lists, skips raw string metadata, skips `None`, and does not
+create targets for scalar list items without an object key. Each target
+includes:
 
 ```python
 {

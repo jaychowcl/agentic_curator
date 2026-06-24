@@ -10,13 +10,27 @@ StartPathSpec = str | dict[str, Any]
 class OntologyHarmonizer:
     """Placeholder curator for harmonizing publication text against ontologies."""
 
+    DEFAULT_TARGET_PATHS: list[StartPathSpec] = [
+        {"path": "/organism", "mode": "container_value"},
+        {"path": "/characteristics", "mode": "tag_value"},
+    ]
+
     def harmonize(
         self,
         publication_text: str | None = None,
         metadata: str | dict[str, Any] | list[Any] | None = None,
         title: str | None = None,
         ontology_frameworks: dict[str, Any] | None = None,
+        target_paths: list[StartPathSpec] | None = None,
     ) -> dict[str, Any]:
+        selected_target_paths = (
+            self.DEFAULT_TARGET_PATHS if target_paths is None else target_paths
+        )
+        targets = self._extract_harmonization_targets(
+            metadata,
+            start_paths=selected_target_paths,
+        )
+
         return {
             "status": "placeholder",
             "publication_text": publication_text,
@@ -24,7 +38,7 @@ class OntologyHarmonizer:
             "title": title,
             "ontology_frameworks": ontology_frameworks or {},
             "matches": [],
-            "targets": self._extract_harmonization_targets(metadata),
+            "targets": targets,
         }
 
     def _extract_harmonization_targets(
