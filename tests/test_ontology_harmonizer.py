@@ -1,9 +1,24 @@
+from pathlib import Path
+
+import pytest
+
 from agentic_curator import OntologyHarmonizer as RootOntologyHarmonizer
+from agentic_curator.curators.ontology_harmonizer import ontology_store
 from agentic_curator.curators import OntologyHarmonizer
 from agentic_curator.curators.ontology_harmonizer import (
     OntoStore,
     OntologyHarmonizer as SubpackageOntologyHarmonizer,
 )
+
+
+class FakeResponse:
+    def __init__(self, content: bytes = b"ontology", error: Exception | None = None):
+        self.content = content
+        self.error = error
+
+    def raise_for_status(self) -> None:
+        if self.error is not None:
+            raise self.error
 
 
 def test_ontology_harmonizer_can_be_imported_from_subpackage() -> None:
@@ -16,6 +31,153 @@ def test_ontology_harmonizer_is_exported_from_package_root() -> None:
 
 def test_ontostore_can_be_imported_from_subpackage() -> None:
     assert OntoStore.__name__ == "OntoStore"
+
+
+def test_ontostore_initializes_with_empty_frameworks(tmp_path: Path) -> None:
+    store = OntoStore(storage_dir=tmp_path)
+
+    assert store.ontology_frameworks == {}
+    assert store.storage_dir == tmp_path
+
+
+def test_ontostore_accepts_constructor_frameworks(tmp_path: Path) -> None:
+    ontology_frameworks = {"CL": {"url": "https://example.org/cl.owl"}}
+
+    store = OntoStore(
+        ontology_frameworks=ontology_frameworks,
+        storage_dir=tmp_path,
+    )
+
+    assert store.ontology_frameworks == ontology_frameworks
+
+
+def test_add_url_adds_single_framework_url(tmp_path: Path) -> None:
+    store = OntoStore(storage_dir=tmp_path)
+
+    store.add_url("CL", "https://example.org/cl.owl")
+
+    assert store.ontology_frameworks == {
+        "CL": {"url": "https://example.org/cl.owl"}
+    }
+
+
+def test_add_urls_merges_frameworks(tmp_path: Path) -> None:
+    store = OntoStore(
+        ontology_frameworks={"CL": {"url": "https://example.org/cl.owl"}},
+        storage_dir=tmp_path,
+    )
+
+    store.add_urls({"UBERON": {"url": "https://example.org/uberon.owl"}})
+
+    assert store.ontology_frameworks == {
+        "CL": {"url": "https://example.org/cl.owl"},
+        "UBERON": {"url": "https://example.org/uberon.owl"},
+    }
+
+
+def test_download_uses_framework_name_to_route_to_url(monkeypatch, tmp_path: Path) -> None:
+    calls = []
+
+    def fake_get(url, *, timeout):
+        calls.append({"url": url, "timeout": timeout})
+        return FakeResponse(content=b"cl ontology")
+
+    monkeypatch.setattr(ontology_store.requests, "get", fake_get)
+    store = OntoStore(
+        ontology_frameworks={"CL": {"url": "https://example.org/cl.owl"}},
+        storage_dir=tmp_path,
+    )
+
+    result = store.download("CL")
+
+    assert result == tmp_path / "cl.owl"
+    assert result.read_bytes() == b"cl ontology"
+    assert calls == [{"url": "https://example.org/cl.owl", "timeout": 30}]
+
+
+def test_download_only_downloads_named_framework(monkeypatch, tmp_path: Path) -> None:
+    calls = []
+
+    def fake_get(url, *, timeout):
+        calls.append(url)
+        return FakeResponse(content=b"uberon ontology")
+
+    monkeypatch.setattr(ontology_store.requests, "get", fake_get)
+    store = OntoStore(
+        ontology_frameworks={
+            "CL": {"url": "https://example.org/cl.owl"},
+            "UBERON": {"url": "https://example.org/uberon.owl"},
+        },
+        storage_dir=tmp_path,
+    )
+
+    result = store.download("UBERON")
+
+    assert result == tmp_path / "uberon.owl"
+    assert result.read_bytes() == b"uberon ontology"
+    assert calls == ["https://example.org/uberon.owl"]
+
+
+def test_download_skips_existing_file(monkeypatch, tmp_path: Path) -> None:
+    existing = tmp_path / "cl.owl"
+    existing.write_bytes(b"existing ontology")
+
+    def fake_get(url, *, timeout):
+        raise AssertionError("requests.get should not be called")
+
+    monkeypatch.setattr(ontology_store.requests, "get", fake_get)
+    store = OntoStore(
+        ontology_frameworks={"CL": {"url": "https://example.org/cl.owl"}},
+        storage_dir=tmp_path,
+    )
+
+    result = store.download("CL")
+
+    assert result == existing
+    assert existing.read_bytes() == b"existing ontology"
+
+
+def test_download_raises_key_error_for_unknown_framework(tmp_path: Path) -> None:
+    store = OntoStore(storage_dir=tmp_path)
+
+    with pytest.raises(KeyError, match="CL"):
+        store.download("CL")
+
+
+def test_download_raises_value_error_for_missing_url(tmp_path: Path) -> None:
+    store = OntoStore(
+        ontology_frameworks={"CL": {}},
+        storage_dir=tmp_path,
+    )
+
+    with pytest.raises(ValueError, match="CL"):
+        store.download("CL")
+
+
+def test_download_raises_value_error_for_url_without_filename(tmp_path: Path) -> None:
+    store = OntoStore(
+        ontology_frameworks={"CL": {"url": "https://example.org/"}},
+        storage_dir=tmp_path,
+    )
+
+    with pytest.raises(ValueError, match="filename"):
+        store.download("CL")
+
+
+def test_download_propagates_http_errors(monkeypatch, tmp_path: Path) -> None:
+    error = RuntimeError("bad response")
+
+    def fake_get(url, *, timeout):
+        return FakeResponse(error=error)
+
+    monkeypatch.setattr(ontology_store.requests, "get", fake_get)
+    store = OntoStore(
+        ontology_frameworks={"CL": {"url": "https://example.org/cl.owl"}},
+        storage_dir=tmp_path,
+    )
+
+    with pytest.raises(RuntimeError, match="bad response"):
+        store.download("CL")
 
 
 def test_harmonize_returns_metadata_only() -> None:

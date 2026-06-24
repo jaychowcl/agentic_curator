@@ -61,7 +61,7 @@ The package uses a `src/` layout with setuptools:
 - project name: `agentic-curator`
 - import package: `agentic_curator`
 - Python requirement: `>=3.10`
-- runtime dependencies: `anthropic[vertex]>=0.107,<1` and `google-genai>=1.72,<2`
+- runtime dependencies: `anthropic[vertex]>=0.107,<1`, `google-genai>=1.72,<2`, and `requests>=2,<3`
 - dev extra: `pytest>=8`
 - console script: `cli_thematic_reviewer = "agentic_curator.cli.cli_thematic_reviewer:main"`
 - package data: `agentic_curator/curators/*/prompts/*.md`
@@ -129,8 +129,30 @@ can override the constructor value for future harmonization behavior. The
 effective ontology framework object is accepted but not used yet.
 
 `OntoStore` is exported from `agentic_curator.curators.ontology_harmonizer`.
-It is currently empty and reserved for methods that download, parse, and serve
-ontologies.
+It stores ontology framework URL config, downloads named frameworks, and is
+reserved for future parsing and serving methods.
+
+Framework config uses a nested dictionary:
+
+```python
+{
+    "CL": {"url": "https://example.org/cl.owl"},
+    "UBERON": {"url": "https://example.org/uberon.owl"},
+}
+```
+
+`OntoStore.add_url(name, url)` adds or replaces one framework URL, and
+`OntoStore.add_urls(ontology_frameworks)` merges a framework dictionary into
+the store. `OntoStore.download(name)` looks up
+`self.ontology_frameworks[name]["url"]`, downloads only that named framework
+with `requests.get(url, timeout=30)`, calls `raise_for_status()`, and returns
+the saved `Path`.
+
+Downloaded files are saved under
+`src/agentic_curator/curators/ontology_harmonizer/ontology_frameworks/` using
+the URL basename. That directory is ignored by git. Existing files are skipped
+and returned without another network call. Unknown framework names raise
+`KeyError`; missing or invalid URLs raise `ValueError`.
 
 The harmonizer keeps private target extraction helpers for future metadata edit
 planning. They are not returned by `harmonize()`. The developer-configurable

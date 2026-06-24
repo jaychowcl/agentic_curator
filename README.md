@@ -24,6 +24,7 @@ and Claude on Vertex AI through the Anthropic Vertex SDK.
 - Runtime dependencies from `pyproject.toml`:
   - `google-genai>=1.72,<2`
   - `anthropic[vertex]>=0.107,<1`
+  - `requests>=2,<3`
 - Development dependency:
   - `pytest>=8`
 - Provider credentials and project configuration for live Gemini or Claude
@@ -140,10 +141,31 @@ result = harmonizer.harmonize(
 )
 ```
 
-`result` is `{"metadata": ...}`. `OntoStore` is currently empty and reserved for
-future methods that download, parse, and serve ontologies. The harmonizer still
-accepts ontology framework input at construction time or per `harmonize()` call
-so future behavior can use either a dictionary configuration or an `OntoStore`.
+`result` is `{"metadata": ...}`. `OntoStore` stores ontology framework URL
+configuration, downloads named frameworks, and is reserved for future parsing
+and serving methods. The harmonizer still accepts ontology framework input at
+construction time or per `harmonize()` call so future behavior can use either a
+dictionary configuration or an `OntoStore`.
+
+`OntoStore` can download named framework URLs:
+
+```python
+from agentic_curator.curators.ontology_harmonizer import OntoStore
+
+store = OntoStore(
+    ontology_frameworks={
+        "CL": {"url": "https://example.org/cl.owl"},
+        "UBERON": {"url": "https://example.org/uberon.owl"},
+    }
+)
+store.add_url("PATO", "https://example.org/pato.owl")
+path = store.download("CL")
+```
+
+`download(name)` resolves `name` through `store.ontology_frameworks[name]["url"]`,
+downloads with `requests`, and saves the response body using the URL basename
+under `src/agentic_curator/curators/ontology_harmonizer/ontology_frameworks/`.
+That directory is gitignored. Existing files are not re-downloaded.
 
 ### LLM Facade And Providers
 

@@ -13,6 +13,7 @@ authors = []
 dependencies = [
     "anthropic[vertex]>=0.107,<1",
     "google-genai>=1.72,<2",
+    "requests>=2,<3",
 ]
 
 [project.optional-dependencies]

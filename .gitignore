@@ -25,3 +25,6 @@ env/
 .DS_Store
 .idea/
 .vscode/
+
+# Downloaded ontology frameworks
+src/agentic_curator/curators/ontology_harmonizer/ontology_frameworks/
