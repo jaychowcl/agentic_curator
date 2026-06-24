@@ -40,7 +40,11 @@ def test_ontostore_initializes_with_default_frameworks(tmp_path: Path) -> None:
         "efo": {
             "url": "http://www.ebi.ac.uk/efo/efo.owl",
             "version": "v3.91.0",
-        }
+        },
+        "mondo": {
+            "url": "http://purl.obolibrary.org/obo/mondo/releases/2026-06-02/mondo-international.owl",
+            "version": "2026-06-02",
+        },
     }
     assert store.storage_dir == tmp_path
 
@@ -57,6 +61,10 @@ def test_ontostore_constructor_frameworks_extend_defaults(tmp_path: Path) -> Non
         "efo": {
             "url": "http://www.ebi.ac.uk/efo/efo.owl",
             "version": "v3.91.0",
+        },
+        "mondo": {
+            "url": "http://purl.obolibrary.org/obo/mondo/releases/2026-06-02/mondo-international.owl",
+            "version": "2026-06-02",
         },
         "CL": {"url": "https://example.org/cl.owl"},
     }
@@ -96,15 +104,29 @@ def test_add_urls_merges_frameworks(tmp_path: Path) -> None:
         storage_dir=tmp_path,
     )
 
-    store.add_urls({"UBERON": {"url": "https://example.org/uberon.owl"}})
+    store.add_urls(
+        {
+            "UBERON": {
+                "url": "https://example.org/uberon.owl",
+                "version": "v2",
+            }
+        }
+    )
 
     assert store.ontology_frameworks == {
         "efo": {
             "url": "http://www.ebi.ac.uk/efo/efo.owl",
             "version": "v3.91.0",
         },
+        "mondo": {
+            "url": "http://purl.obolibrary.org/obo/mondo/releases/2026-06-02/mondo-international.owl",
+            "version": "2026-06-02",
+        },
         "CL": {"url": "https://example.org/cl.owl"},
-        "UBERON": {"url": "https://example.org/uberon.owl"},
+        "UBERON": {
+            "url": "https://example.org/uberon.owl",
+            "version": "v2",
+        },
     }
 
 
@@ -124,6 +146,28 @@ def test_download_uses_default_efo_url(monkeypatch, tmp_path: Path) -> None:
     assert result.read_bytes() == b"efo ontology"
     assert calls == [
         {"url": "http://www.ebi.ac.uk/efo/efo.owl", "timeout": 30}
+    ]
+
+
+def test_download_uses_default_mondo_url(monkeypatch, tmp_path: Path) -> None:
+    calls = []
+
+    def fake_get(url, *, timeout):
+        calls.append({"url": url, "timeout": timeout})
+        return FakeResponse(content=b"mondo ontology")
+
+    monkeypatch.setattr(ontology_store.requests, "get", fake_get)
+    store = OntoStore(storage_dir=tmp_path)
+
+    result = store.download("mondo")
+
+    assert result == tmp_path / "mondo-international.owl"
+    assert result.read_bytes() == b"mondo ontology"
+    assert calls == [
+        {
+            "url": "http://purl.obolibrary.org/obo/mondo/releases/2026-06-02/mondo-international.owl",
+            "timeout": 30,
+        }
     ]
 
 

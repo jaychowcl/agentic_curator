@@ -140,16 +140,21 @@ Framework config uses a nested dictionary:
         "url": "http://www.ebi.ac.uk/efo/efo.owl",
         "version": "v3.91.0",
     },
+    "mondo": {
+        "url": "http://purl.obolibrary.org/obo/mondo/releases/2026-06-02/mondo-international.owl",
+        "version": "2026-06-02",
+    },
     "CL": {"url": "https://example.org/cl.owl"},
-    "UBERON": {"url": "https://example.org/uberon.owl"},
+    "UBERON": {"url": "https://example.org/uberon.owl", "version": "v2"},
 }
 ```
 
-Every `OntoStore` starts with EFO registered as version `v3.91.0` unless a
-caller overrides the `efo` entry in the constructor. `OntoStore.add_url(name,
-url, version=None)` adds or replaces one framework URL, and
+Every `OntoStore` starts with EFO registered as version `v3.91.0` and MONDO
+registered as version `2026-06-02` unless a caller overrides those entries in
+the constructor. `OntoStore.add_url(name, url, version=None)` adds or replaces
+one framework URL with optional version metadata, and
 `OntoStore.add_urls(ontology_frameworks)` merges a framework dictionary into
-the store. `OntoStore.download(name)` looks up
+the store, including any nested `version` fields. `OntoStore.download(name)` looks up
 `self.ontology_frameworks[name]["url"]`, downloads only that named framework
 with `requests.get(url, timeout=30)`, calls `raise_for_status()`, and returns
 the saved `Path`.

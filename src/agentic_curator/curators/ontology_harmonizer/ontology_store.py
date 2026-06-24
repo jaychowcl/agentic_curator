@@ -17,6 +17,10 @@ class OntoStore:
         "efo": {
             "url": "http://www.ebi.ac.uk/efo/efo.owl",
             "version": "v3.91.0",
+        },
+        "mondo": {
+            "url": "http://purl.obolibrary.org/obo/mondo/releases/2026-06-02/mondo-international.owl",
+            "version": "2026-06-02",
         }
     }
     DEFAULT_STORAGE_DIR = Path(__file__).resolve().parent / "ontology_frameworks"

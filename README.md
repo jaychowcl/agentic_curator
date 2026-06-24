@@ -155,16 +155,18 @@ from agentic_curator.curators.ontology_harmonizer import OntoStore
 store = OntoStore(
     ontology_frameworks={
         "CL": {"url": "https://example.org/cl.owl"},
-        "UBERON": {"url": "https://example.org/uberon.owl"},
+        "UBERON": {"url": "https://example.org/uberon.owl", "version": "v2"},
     }
 )
 store.add_url("PATO", "https://example.org/pato.owl", version="v1")
-path = store.download("efo")
+path = store.download("mondo")
 ```
 
-Stores include EFO by default as
-`{"url": "http://www.ebi.ac.uk/efo/efo.owl", "version": "v3.91.0"}`, so
-`OntoStore().download("efo")` works without adding a URL first.
+Stores include EFO and MONDO by default, so `OntoStore().download("efo")` and
+`OntoStore().download("mondo")` work without adding URLs first. EFO is stored
+as `{"url": "http://www.ebi.ac.uk/efo/efo.owl", "version": "v3.91.0"}`.
+MONDO is stored as
+`{"url": "http://purl.obolibrary.org/obo/mondo/releases/2026-06-02/mondo-international.owl", "version": "2026-06-02"}`.
 `download(name)` resolves `name` through `store.ontology_frameworks[name]["url"]`,
 downloads with `requests`, and saves the response body using the URL basename
 under `src/agentic_curator/curators/ontology_harmonizer/ontology_frameworks/`.
