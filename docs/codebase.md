@@ -137,10 +137,12 @@ Framework config uses a nested dictionary:
 ```python
 {
     "efo": {
+        "title": "Experimental Factor Ontology",
         "url": "http://www.ebi.ac.uk/efo/efo.owl",
         "version": "v3.91.0",
     },
     "mondo": {
+        "title": "Mondo Disease Ontology",
         "url": "http://purl.obolibrary.org/obo/mondo/releases/2026-06-02/mondo-international.owl",
         "version": "2026-06-02",
     },
@@ -149,9 +151,11 @@ Framework config uses a nested dictionary:
 }
 ```
 
-Every `OntoStore` starts with EFO registered as version `v3.91.0` and MONDO
-registered as version `2026-06-02` unless a caller overrides those entries in
-the constructor. `OntoStore.add_url(name, url, version=None)` adds or replaces
+Every `OntoStore` starts with built-in framework configs for EFO, MONDO,
+UBERON, HFO/HP, CL, ChEBI, PATO, OBI, SNOMED CT, and NCIT unless a caller
+overrides those entries in the constructor. Each built-in config includes a
+display `title` plus URL/version metadata, and some entries include a
+`description`. `OntoStore.add_url(name, url, version=None)` adds or replaces
 one framework URL with optional version metadata, and
 `OntoStore.add_urls(ontology_frameworks)` merges a framework dictionary into
 the store, including any nested `version` fields. `OntoStore.download(name)` looks up

@@ -162,11 +162,10 @@ store.add_url("PATO", "https://example.org/pato.owl", version="v1")
 path = store.download("mondo")
 ```
 
-Stores include EFO and MONDO by default, so `OntoStore().download("efo")` and
-`OntoStore().download("mondo")` work without adding URLs first. EFO is stored
-as `{"url": "http://www.ebi.ac.uk/efo/efo.owl", "version": "v3.91.0"}`.
-MONDO is stored as
-`{"url": "http://purl.obolibrary.org/obo/mondo/releases/2026-06-02/mondo-international.owl", "version": "2026-06-02"}`.
+Stores include EFO, MONDO, UBERON, HFO/HP, CL, ChEBI, PATO, OBI, SNOMED CT,
+and NCIT by default, so `OntoStore().download("efo")` and
+`OntoStore().download("mondo")` work without adding URLs first. Built-in
+framework configs include display `title` values plus URL/version metadata.
 `download(name)` resolves `name` through `store.ontology_frameworks[name]["url"]`,
 downloads with `requests`, and saves the response body using the URL basename
 under `src/agentic_curator/curators/ontology_harmonizer/ontology_frameworks/`.

@@ -11,6 +11,63 @@ from agentic_curator.curators.ontology_harmonizer import (
 )
 
 
+DEFAULT_ONTOLOGY_FRAMEWORKS = {
+    "efo": {
+        "title": "Experimental Factor Ontology",
+        "url": "http://www.ebi.ac.uk/efo/efo.owl",
+        "version": "v3.91.0",
+    },
+    "mondo": {
+        "title": "Mondo Disease Ontology",
+        "url": "http://purl.obolibrary.org/obo/mondo/releases/2026-06-02/mondo-international.owl",
+        "version": "2026-06-02",
+    },
+    "uberon": {
+        "title": "Uberon multi-species anatomy ontology",
+        "url": "http://purl.obolibrary.org/obo/uberon/releases/2026-04-01/uberon.owl",
+        "version": "2026-04-01",
+    },
+    "hfo": {
+        "title": "Human Phenotype Ontology (HPO)",
+        "url": "http://purl.obolibrary.org/obo/hp/releases/2026-06-06/hp-international.owl",
+        "version": "2026-06-06",
+    },
+    "cl": {
+        "title": "Cell Ontology",
+        "url": "http://purl.obolibrary.org/obo/cl/releases/2026-06-08/cl.owl",
+        "version": "2026-06-08",
+    },
+    "chebi": {
+        "title": "Chemical Entities of Biological Interest",
+        "url": "http://purl.obolibrary.org/obo/chebi/252/chebi.owl",
+        "version": "252",
+    },
+    "pato": {
+        "title": "Phenotype And Trait Ontology",
+        "url": "http://purl.obolibrary.org/obo/pato/releases/2025-05-14/pato.owl",
+        "version": "2025-05-14",
+    },
+    "obi": {
+        "title": "Ontology for Biomedical Investigations",
+        "url": "http://purl.obolibrary.org/obo/obi/2026-05-08/obi.owl",
+        "version": "2026-05-08",
+        "description": "Ontology for Biomedical Investigations. An ontology for representing biomedical investigations, including study designs, the collection and preparation of the targets of investigation, assays, instrumentation and reagents used, as well as the data generated and the types of analysis performed on the data to reach conclusions, and their documentation.",
+    },
+    "snomed": {
+        "title": "SNOMED CT",
+        "url": "http://snomed.info/sct/900000000000207008/version/20251017",
+        "version": "20251017",
+        "description": "SNOMED CT (International Edition). SNOMED CT or SNOMED Clinical Terms is a systematically organized computer processable collection of medical terms providing codes, terms, synonyms and definitions used in clinical documentation and reporting.",
+    },
+    "ncit": {
+        "title": "NCI Thesaurus OBO Edition",
+        "url": "http://purl.obolibrary.org/obo/ncit/releases/2026-03-19/ncit.owl",
+        "version": "26.02d",
+        "description": "NCI Thesaurus OBO Edition NCI Thesaurus, a controlled vocabulary in support of NCI administrative and scientific activities. Produced by the Enterprise Vocabulary System (EVS), a project by the NCI Center for Biomedical Informatics and Information Technology. National Cancer Institute, National Institutes of Health, Bethesda, MD 20892, U.S.A.",
+    },
+}
+
+
 class FakeResponse:
     def __init__(self, content: bytes = b"ontology", error: Exception | None = None):
         self.content = content
@@ -36,17 +93,14 @@ def test_ontostore_can_be_imported_from_subpackage() -> None:
 def test_ontostore_initializes_with_default_frameworks(tmp_path: Path) -> None:
     store = OntoStore(storage_dir=tmp_path)
 
-    assert store.ontology_frameworks == {
-        "efo": {
-            "url": "http://www.ebi.ac.uk/efo/efo.owl",
-            "version": "v3.91.0",
-        },
-        "mondo": {
-            "url": "http://purl.obolibrary.org/obo/mondo/releases/2026-06-02/mondo-international.owl",
-            "version": "2026-06-02",
-        },
-    }
+    assert store.ontology_frameworks == DEFAULT_ONTOLOGY_FRAMEWORKS
     assert store.storage_dir == tmp_path
+
+
+def test_default_frameworks_include_titles() -> None:
+    for framework in OntoStore.DEFAULT_ONTOLOGY_FRAMEWORKS.values():
+        assert isinstance(framework["title"], str)
+        assert framework["title"]
 
 
 def test_ontostore_constructor_frameworks_extend_defaults(tmp_path: Path) -> None:
@@ -58,14 +112,7 @@ def test_ontostore_constructor_frameworks_extend_defaults(tmp_path: Path) -> Non
     )
 
     assert store.ontology_frameworks == {
-        "efo": {
-            "url": "http://www.ebi.ac.uk/efo/efo.owl",
-            "version": "v3.91.0",
-        },
-        "mondo": {
-            "url": "http://purl.obolibrary.org/obo/mondo/releases/2026-06-02/mondo-international.owl",
-            "version": "2026-06-02",
-        },
+        **DEFAULT_ONTOLOGY_FRAMEWORKS,
         "CL": {"url": "https://example.org/cl.owl"},
     }
 
@@ -114,14 +161,7 @@ def test_add_urls_merges_frameworks(tmp_path: Path) -> None:
     )
 
     assert store.ontology_frameworks == {
-        "efo": {
-            "url": "http://www.ebi.ac.uk/efo/efo.owl",
-            "version": "v3.91.0",
-        },
-        "mondo": {
-            "url": "http://purl.obolibrary.org/obo/mondo/releases/2026-06-02/mondo-international.owl",
-            "version": "2026-06-02",
-        },
+        **DEFAULT_ONTOLOGY_FRAMEWORKS,
         "CL": {"url": "https://example.org/cl.owl"},
         "UBERON": {
             "url": "https://example.org/uberon.owl",
