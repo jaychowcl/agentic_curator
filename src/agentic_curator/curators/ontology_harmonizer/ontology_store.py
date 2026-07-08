@@ -65,7 +65,7 @@ class OntoStore:
         "snomed": {
             "title": "SNOMED CT (International Edition)",
             "url": "http://snomed.info/sct/900000000000207008/version/20251017",
-            "version": None,
+            "version": "20251017",
             "description": "SNOMED CT or SNOMED Clinical Terms is a systematically organized computer processable collection of medical terms providing codes, terms, synonyms and definitions used in clinical documentation and reporting.",
         },
         "ncit": {
