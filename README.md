@@ -319,6 +319,7 @@ store = OntoStore(
 )
 store.add_url("extra", "https://example.org/extra.owl", version="v2")
 path = store.download("efo")
+assert store.downloaded_paths["efo"] == path
 ```
 
 Default frameworks include EFO, MONDO, UBERON, HP, CL, ChEBI, PATO, OBI,
@@ -329,7 +330,9 @@ SNOMED CT, NCIT, and NCBITaxon. Built-in `title`, `description`, `version`, and
 `download(name)` resolves `store.ontology_frameworks[name]["url"]`, skips
 existing files, calls `requests.get(url, timeout=30)`, calls
 `raise_for_status()`, writes bytes under the local `ontology_frameworks`
-directory, and returns a `Path`.
+directory, records `store.downloaded_paths[name] = path`, and returns a `Path`.
+`downloaded_paths` is an in-memory `dict[str, Path]` keyed by the ontology id
+passed to `download()`.
 
 ### Code flow
 
@@ -506,10 +509,12 @@ class OntoStore:
         url = _framework_url(name)
         target = storage_dir / filename_from_url(url)
         if target.exists():
+            downloaded_paths[name] = target
             return target
         response = requests.get(url, timeout=30)
         response.raise_for_status()
         target.write_bytes(response.content)
+        downloaded_paths[name] = target
         return target
 ```
 
@@ -522,4 +527,3 @@ class OntoStore:
 - [Ontology harmonizer](docs/codebase.md#ontology-harmonizer)
 - [CLI behavior](docs/codebase.md#cli)
 - [LLM wrapper](docs/codebase.md#llm-wrapper)
-

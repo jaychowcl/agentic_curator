@@ -94,6 +94,7 @@ class OntoStore:
         self.storage_dir = (
             self.DEFAULT_STORAGE_DIR if storage_dir is None else Path(storage_dir)
         )
+        self.downloaded_paths: dict[str, Path] = {}
 
     def add_url(self, name: str, url: str, version: str | None = None) -> None:
         framework: dict[str, Any] = {"url": url}
@@ -108,12 +109,14 @@ class OntoStore:
         url = self._framework_url(name)
         target = self.storage_dir / self._filename_from_url(name=name, url=url)
         if target.exists():
+            self.downloaded_paths[name] = target
             return target
 
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         response = requests.get(url, timeout=30)
         response.raise_for_status()
         target.write_bytes(response.content)
+        self.downloaded_paths[name] = target
         return target
 
     def _framework_url(self, name: str) -> str:

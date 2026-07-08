@@ -63,7 +63,7 @@ DEFAULT_ONTOLOGY_FRAMEWORKS = {
     "snomed": {
         "title": "SNOMED CT (International Edition)",
         "url": "http://snomed.info/sct/900000000000207008/version/20251017",
-        "version": None,
+        "version": "20251017",
         "description": "SNOMED CT or SNOMED Clinical Terms is a systematically organized computer processable collection of medical terms providing codes, terms, synonyms and definitions used in clinical documentation and reporting.",
     },
     "ncit": {
@@ -108,6 +108,7 @@ def test_ontostore_initializes_with_default_frameworks(tmp_path: Path) -> None:
 
     assert store.ontology_frameworks == DEFAULT_ONTOLOGY_FRAMEWORKS
     assert store.storage_dir == tmp_path
+    assert store.downloaded_paths == {}
 
 
 def test_default_frameworks_include_titles() -> None:
@@ -247,6 +248,7 @@ def test_download_uses_framework_name_to_route_to_url(monkeypatch, tmp_path: Pat
 
     assert result == tmp_path / "cl.owl"
     assert result.read_bytes() == b"cl ontology"
+    assert store.downloaded_paths == {"CL": tmp_path / "cl.owl"}
     assert calls == [{"url": "https://example.org/cl.owl", "timeout": 30}]
 
 
@@ -290,6 +292,7 @@ def test_download_skips_existing_file(monkeypatch, tmp_path: Path) -> None:
 
     assert result == existing
     assert existing.read_bytes() == b"existing ontology"
+    assert store.downloaded_paths == {"CL": existing}
 
 
 def test_download_raises_key_error_for_unknown_framework(tmp_path: Path) -> None:
@@ -333,6 +336,7 @@ def test_download_propagates_http_errors(monkeypatch, tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="bad response"):
         store.download("CL")
+    assert store.downloaded_paths == {}
 
 
 def test_harmonize_returns_metadata_only() -> None:

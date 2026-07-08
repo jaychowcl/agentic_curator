@@ -163,7 +163,8 @@ one framework URL with optional version metadata, and
 the store, including any nested `version` fields. `OntoStore.download(name)` looks up
 `self.ontology_frameworks[name]["url"]`, downloads only that named framework
 with `requests.get(url, timeout=30)`, calls `raise_for_status()`, and returns
-the saved `Path`.
+the saved `Path`. Successful downloads and existing-file hits are recorded in
+`self.downloaded_paths` as an in-memory `{ontology_id: Path}` mapping.
 
 Downloaded files are saved under
 `src/agentic_curator/curators/ontology_harmonizer/ontology_frameworks/` using
@@ -532,6 +533,7 @@ class OntoStore:
         if ontology_frameworks:
             self.ontology_frameworks.update(ontology_frameworks)
         self.storage_dir = DEFAULT_STORAGE_DIR if storage_dir is None else Path(storage_dir)
+        self.downloaded_paths = {}
 
     def add_url(name, url, version=None):
         framework = {"url": url}
@@ -548,12 +550,14 @@ def download(name):
     url = self._framework_url(name)
     target = self.storage_dir / self._filename_from_url(name=name, url=url)
     if target.exists():
+        self.downloaded_paths[name] = target
         return target
 
     self.storage_dir.mkdir(parents=True, exist_ok=True)
     response = requests.get(url, timeout=30)
     response.raise_for_status()
     target.write_bytes(response.content)
+    self.downloaded_paths[name] = target
     return target
 ```
 
