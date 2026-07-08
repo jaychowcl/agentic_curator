@@ -295,6 +295,514 @@ provider exceptions. Those responsibilities stay with callers.
 `{"metadata": metadata}` directly and does not call `LLM`, provider adapters, or
 prompt files.
 
+<a id="method-orchestrator-pseudocode"></a>
+## Method Orchestrator Pseudocode
+
+This section traces the main classes and methods by call flow. Names here match
+the implementation so an agent can jump directly from a pseudocode step to the
+corresponding method.
+
+### `ThematicReviewer`
+
+Role: high-level thematic curation orchestrator. It owns the two-step reviewer
+workflow and delegates generation to an injected LLM-like object or a lazy
+`LLM()`.
+
+```python
+class ThematicReviewer:
+    def __init__(llm=None):
+        self.llm = llm
+
+    def review_relevancy(publication_text=None, theme=None, metadata=None, title=None):
+        evidences = self.extract_evidence(
+            publication_text=publication_text,
+            theme=theme,
+            metadata=metadata,
+            title=title,
+        )
+        judgement = self.judge_evidence(
+            evidences=evidences,
+            theme=theme,
+            title=title,
+        )
+        return {"evidences": evidences, "judgement": judgement}
+```
+
+Internal calls from `review_relevancy()`:
+
+- `extract_evidence(...)`
+- `judge_evidence(...)`
+
+External API calls reached indirectly:
+
+- `LLM.generate_response(...)`
+- then either `google.genai.Client.models.generate_content(...)` or
+  `anthropic.AnthropicVertex.messages.create(...)`, depending on platform/model.
+
+```python
+def extract_evidence(publication_text=None, theme=None, metadata=None, title=None):
+    prompt = self._evidence_prompt(
+        publication_text=publication_text,
+        theme=theme,
+        metadata=metadata,
+        title=title,
+    )
+    return self._llm().generate_response(
+        prompt,
+        config={
+            "response_mime_type": "application/json",
+            "response_schema": self._evidence_response_schema(),
+        },
+    )
+```
+
+Internal calls from `extract_evidence()`:
+
+- `_evidence_prompt(...)`
+- `_llm()`
+- `_evidence_response_schema()`
+
+```python
+def judge_evidence(evidences, theme=None, title=None):
+    prompt = self._judge_evidence_prompt(
+        evidences=evidences,
+        theme=theme,
+        title=title,
+    )
+    return self._llm().generate_response(
+        prompt,
+        config={
+            "response_mime_type": "application/json",
+            "response_schema": self._judge_evidence_response_schema(),
+        },
+    )
+```
+
+Internal calls from `judge_evidence()`:
+
+- `_judge_evidence_prompt(...)`
+- `_llm()`
+- `_judge_evidence_response_schema()`
+
+```python
+def _llm():
+    if self.llm is None:
+        self.llm = LLM()
+    return self.llm
+```
+
+```python
+def _evidence_prompt(publication_text=None, theme=None, metadata=None, title=None):
+    initial_prompt = read_package_text("prompts/evidence_extraction.md").strip()
+    return "\n".join([
+        initial_prompt,
+        "Theme:", self._prompt_text(theme), "",
+        "Title:", self._prompt_text(title), "",
+        "Publication Text:", self._prompt_text(publication_text), "",
+        "Metadata:", self._prompt_text(metadata),
+    ]).lstrip("\n")
+
+def _judge_evidence_prompt(evidences, theme=None, title=None):
+    initial_prompt = read_package_text("prompts/judge_evidence.md").strip()
+    return "\n".join([
+        initial_prompt,
+        "Theme:", self._prompt_text(theme), "",
+        "Title:", self._prompt_text(title), "",
+        "Evidences:", self._prompt_text(evidences),
+    ]).lstrip("\n")
+
+def _prompt_text(value):
+    if value is None:
+        return ""
+    if value is dict or list:
+        return json.dumps(value, indent=2, sort_keys=True)
+    return str(value)
+```
+
+### `OntologyHarmonizer`
+
+Role: metadata harmonization curator scaffold. The public method currently
+preserves metadata unchanged; private helpers extract structured edit targets
+for future harmonization.
+
+```python
+class OntologyHarmonizer:
+    DEFAULT_TARGET_PATHS = [
+        {"path": "/organism", "mode": "container_value"},
+        {"path": "/characteristics", "mode": "tag_value"},
+    ]
+
+    def __init__(ontology_frameworks=None):
+        if ontology_frameworks is None:
+            self.ontology_frameworks = OntoStore()
+        else:
+            self.ontology_frameworks = ontology_frameworks
+
+    def harmonize(
+        publication_text=None,
+        metadata=None,
+        title=None,
+        ontology_frameworks=None,
+        target_paths=None,
+    ):
+        effective_ontology_frameworks = (
+            self.ontology_frameworks
+            if ontology_frameworks is None
+            else ontology_frameworks
+        )
+        # publication_text, title, target_paths, and effective frameworks
+        # are accepted but not used yet.
+        return {"metadata": metadata}
+```
+
+No external API calls are made by `harmonize()` in the current implementation.
+
+```python
+def _extract_harmonization_targets(metadata, start_paths=None):
+    targets = []
+    if metadata is not dict or list:
+        return targets
+
+    if start_paths is None:
+        self._collect_targets(value=metadata, path="", targets=targets)
+        return targets
+
+    for start_path_spec in start_paths:
+        start_path, mode = self._path_spec(start_path_spec)
+        if start_path is None:
+            continue
+
+        resolved = self._resolve_json_pointer(metadata, start_path)
+        if resolved is dict or list:
+            self._collect_targets_by_mode(
+                value=resolved,
+                path=start_path,
+                mode=mode,
+                targets=targets,
+            )
+    return targets
+```
+
+Internal target extraction dispatch:
+
+- `_path_spec(...)` validates a string path or dict path spec.
+- `_resolve_json_pointer(...)` locates the configured subtree.
+- `_collect_targets_by_mode(...)` dispatches to one of three collectors.
+
+```python
+def _collect_targets_by_mode(value, path, mode, targets):
+    if mode == "scalar":
+        self._collect_targets(value=value, path=path, targets=targets)
+    elif mode == "tag_value":
+        self._collect_tag_value_targets(value=value, path=path, targets=targets)
+    elif mode == "container_value":
+        self._collect_container_value_targets(
+            value=value,
+            path=path,
+            field_path=path,
+            field=self._field_from_path(path),
+            targets=targets,
+        )
+```
+
+Collector behavior:
+
+- `_collect_targets(...)`: recursively walks dictionaries and lists; each scalar
+  dictionary value becomes a target.
+- `_collect_tag_value_targets(...)`: recognizes objects with scalar `tag` and
+  `value`; emits one target whose field is the tag and label is the value.
+- `_collect_container_value_targets(...)`: recognizes nested objects with scalar
+  `value`; emits one target using the selected container path as the field path.
+- `_target(...)` constructs the normalized target dictionary.
+- `_join_json_pointer(...)`, `_escape_json_pointer_segment(...)`,
+  `_unescape_json_pointer_segment(...)`, and `_field_from_path(...)` maintain
+  JSON Pointer coordinates.
+
+### `OntoStore`
+
+Role: ontology framework configuration store and download helper.
+
+```python
+class OntoStore:
+    DEFAULT_ONTOLOGY_FRAMEWORKS = {...}
+    DEFAULT_STORAGE_DIR = package_dir / "ontology_frameworks"
+
+    def __init__(ontology_frameworks=None, storage_dir=None):
+        self.ontology_frameworks = copy(DEFAULT_ONTOLOGY_FRAMEWORKS)
+        if ontology_frameworks:
+            self.ontology_frameworks.update(ontology_frameworks)
+        self.storage_dir = DEFAULT_STORAGE_DIR if storage_dir is None else Path(storage_dir)
+
+    def add_url(name, url, version=None):
+        framework = {"url": url}
+        if version is not None:
+            framework["version"] = version
+        self.ontology_frameworks[name] = framework
+
+    def add_urls(ontology_frameworks):
+        self.ontology_frameworks.update(ontology_frameworks)
+```
+
+```python
+def download(name):
+    url = self._framework_url(name)
+    target = self.storage_dir / self._filename_from_url(name=name, url=url)
+    if target.exists():
+        return target
+
+    self.storage_dir.mkdir(parents=True, exist_ok=True)
+    response = requests.get(url, timeout=30)
+    response.raise_for_status()
+    target.write_bytes(response.content)
+    return target
+```
+
+Internal calls from `download()`:
+
+- `_framework_url(name)`: retrieves and validates `ontology_frameworks[name]["url"]`.
+- `_filename_from_url(name=name, url=url)`: derives a non-empty basename from
+  the URL path.
+
+External API call:
+
+- `requests.get(url, timeout=30)`
+
+### `LLM`
+
+Role: platform routing facade for curator generation calls.
+
+```python
+class LLM:
+    DEFAULT_PLATFORM = "gemini_enterprise"
+
+    def __init__(platform=DEFAULT_PLATFORM, **platform_options):
+        self.platform_name = platform
+        self.platform_options = dict(platform_options)
+        self._routed_platforms = {}
+        self.platform = self._create_platform(platform, **platform_options)
+
+    def generate_response(prompt, model=None, config=None, tools=None, **extra_options):
+        platform = self._platform_for_model(model)
+        return platform.generate_response(
+            prompt,
+            model=model,
+            config=config,
+            tools=tools,
+            **extra_options,
+        )
+```
+
+```python
+def _platform_for_model(model):
+    if model starts with "claude-" and self.platform_name is not "claude_vertex":
+        if "claude_vertex" not in self._routed_platforms:
+            self._routed_platforms["claude_vertex"] = self._create_platform(
+                "claude_vertex",
+                **self._claude_platform_options(),
+            )
+        return self._routed_platforms["claude_vertex"]
+    return self.platform
+
+def _claude_platform_options():
+    options = copy(self.platform_options)
+    remove "client", "enterprise", and "model"
+    return options
+
+def _create_platform(platform, **platform_options):
+    if normalized platform == "gemini_enterprise":
+        return GeminiEnterprisePlatform(**platform_options)
+    if normalized platform == "claude_vertex":
+        return ClaudeVertexPlatform(**platform_options)
+    raise ValueError
+```
+
+### `GeminiEnterprisePlatform`
+
+Role: Google Gen AI / Vertex AI Gemini adapter.
+
+```python
+class GeminiEnterprisePlatform:
+    DEFAULT_MODEL = "gemini-2.5-flash"
+
+    def __init__(project=None, location=None, model=None, config=None,
+                 tools=None, enterprise=None, client=None, **client_options):
+        self.project = project
+        self.location = location
+        self.model = model or DEFAULT_MODEL
+        self.config_template = self._merged_config(config)
+        self.tools_template = [] if tools is None else list(tools)
+        self.enterprise = enterprise
+        self.client = client
+        self.client_options = client_options
+
+    def generate_response(prompt, model=None, config=None, tools=None, **extra_options):
+        effective_model = model or self.model
+        generation_config = self._clean_options(self._generation_config(config))
+        generation_tools = self.tools_template if tools is None else tools
+        request = {
+            "model": effective_model,
+            "contents": prompt,
+            "config": generation_config,
+            **extra_options,
+        }
+        if generation_tools:
+            request["tools"] = generation_tools
+
+        raw_response = self._client().models.generate_content(**request)
+        return self._model_adapter(effective_model).parse_response(raw_response)
+```
+
+Internal calls from `generate_response()`:
+
+- `_generation_config(...)`
+- `_clean_options(...)`
+- `_client()`
+- `_model_adapter(...)`
+- `parse_response(...)` on `GeminiModelAdapter` or `ClaudeModelAdapter`
+
+External API call:
+
+- `google.genai.Client(...).models.generate_content(**request)`
+
+```python
+def _client():
+    if self.client is None:
+        self.client = self._create_client(...)
+    return self.client
+
+def _create_client(project, location, enterprise, client_options):
+    from google import genai
+    mode_options = {"enterprise": True} if enterprise else {"vertexai": True}
+    return genai.Client(**non_null_options)
+```
+
+### `ClaudeVertexPlatform`
+
+Role: Anthropic Claude-on-Vertex adapter.
+
+```python
+class ClaudeVertexPlatform:
+    DEFAULT_MODEL = "claude-opus-4-8"
+
+    def __init__(project=None, location=None, model=None, config=None,
+                 tools=None, client=None, **client_options):
+        self.project = project
+        self.location = location or "global"
+        self.model = model or DEFAULT_MODEL
+        self.config_template = self._merged_config(config)
+        self.tools_template = [] if tools is None else list(tools)
+        self.client = client
+        self.client_options = client_options
+
+    def generate_response(prompt, model=None, config=None, tools=None, **extra_options):
+        effective_model = model or self.model
+        request = {
+            "model": effective_model,
+            "messages": [{"role": "user", "content": prompt}],
+            **self._claude_config(config),
+            **extra_options,
+        }
+        generation_tools = self.tools_template if tools is None else tools
+        if generation_tools:
+            request["tools"] = generation_tools
+
+        raw_response = self._client().messages.create(**request)
+        return ClaudeModelAdapter().parse_response(raw_response)
+```
+
+Internal calls from `generate_response()`:
+
+- `_claude_config(...)`
+- `_client()`
+- `ClaudeModelAdapter().parse_response(...)`
+
+External API call:
+
+- `anthropic.AnthropicVertex(...).messages.create(**request)`
+
+```python
+def _claude_config(config=None):
+    generation_config = self._clean_options(self._generation_config(config))
+    claude_config = {}
+    if "max_output_tokens" in generation_config:
+        claude_config["max_tokens"] = generation_config["max_output_tokens"]
+    if "max_tokens" in generation_config:
+        claude_config["max_tokens"] = generation_config["max_tokens"]
+    if "temperature" in generation_config:
+        claude_config["temperature"] = generation_config["temperature"]
+    if generation_config has response_schema:
+        claude_config["output_config"] = {
+            "format": {
+                "type": "json_schema",
+                "schema": self._normalize_schema(response_schema),
+            }
+        }
+    return claude_config
+```
+
+### Response Adapters
+
+Role: normalize provider-specific response shapes to a raw string.
+
+```python
+class BaseModelAdapter:
+    def parse_response(response):
+        if response.text exists:
+            return str(response.text)
+        if response.response exists:
+            return str(response.response)
+        if response.candidates[0].content.parts[0].text exists:
+            return str(that_text)
+        return str(response)
+
+class GeminiModelAdapter(BaseModelAdapter):
+    def parse_response(response):
+        if candidate part text exists:
+            return candidate part text
+        return super().parse_response(response)
+
+class ClaudeModelAdapter(BaseModelAdapter):
+    def parse_response(response):
+        if response.content contains text blocks:
+            return concatenated block text
+        return super().parse_response(response)
+```
+
+### CLI Entry Point
+
+Role: parse command-line input, call the thematic reviewer, and write JSON.
+
+```python
+def main(argv=None):
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+
+    result = ThematicReviewer().review_relevancy(
+        publication_text=_input_value(args.publication_text, args.publication_text_file),
+        theme=_input_value(args.theme, args.theme_file),
+        metadata=_input_value(args.metadata, args.metadata_file),
+        title=_input_value(args.title, args.title_file),
+    )
+
+    if args.out is not None:
+        open(args.out, "w").json_dump(result, indent=2)
+    else:
+        json.dump(result, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+    return 0
+```
+
+Internal calls:
+
+- `_build_parser()`
+- `_input_value(value, file)` for each input
+- `ThematicReviewer.review_relevancy(...)`
+
+File-system calls:
+
+- `Path(file).read_text(encoding="utf-8")` for input file options.
+- `open(args.out, "w", encoding="utf-8")` when writing to an output file.
+
 <a id="prompts"></a>
 ## Prompts
 
