@@ -293,13 +293,12 @@ result = harmonizer.harmonize(
         "organism": [{"taxid": "9606", "value": "Homo sapiens"}],
         "characteristics": [{"tag": "tissue", "value": "lung"}],
     },
-    title="Fibrosis atlas publication",
 )
 print(result)
 ```
 
-`harmonize(publication_text=None, metadata=None, title=None,
-ontology_frameworks=None, target_paths=None)` currently returns:
+`harmonize(publication_text=None, metadata=None, ontology_frameworks=None,
+target_paths=None)` currently returns:
 
 ```python
 {"metadata": metadata}
@@ -490,7 +489,7 @@ def main(argv=None):
 
 ```python
 class OntologyHarmonizer:
-    def harmonize(publication_text, metadata, title, ontology_frameworks, target_paths):
+    def harmonize(publication_text, metadata, ontology_frameworks, target_paths):
         effective_frameworks = ontology_frameworks or self.ontology_frameworks
         return {"metadata": metadata}
 ```

@@ -310,11 +310,15 @@ class OntologyHarmonizer:
         self,
         publication_text: str | None = None,
         metadata: str | dict[str, Any] | list[Any] | None = None,
-        title: str | None = None,
-        ontology_frameworks: OntologyFrameworks | None = None,
+        ontology_frameworks: OntoStore | None = None,
         target_paths: list[StartPathSpec] | None = None,
     ) -> dict[str, Any]:
-        _ = publication_text, title, target_paths
+        _ = publication_text, target_paths
+        if ontology_frameworks is not None and not isinstance(
+            ontology_frameworks, OntoStore
+        ):
+            raise TypeError("ontology_frameworks must be an OntoStore.")
+
         effective_ontology_frameworks = (
             self.ontology_frameworks
             if ontology_frameworks is None

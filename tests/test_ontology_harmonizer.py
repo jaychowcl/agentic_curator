@@ -1,3 +1,4 @@
+import inspect
 from pathlib import Path
 
 import pytest
@@ -507,19 +508,19 @@ def test_harmonize_returns_metadata_only() -> None:
             {"tag": "tissue", "value": "lung"},
         ],
     }
-    ontology_frameworks = {
-        "anatomy": "UBERON",
-        "cell_type": "CL",
-    }
+    ontology_frameworks = OntoStore()
 
     result = OntologyHarmonizer().harmonize(
         publication_text="Full publication text",
         metadata=metadata,
-        title="Fibrosis atlas publication",
         ontology_frameworks=ontology_frameworks,
     )
 
     assert result == {"metadata": metadata}
+
+
+def test_harmonize_signature_excludes_title() -> None:
+    assert "title" not in inspect.signature(OntologyHarmonizer.harmonize).parameters
 
 
 def test_harmonize_defaults_to_none_metadata() -> None:
@@ -558,6 +559,14 @@ def test_harmonize_accepts_ontostore_override() -> None:
     )
 
     assert result == {"metadata": metadata}
+
+
+def test_harmonize_rejects_dict_ontology_framework_override() -> None:
+    with pytest.raises(TypeError, match="OntoStore"):
+        OntologyHarmonizer().harmonize(
+            metadata={},
+            ontology_frameworks={"anatomy": "UBERON"},
+        )
 
 
 def test_extract_harmonization_targets_from_flat_metadata() -> None:

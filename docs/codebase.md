@@ -113,7 +113,7 @@ integration yet.
 
 Public method:
 
-- `harmonize(publication_text=None, metadata=None, title=None, ontology_frameworks=None, target_paths=None) -> dict`
+- `harmonize(publication_text=None, metadata=None, ontology_frameworks=None, target_paths=None) -> dict`
 
 The method currently returns only a metadata wrapper:
 
@@ -121,12 +121,12 @@ The method currently returns only a metadata wrapper:
 {"metadata": metadata}
 ```
 
-`publication_text` and `title` may be strings or `None`, `metadata` may be a
-string, dictionary, list, or `None`, and `ontology_frameworks` may be a
-dictionary of framework names/configuration or an `OntoStore`.
+`publication_text` may be a string or `None`, `metadata` may be a string,
+dictionary, list, or `None`, and a per-call `ontology_frameworks` override must
+be an `OntoStore`.
 
 `OntologyHarmonizer(ontology_frameworks=None)` creates a default `OntoStore`
-when no framework object is supplied. A per-call `ontology_frameworks` argument
+when no framework object is supplied. A per-call `ontology_frameworks` `OntoStore`
 can override the constructor value for future harmonization behavior. The
 effective ontology framework object is accepted but not used yet.
 
@@ -505,17 +505,18 @@ class OntologyHarmonizer:
     def harmonize(
         publication_text=None,
         metadata=None,
-        title=None,
         ontology_frameworks=None,
         target_paths=None,
     ):
+        if ontology_frameworks is not None and not isinstance(ontology_frameworks, OntoStore):
+            raise TypeError("ontology_frameworks must be an OntoStore.")
         effective_ontology_frameworks = (
             self.ontology_frameworks
             if ontology_frameworks is None
             else ontology_frameworks
         )
-        # publication_text, title, target_paths, and effective frameworks
-        # are accepted but not used yet.
+        # publication_text, target_paths, and effective frameworks are accepted
+        # but not used yet.
         return {"metadata": metadata}
 ```
 
