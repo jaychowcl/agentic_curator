@@ -106,23 +106,31 @@ class OntoStore:
         self.ontology_frameworks.update(ontology_frameworks)
 
     def get(self, name: str) -> Path:
-        path = self.download(name)
+        target = self._target_path(name)
+        if target.exists():
+            self.downloaded_paths[name] = target
+            return target
+
         # Placeholder for future ontology parsing and serving.
-        return path
+        return self.download(name)
 
     def download(self, name: str) -> Path:
-        url = self._framework_url(name)
-        target = self.storage_dir / self._filename_from_url(name=name, url=url)
+        target = self._target_path(name)
         if target.exists():
             self.downloaded_paths[name] = target
             return target
 
         self.storage_dir.mkdir(parents=True, exist_ok=True)
+        url = self._framework_url(name)
         response = requests.get(url, timeout=30)
         response.raise_for_status()
         target.write_bytes(response.content)
         self.downloaded_paths[name] = target
         return target
+
+    def _target_path(self, name: str) -> Path:
+        url = self._framework_url(name)
+        return self.storage_dir / self._filename_from_url(name=name, url=url)
 
     def _framework_url(self, name: str) -> str:
         framework = self.ontology_frameworks[name]

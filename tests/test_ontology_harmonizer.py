@@ -383,6 +383,26 @@ def test_get_uses_existing_downloaded_file(monkeypatch, tmp_path: Path) -> None:
     assert store.downloaded_paths == {"CL": existing}
 
 
+def test_get_returns_existing_file_without_calling_download(tmp_path: Path) -> None:
+    existing = tmp_path / "cl.owl"
+    existing.write_bytes(b"existing ontology")
+
+    class DownloadFailingStore(OntoStore):
+        def download(self, name: str) -> Path:
+            raise AssertionError("download should not be called")
+
+    store = DownloadFailingStore(
+        ontology_frameworks={"CL": {"url": "https://example.org/cl.owl"}},
+        storage_dir=tmp_path,
+    )
+
+    result = store.get("CL")
+
+    assert result == existing
+    assert existing.read_bytes() == b"existing ontology"
+    assert store.downloaded_paths == {"CL": existing}
+
+
 def test_get_propagates_download_errors(monkeypatch, tmp_path: Path) -> None:
     error = RuntimeError("bad response")
 

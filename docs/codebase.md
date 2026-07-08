@@ -162,8 +162,9 @@ latest PURL. `OntoStore.add_url(name, url, version=None)` adds or replaces
 one framework URL with optional version metadata, and
 `OntoStore.add_urls(ontology_frameworks)` merges a framework dictionary into
 the store, including any nested `version` fields. `OntoStore.get(name)` is the
-future ontology-serving entrypoint; for now, it ensures the ontology exists
-locally via `download(name)` and returns the local `Path` placeholder.
+future ontology-serving entrypoint; for now, it returns the local `Path` when
+the ontology is already downloaded, otherwise downloads it and returns the
+downloaded path placeholder.
 `OntoStore.download(name)` looks up
 `self.ontology_frameworks[name]["url"]`, downloads only that named framework
 with `requests.get(url, timeout=30)`, calls `raise_for_status()`, and returns
@@ -551,32 +552,42 @@ class OntoStore:
 
 ```python
 def get(name):
-    path = self.download(name)
+    target = self._target_path(name)
+    if target.exists():
+        self.downloaded_paths[name] = target
+        return target
+
     # Placeholder for future ontology parsing and serving.
-    return path
+    return self.download(name)
 
 def download(name):
-    url = self._framework_url(name)
-    target = self.storage_dir / self._filename_from_url(name=name, url=url)
+    target = self._target_path(name)
     if target.exists():
         self.downloaded_paths[name] = target
         return target
 
     self.storage_dir.mkdir(parents=True, exist_ok=True)
+    url = self._framework_url(name)
     response = requests.get(url, timeout=30)
     response.raise_for_status()
     target.write_bytes(response.content)
     self.downloaded_paths[name] = target
     return target
+
+def _target_path(name):
+    url = self._framework_url(name)
+    return self.storage_dir / self._filename_from_url(name=name, url=url)
 ```
 
 Internal calls from `get()`:
 
-- `download(name)`: ensures the ontology file exists locally and records
-  `downloaded_paths[name]`.
+- `_target_path(name)`: computes the local path for the configured ontology.
+- `download(name)`: downloads and records `downloaded_paths[name]` only when
+  the file is missing.
 
 Internal calls from `download()`:
 
+- `_target_path(name)`: computes the local path for the configured ontology.
 - `_framework_url(name)`: retrieves and validates `ontology_frameworks[name]["url"]`.
 - `_filename_from_url(name=name, url=url)`: derives a non-empty basename from
   the URL path.
