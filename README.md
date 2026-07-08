@@ -294,8 +294,18 @@ harmonizer = OntologyHarmonizer()
 result = harmonizer.harmonize_miniml_json(
     publication_context="Full publication text",
     miniml_json={
-        "organism": [{"taxid": "9606", "value": "Homo sapiens"}],
-        "characteristics": [{"tag": "tissue", "value": "lung"}],
+        "sample": [
+            {
+                "channel": [
+                    {
+                        "source": "Oral buccal mucosa",
+                        "organism": [{"taxid": "9606", "value": "Homo sapiens"}],
+                        "characteristics": [{"tag": "tissue", "value": "lung"}],
+                        "molecule": "total RNA",
+                    }
+                ]
+            }
+        ]
     },
 )
 print(result)
@@ -303,7 +313,11 @@ print(result)
 
 `harmonize_miniml_json(publication_context=None, miniml_json=None,
 ontostore=None, target_paths=None)` extracts targets from MINiML-style JSON,
-then calls the lower-level target-based `harmonize(...)`.
+then calls the lower-level target-based `harmonize(...)`. When `target_paths`
+is omitted it builds paths for every `sample[*].channel[*]`, extracts
+meaningful sample metadata (`source`, `molecule`, `organism`, and
+`characteristics`), and dedupes by `field:label` while preserving every source
+path in an `occurrences` list.
 
 `harmonize(publication_context=None, harmonization_targets=None,
 ontostore=None, target_paths=None)` currently returns:
@@ -502,8 +516,10 @@ def main(argv=None):
 ```python
 class OntologyHarmonizer:
     def harmonize_miniml_json(publication_context, miniml_json, ontostore, target_paths):
-        effective_paths = target_paths or HarmonizationTargetExtractor.DEFAULT_TARGET_PATHS
+        effective_paths = target_paths or target_extractor.build_miniml_sample_target_paths(miniml_json)
         targets = self.target_extractor.extract(miniml_json, start_paths=effective_paths)
+        if target_paths is None:
+            targets = self.target_extractor.dedupe_targets(targets)
         return self.harmonize(publication_context, targets, ontostore, effective_paths)
 
     def harmonize(publication_context, harmonization_targets, ontostore, target_paths):
@@ -520,6 +536,10 @@ keeps a private delegation wrapper for future harmonization work:
 
 ```python
 class HarmonizationTargetExtractor:
+    def build_miniml_sample_target_paths(miniml_json):
+        walk every sample[*].channel[*]
+        return paths for source, molecule, organism, and characteristics
+
     def extract(metadata, start_paths=None):
         if metadata is not dict/list:
             return []
@@ -527,8 +547,11 @@ class HarmonizationTargetExtractor:
             collect scalar targets from whole metadata tree
         for each start path or path spec:
             resolve JSON Pointer
-            collect targets by mode: scalar, tag_value, or container_value
+            collect targets by mode: scalar, field_value, tag_value, or container_value
         return targets
+
+    def dedupe_targets(targets):
+        return one target per field:label with all source paths in occurrences
 
 def _extract_harmonization_targets(metadata, start_paths=None):
     return self.target_extractor.extract(metadata, start_paths=start_paths)

@@ -17,6 +17,12 @@ class HarmonizationTargetExtractor:
         {"path": "/organism", "mode": "container_value"},
         {"path": "/characteristics", "mode": "tag_value"},
     ]
+    MINIML_CHANNEL_TARGETS: tuple[tuple[str, str], ...] = (
+        ("source", "field_value"),
+        ("molecule", "field_value"),
+        ("organism", "container_value"),
+        ("characteristics", "tag_value"),
+    )
 
     def extract(
         self,
@@ -45,8 +51,112 @@ class HarmonizationTargetExtractor:
                     mode=mode,
                     targets=targets,
                 )
+                continue
+
+            if mode == "field_value" and self._is_target_value(resolved):
+                field = self._field_from_path(start_path)
+                if field is None:
+                    continue
+                targets.append(
+                    self._target(
+                        index=len(targets),
+                        key=field,
+                        value=resolved,
+                        path=start_path,
+                        parent_path=self._parent_path(start_path),
+                    )
+                )
 
         return targets
+
+    def build_miniml_sample_target_paths(
+        self,
+        miniml_json: str | dict[str, Any] | list[Any] | None,
+    ) -> list[StartPathSpec]:
+        if isinstance(miniml_json, dict):
+            return self._build_miniml_package_target_paths(
+                package=miniml_json,
+                package_path="",
+            )
+
+        if not isinstance(miniml_json, list):
+            return []
+
+        target_paths: list[StartPathSpec] = []
+        for package_index, package in enumerate(miniml_json):
+            if not isinstance(package, dict):
+                continue
+            package_path = self._join_json_pointer("", package_index)
+            target_paths.extend(
+                self._build_miniml_package_target_paths(
+                    package=package,
+                    package_path=package_path,
+                )
+            )
+        return target_paths
+
+    def dedupe_targets(self, targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        deduped_targets: list[dict[str, Any]] = []
+        target_indexes: dict[tuple[str, str], int] = {}
+
+        for target in targets:
+            field = str(target.get("field"))
+            label = str(target.get("label"))
+            dedupe_key = (field, label)
+            occurrence = self._target_occurrence(target)
+
+            if dedupe_key in target_indexes:
+                deduped_targets[target_indexes[dedupe_key]]["occurrences"].append(
+                    occurrence
+                )
+                continue
+
+            deduped_target = dict(target)
+            deduped_target["id"] = f"target-{len(deduped_targets)}"
+            deduped_target["occurrences"] = [occurrence]
+            target_indexes[dedupe_key] = len(deduped_targets)
+            deduped_targets.append(deduped_target)
+
+        return deduped_targets
+
+    def _build_miniml_package_target_paths(
+        self,
+        *,
+        package: dict[str, Any],
+        package_path: str,
+    ) -> list[StartPathSpec]:
+        samples = package.get("sample")
+        if not isinstance(samples, list):
+            return []
+
+        target_paths: list[StartPathSpec] = []
+        samples_path = self._join_json_pointer(package_path, "sample")
+        for sample_index, sample in enumerate(samples):
+            if not isinstance(sample, dict):
+                continue
+
+            channels = sample.get("channel")
+            if not isinstance(channels, list):
+                continue
+
+            sample_path = self._join_json_pointer(samples_path, sample_index)
+            channels_path = self._join_json_pointer(sample_path, "channel")
+            for channel_index, channel in enumerate(channels):
+                if not isinstance(channel, dict):
+                    continue
+
+                channel_path = self._join_json_pointer(channels_path, channel_index)
+                for field, mode in self.MINIML_CHANNEL_TARGETS:
+                    if field not in channel:
+                        continue
+                    target_paths.append(
+                        {
+                            "path": self._join_json_pointer(channel_path, field),
+                            "mode": mode,
+                        }
+                    )
+
+        return target_paths
 
     def _collect_targets_by_mode(
         self,
@@ -86,7 +196,7 @@ class HarmonizationTargetExtractor:
             return None, "scalar"
 
         mode = start_path_spec.get("mode", "scalar")
-        if mode not in {"scalar", "tag_value", "container_value"}:
+        if mode not in {"scalar", "tag_value", "container_value", "field_value"}:
             return None, "scalar"
 
         return start_path, mode
@@ -254,6 +364,22 @@ class HarmonizationTargetExtractor:
         return f"{path}/{escaped_segment}"
 
     @staticmethod
+    def _parent_path(path: str) -> str:
+        if "/" not in path.strip("/"):
+            return ""
+        return path.rsplit("/", 1)[0]
+
+    @staticmethod
+    def _target_occurrence(target: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "field_path": target.get("field_path"),
+            "label_path": target.get("label_path"),
+            "parent_path": target.get("parent_path"),
+            "key": target.get("key"),
+            "value": target.get("value"),
+        }
+
+    @staticmethod
     def _escape_json_pointer_segment(segment: str) -> str:
         return segment.replace("~", "~0").replace("/", "~1")
 
@@ -331,15 +457,20 @@ class OntologyHarmonizer:
         ontostore: OntoStore | None = None,
         target_paths: list[StartPathSpec] | None = None,
     ) -> dict[str, Any]:
-        effective_target_paths = (
-            HarmonizationTargetExtractor.DEFAULT_TARGET_PATHS
-            if target_paths is None
-            else target_paths
-        )
+        should_dedupe_targets = target_paths is None
+        effective_target_paths = target_paths
+        if effective_target_paths is None:
+            effective_target_paths = (
+                self.target_extractor.build_miniml_sample_target_paths(miniml_json)
+            )
         harmonization_targets = self.target_extractor.extract(
             miniml_json,
             start_paths=effective_target_paths,
         )
+        if should_dedupe_targets:
+            harmonization_targets = self.target_extractor.dedupe_targets(
+                harmonization_targets
+            )
         return self.harmonize(
             publication_context=publication_context,
             harmonization_targets=harmonization_targets,

@@ -502,11 +502,39 @@ def test_get_propagates_parse_errors_for_invalid_download(
 
 def miniml_metadata() -> dict:
     return {
-        "organism": [{"taxid": "9606", "value": "Homo sapiens"}],
-        "characteristics": [
-            {"tag": "disease state", "value": "Normal Oral mucosa"},
-            {"tag": "tissue", "value": "lung"},
-        ],
+        "sample": [
+            {
+                "iid": "GSM1",
+                "channel": [
+                    {
+                        "position": "1",
+                        "source": "Oral buccal mucosa",
+                        "organism": [{"taxid": "9606", "value": "Homo sapiens"}],
+                        "characteristics": [
+                            {"tag": "disease state", "value": "Normal"},
+                            {"tag": "tissue", "value": "Oral buccal mucosa"},
+                        ],
+                        "molecule": "total RNA",
+                        "extract_protocol": "Long protocol text is not a target.",
+                    }
+                ],
+            },
+            {
+                "iid": "GSM2",
+                "channel": [
+                    {
+                        "position": "1",
+                        "source": "Oral buccal mucosa",
+                        "organism": [{"taxid": "9606", "value": "Homo sapiens"}],
+                        "characteristics": [
+                            {"tag": "disease state", "value": "Disease"},
+                            {"tag": "tissue", "value": "Oral buccal mucosa"},
+                        ],
+                        "molecule": "total RNA",
+                    }
+                ],
+            },
+        ]
     }
 
 
@@ -602,51 +630,171 @@ def test_harmonize_rejects_constructor_non_ontostore_without_override() -> None:
         OntologyHarmonizer(ontology_frameworks={"anatomy": "UBERON"}).harmonize()
 
 
+def test_target_extractor_builds_miniml_sample_target_paths() -> None:
+    assert HarmonizationTargetExtractor().build_miniml_sample_target_paths(
+        miniml_metadata()
+    ) == [
+        {"path": "/sample/0/channel/0/source", "mode": "field_value"},
+        {"path": "/sample/0/channel/0/molecule", "mode": "field_value"},
+        {"path": "/sample/0/channel/0/organism", "mode": "container_value"},
+        {"path": "/sample/0/channel/0/characteristics", "mode": "tag_value"},
+        {"path": "/sample/1/channel/0/source", "mode": "field_value"},
+        {"path": "/sample/1/channel/0/molecule", "mode": "field_value"},
+        {"path": "/sample/1/channel/0/organism", "mode": "container_value"},
+        {"path": "/sample/1/channel/0/characteristics", "mode": "tag_value"},
+    ]
+
+
+def test_target_extractor_builds_miniml_sample_target_paths_from_package_list() -> None:
+    assert HarmonizationTargetExtractor().build_miniml_sample_target_paths(
+        [miniml_metadata()]
+    )[:4] == [
+        {"path": "/0/sample/0/channel/0/source", "mode": "field_value"},
+        {"path": "/0/sample/0/channel/0/molecule", "mode": "field_value"},
+        {"path": "/0/sample/0/channel/0/organism", "mode": "container_value"},
+        {"path": "/0/sample/0/channel/0/characteristics", "mode": "tag_value"},
+    ]
+
+
+def test_target_extractor_dedupes_field_label_pairs_with_occurrences() -> None:
+    targets = [
+        {
+            "id": "target-0",
+            "source": "metadata",
+            "field": "tissue",
+            "label": "lung",
+            "field_path": "/sample/0/channel/0/characteristics/0/tag",
+            "label_path": "/sample/0/channel/0/characteristics/0/value",
+            "parent_path": "/sample/0/channel/0/characteristics/0",
+            "key": "tissue",
+            "value": "lung",
+        },
+        {
+            "id": "target-1",
+            "source": "metadata",
+            "field": "tissue",
+            "label": "lung",
+            "field_path": "/sample/1/channel/0/characteristics/0/tag",
+            "label_path": "/sample/1/channel/0/characteristics/0/value",
+            "parent_path": "/sample/1/channel/0/characteristics/0",
+            "key": "tissue",
+            "value": "lung",
+        },
+        {
+            "id": "target-2",
+            "source": "metadata",
+            "field": "tissue",
+            "label": "heart",
+            "field_path": "/sample/2/channel/0/characteristics/0/tag",
+            "label_path": "/sample/2/channel/0/characteristics/0/value",
+            "parent_path": "/sample/2/channel/0/characteristics/0",
+            "key": "tissue",
+            "value": "heart",
+        },
+    ]
+
+    assert HarmonizationTargetExtractor().dedupe_targets(targets) == [
+        {
+            "id": "target-0",
+            "source": "metadata",
+            "field": "tissue",
+            "label": "lung",
+            "field_path": "/sample/0/channel/0/characteristics/0/tag",
+            "label_path": "/sample/0/channel/0/characteristics/0/value",
+            "parent_path": "/sample/0/channel/0/characteristics/0",
+            "key": "tissue",
+            "value": "lung",
+            "occurrences": [
+                {
+                    "field_path": "/sample/0/channel/0/characteristics/0/tag",
+                    "label_path": "/sample/0/channel/0/characteristics/0/value",
+                    "parent_path": "/sample/0/channel/0/characteristics/0",
+                    "key": "tissue",
+                    "value": "lung",
+                },
+                {
+                    "field_path": "/sample/1/channel/0/characteristics/0/tag",
+                    "label_path": "/sample/1/channel/0/characteristics/0/value",
+                    "parent_path": "/sample/1/channel/0/characteristics/0",
+                    "key": "tissue",
+                    "value": "lung",
+                },
+            ],
+        },
+        {
+            "id": "target-1",
+            "source": "metadata",
+            "field": "tissue",
+            "label": "heart",
+            "field_path": "/sample/2/channel/0/characteristics/0/tag",
+            "label_path": "/sample/2/channel/0/characteristics/0/value",
+            "parent_path": "/sample/2/channel/0/characteristics/0",
+            "key": "tissue",
+            "value": "heart",
+            "occurrences": [
+                {
+                    "field_path": "/sample/2/channel/0/characteristics/0/tag",
+                    "label_path": "/sample/2/channel/0/characteristics/0/value",
+                    "parent_path": "/sample/2/channel/0/characteristics/0",
+                    "key": "tissue",
+                    "value": "heart",
+                }
+            ],
+        },
+    ]
+
+
 def test_harmonize_miniml_json_extracts_default_targets() -> None:
     result = OntologyHarmonizer().harmonize_miniml_json(
         publication_context="Full publication context",
         miniml_json=miniml_metadata(),
     )
 
-    assert result == {
-        "publication_context": "Full publication context",
-        "harmonization_targets": [
-            {
-                "id": "target-0",
-                "source": "metadata",
-                "field": "organism",
-                "label": "Homo sapiens",
-                "field_path": "/organism",
-                "label_path": "/organism/0/value",
-                "parent_path": "/organism/0",
-                "key": "organism",
-                "value": "Homo sapiens",
-            },
-            {
-                "id": "target-1",
-                "source": "metadata",
-                "field": "disease state",
-                "label": "Normal Oral mucosa",
-                "field_path": "/characteristics/0/tag",
-                "label_path": "/characteristics/0/value",
-                "parent_path": "/characteristics/0",
-                "key": "disease state",
-                "value": "Normal Oral mucosa",
-            },
-            {
-                "id": "target-2",
-                "source": "metadata",
-                "field": "tissue",
-                "label": "lung",
-                "field_path": "/characteristics/1/tag",
-                "label_path": "/characteristics/1/value",
-                "parent_path": "/characteristics/1",
-                "key": "tissue",
-                "value": "lung",
-            },
-        ],
-        "target_paths": HarmonizationTargetExtractor.DEFAULT_TARGET_PATHS,
+    assert result["publication_context"] == "Full publication context"
+    assert result["target_paths"] == [
+        {"path": "/sample/0/channel/0/source", "mode": "field_value"},
+        {"path": "/sample/0/channel/0/molecule", "mode": "field_value"},
+        {"path": "/sample/0/channel/0/organism", "mode": "container_value"},
+        {"path": "/sample/0/channel/0/characteristics", "mode": "tag_value"},
+        {"path": "/sample/1/channel/0/source", "mode": "field_value"},
+        {"path": "/sample/1/channel/0/molecule", "mode": "field_value"},
+        {"path": "/sample/1/channel/0/organism", "mode": "container_value"},
+        {"path": "/sample/1/channel/0/characteristics", "mode": "tag_value"},
+    ]
+    assert [target["field"] for target in result["harmonization_targets"]] == [
+        "source",
+        "molecule",
+        "organism",
+        "disease state",
+        "tissue",
+        "disease state",
+    ]
+    assert [target["label"] for target in result["harmonization_targets"]] == [
+        "Oral buccal mucosa",
+        "total RNA",
+        "Homo sapiens",
+        "Normal",
+        "Oral buccal mucosa",
+        "Disease",
+    ]
+    assert [target["id"] for target in result["harmonization_targets"]] == [
+        "target-0",
+        "target-1",
+        "target-2",
+        "target-3",
+        "target-4",
+        "target-5",
+    ]
+    by_field_label = {
+        (target["field"], target["label"]): target
+        for target in result["harmonization_targets"]
     }
+    assert len(by_field_label[("source", "Oral buccal mucosa")]["occurrences"]) == 2
+    assert len(by_field_label[("molecule", "total RNA")]["occurrences"]) == 2
+    assert len(by_field_label[("organism", "Homo sapiens")]["occurrences"]) == 2
+    assert len(by_field_label[("tissue", "Oral buccal mucosa")]["occurrences"]) == 2
+    assert ("position", "1") not in by_field_label
+    assert ("extract_protocol", "Long protocol text is not a target.") not in by_field_label
 
 
 def test_harmonize_miniml_json_accepts_explicit_target_paths() -> None:

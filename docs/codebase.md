@@ -117,8 +117,12 @@ Public methods:
 - `harmonize(publication_context=None, harmonization_targets=None, ontostore=None, target_paths=None) -> dict`
 
 `harmonize_miniml_json(...)` extracts targets from MINiML-style JSON with
-`HarmonizationTargetExtractor`, using the default target paths unless
-`target_paths` is supplied, then calls `harmonize(...)`.
+`HarmonizationTargetExtractor`, then calls `harmonize(...)`. When `target_paths`
+is omitted, it builds paths for every `sample[*].channel[*]`, extracts
+meaningful sample metadata (`source`, `molecule`, `organism`, and
+`characteristics`), and dedupes targets by exact `field:label` while preserving
+every source path in `occurrences`. Supplying `target_paths` keeps explicit path
+extraction behavior.
 
 The lower-level `harmonize(...)` currently returns only a target wrapper:
 
@@ -249,7 +253,7 @@ parse failures raise `Owl2jsonParseError`.
 edit planning. `OntologyHarmonizer` owns `self.target_extractor` and keeps
 `_extract_harmonization_targets(...)` as a private compatibility wrapper around
 `self.target_extractor.extract(...)`. Targets are not returned by `harmonize()`.
-The developer-configurable class default `DEFAULT_TARGET_PATHS` is:
+The extractor still supports root-level default path specs:
 
 ```python
 [
@@ -532,15 +536,20 @@ class OntologyHarmonizer:
         ontostore=None,
         target_paths=None,
     ):
-        effective_target_paths = (
-            HarmonizationTargetExtractor.DEFAULT_TARGET_PATHS
-            if target_paths is None
-            else target_paths
-        )
+        should_dedupe_targets = target_paths is None
+        effective_target_paths = target_paths
+        if effective_target_paths is None:
+            effective_target_paths = (
+                self.target_extractor.build_miniml_sample_target_paths(miniml_json)
+            )
         harmonization_targets = self.target_extractor.extract(
             miniml_json,
             start_paths=effective_target_paths,
         )
+        if should_dedupe_targets:
+            harmonization_targets = (
+                self.target_extractor.dedupe_targets(harmonization_targets)
+            )
         return self.harmonize(
             publication_context=publication_context,
             harmonization_targets=harmonization_targets,
@@ -567,7 +576,13 @@ class HarmonizationTargetExtractor:
         {"path": "/characteristics", "mode": "tag_value"},
     ]
 
+    def build_miniml_sample_target_paths(miniml_json):
+        ...
+
     def extract(metadata, start_paths=None):
+        ...
+
+    def dedupe_targets(targets):
         ...
 ```
 
@@ -596,14 +611,26 @@ def extract(metadata, start_paths=None):
                 mode=mode,
                 targets=targets,
             )
+        elif mode == "field_value" and resolved is scalar:
+            create one target for the direct field value
     return targets
 ```
+
+`build_miniml_sample_target_paths(...)` walks a MINiML package dict, or each
+package in a top-level list, and returns path specs for every sample channel's
+`source`, `molecule`, `organism`, and `characteristics`. It intentionally skips
+channel `position` and long protocol fields.
+
+`dedupe_targets(...)` preserves first-seen target order, keeps the first target's
+singular path fields for compatibility, adds `occurrences` with every matched
+path/value location, and reassigns stable sequential ids.
 
 Internal target extraction dispatch:
 
 - `_path_spec(...)` validates a string path or dict path spec.
 - `_resolve_json_pointer(...)` locates the configured subtree.
-- `_collect_targets_by_mode(...)` dispatches to one of three collectors.
+- `_collect_targets_by_mode(...)` dispatches to one of three subtree collectors;
+  direct scalar fields use the `field_value` mode.
 
 ```python
 def _collect_targets_by_mode(value, path, mode, targets):
@@ -620,6 +647,14 @@ def _collect_targets_by_mode(value, path, mode, targets):
             targets=targets,
         )
 ```
+
+Path specs support these modes:
+
+- `scalar`: recursively collect scalar dictionary values under a subtree.
+- `field_value`: collect a direct scalar field value.
+- `tag_value`: collect `{tag, value}` entries where the tag is the field.
+- `container_value`: collect nested `{value}` entries using the selected
+  container name as the field.
 
 Collector behavior:
 
