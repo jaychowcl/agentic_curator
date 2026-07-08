@@ -157,7 +157,8 @@ Every `OntoStore` starts with built-in framework configs for EFO, MONDO,
 UBERON, HP, CL, ChEBI, PATO, OBI, SNOMED CT, NCIT, and NCBITaxon unless a
 caller overrides those entries in the constructor. Each built-in config
 includes OLS4-sourced `title`, `description`, `version`, and `url` metadata.
-Default `url` values use OLS4 `versionIri` values. `OntoStore.add_url(name, url, version=None)` adds or replaces
+Most default `url` values use OLS4 `versionIri` values; UBERON uses the stable
+latest PURL. `OntoStore.add_url(name, url, version=None)` adds or replaces
 one framework URL with optional version metadata, and
 `OntoStore.add_urls(ontology_frameworks)` merges a framework dictionary into
 the store, including any nested `version` fields. `OntoStore.download(name)` looks up

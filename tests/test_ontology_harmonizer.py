@@ -26,7 +26,7 @@ DEFAULT_ONTOLOGY_FRAMEWORKS = {
     },
     "uberon": {
         "title": "Uber-anatomy ontology",
-        "url": "http://purl.obolibrary.org/obo/uberon/releases/2026-06-19/uberon.owl",
+        "url": "http://purl.obolibrary.org/obo/uberon.owl",
         "version": None,
         "description": "Uberon is an integrated cross-species anatomy ontology representing a variety of entities classified according to traditional anatomical criteria such as structure, function and developmental lineage. The ontology includes comprehensive relationships to taxon-specific anatomical ontologies, allowing integration of functional, phenotype and expression data.",
     },
