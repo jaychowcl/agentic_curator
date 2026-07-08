@@ -249,11 +249,13 @@ deterministic pretty JSON and returns the output path. HTML-like files, such as
 a bad `.owl` download that starts with `<!DOCTYPE html>` or `<html`, and RDFLib
 parse failures raise `Owl2jsonParseError`.
 
-`HarmonizationTargetExtractor` performs target extraction for future metadata
-edit planning. `OntologyHarmonizer` owns `self.target_extractor` and keeps
-`_extract_harmonization_targets(...)` as a private compatibility wrapper around
-`self.target_extractor.extract(...)`. Targets are not returned by `harmonize()`.
-The extractor still supports root-level default path specs:
+`HarmonizationTargetExtractor` lives in
+`ontology_harmonizer/harmonization_target_extractor.py` and performs target
+extraction for future metadata edit planning. `OntologyHarmonizer` owns
+`self.target_extractor` and keeps `_extract_harmonization_targets(...)` as a
+private compatibility wrapper around `self.target_extractor.extract(...)`.
+Targets are not returned by `harmonize()`. The extractor still supports
+root-level default path specs:
 
 ```python
 [
@@ -526,9 +528,8 @@ def _prompt_text(value):
 
 ### `OntologyHarmonizer`
 
-Role: metadata harmonization curator scaffold. The public method currently
-preserves metadata unchanged. It delegates structured edit target discovery to
-`HarmonizationTargetExtractor` for future harmonization.
+Role: metadata harmonization curator scaffold. It delegates structured edit
+target discovery to `HarmonizationTargetExtractor` for future harmonization.
 
 ```python
 class OntologyHarmonizer:
@@ -593,6 +594,7 @@ def _extract_harmonization_targets(metadata, start_paths=None):
 ### `HarmonizationTargetExtractor`
 
 Role: extract normalized metadata edit targets from dictionaries and lists.
+Location: `ontology_harmonizer/harmonization_target_extractor.py`.
 
 ```python
 class HarmonizationTargetExtractor:

@@ -12,6 +12,9 @@ from agentic_curator.curators.ontology_harmonizer import (
     OntologyHarmonizer as SubpackageOntologyHarmonizer,
     Owl2jsonParseError,
 )
+from agentic_curator.curators.ontology_harmonizer.harmonization_target_extractor import (
+    HarmonizationTargetExtractor as DirectHarmonizationTargetExtractor,
+)
 
 
 DEFAULT_ONTOLOGY_FRAMEWORKS = {
@@ -128,6 +131,14 @@ def test_ontostore_can_be_imported_from_subpackage() -> None:
 
 def test_harmonization_target_extractor_can_be_imported_from_subpackage() -> None:
     assert HarmonizationTargetExtractor.__name__ == "HarmonizationTargetExtractor"
+
+
+def test_harmonization_target_extractor_can_be_imported_from_module() -> None:
+    assert DirectHarmonizationTargetExtractor is HarmonizationTargetExtractor
+
+
+def test_harmonizer_uses_harmonization_target_extractor() -> None:
+    assert isinstance(OntologyHarmonizer().target_extractor, HarmonizationTargetExtractor)
 
 
 def test_ontostore_initializes_with_default_frameworks(tmp_path: Path) -> None:

@@ -531,8 +531,9 @@ class OntologyHarmonizer:
         }
 ```
 
-Target extraction is handled by `HarmonizationTargetExtractor`; the harmonizer
-keeps a private delegation wrapper for future harmonization work:
+Target extraction is handled by
+`ontology_harmonizer.harmonization_target_extractor.HarmonizationTargetExtractor`;
+the harmonizer keeps a private delegation wrapper for future harmonization work:
 
 ```python
 class HarmonizationTargetExtractor:

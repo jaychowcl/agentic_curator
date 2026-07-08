@@ -1,7 +1,7 @@
-from agentic_curator.curators.ontology_harmonizer.harmonizer import (
+from agentic_curator.curators.ontology_harmonizer.harmonization_target_extractor import (
     HarmonizationTargetExtractor,
-    OntologyHarmonizer,
 )
+from agentic_curator.curators.ontology_harmonizer.harmonizer import OntologyHarmonizer
 from agentic_curator.curators.ontology_harmonizer.ontology_store import OntoStore
 from agentic_curator.curators.ontology_harmonizer.owl2json import (
     Owl2json,
