@@ -31,6 +31,7 @@ src/agentic_curator/
       __init__.py
       harmonizer.py
       ontology_store.py
+      owl2json.py
     thematic_reviewer/
       __init__.py
       reviewer.py
@@ -47,6 +48,7 @@ tests/
   test_cli_thematic_reviewer.py
   test_curator_llm_wrappers.py
   test_ontology_harmonizer.py
+  test_owl2json.py
   test_thematic_reviewer.py
 ```
 
@@ -61,7 +63,7 @@ The package uses a `src/` layout with setuptools:
 - project name: `agentic-curator`
 - import package: `agentic_curator`
 - Python requirement: `>=3.10`
-- runtime dependencies: `anthropic[vertex]>=0.107,<1`, `google-genai>=1.72,<2`, and `requests>=2,<3`
+- runtime dependencies: `anthropic[vertex]>=0.107,<1`, `google-genai>=1.72,<2`, `rdflib>=7,<8`, and `requests>=2,<3`
 - dev extra: `pytest>=8`
 - console script: `cli_thematic_reviewer = "agentic_curator.cli.cli_thematic_reviewer:main"`
 - package data: `agentic_curator/curators/*/prompts/*.md`
@@ -128,9 +130,11 @@ when no framework object is supplied. A per-call `ontology_frameworks` argument
 can override the constructor value for future harmonization behavior. The
 effective ontology framework object is accepted but not used yet.
 
-`OntoStore` is exported from `agentic_curator.curators.ontology_harmonizer`.
-It stores ontology framework URL config, downloads named frameworks, and is
-reserved for future parsing and serving methods.
+`OntoStore`, `Owl2json`, and `Owl2jsonParseError` are exported from
+`agentic_curator.curators.ontology_harmonizer`. `OntoStore` stores ontology
+framework URL config, downloads named frameworks, and is reserved for future
+parsing and serving methods. `Owl2json` parses RDF/XML `.owl` files into a
+term-centric JSON dictionary.
 
 Framework config uses a nested dictionary:
 
@@ -176,6 +180,49 @@ Downloaded files are saved under
 the URL basename. That directory is ignored by git. Existing files are skipped
 and returned without another network call. Unknown framework names raise
 `KeyError`; missing or invalid URLs raise `ValueError`.
+
+`Owl2json(owl_path)` accepts a local `.owl` path and uses RDFLib to parse it as
+RDF/XML. `parse()` returns:
+
+```python
+{
+    "ontology": {
+        "iri": "...",
+        "version_iri": "...",
+        "title": "...",
+        "description": "...",
+        "version": "...",
+        "license": "...",
+    },
+    "terms": [
+        {
+            "iri": "http://purl.obolibrary.org/obo/CHEBI_100",
+            "accession": "CHEBI:100",
+            "title": "...",
+            "description": "...",
+            "parents": ["CHEBI:16114"],
+            "parent_iris": ["http://purl.obolibrary.org/obo/CHEBI_16114"],
+            "synonyms": {"exact": [], "related": [], "broad": [], "narrow": []},
+            "xrefs": [],
+            "subsets": [],
+            "deprecated": False,
+            "replaced_by": None,
+            "properties": {},
+        }
+    ],
+}
+```
+
+Top-level terms are URI-backed `owl:Class` subjects; blank-node class
+expressions are ignored as entries. Labels come from `rdfs:label`, descriptions
+from `obo:IAO_0000115`, accessions from `oboInOwl:id` with an OBO IRI fallback,
+parents from URI-valued `rdfs:subClassOf`, synonyms and xrefs from common
+`oboInOwl` predicates, deprecation from `owl:deprecated`, and replacements from
+`obo:IAO_0100001`. Unmapped literal annotations are preserved in `properties`
+by predicate IRI. `write_json(output_path)` writes deterministic pretty JSON and
+returns the output path. HTML-like files, such as a bad `.owl` download that
+starts with `<!DOCTYPE html>` or `<html`, and RDFLib parse failures raise
+`Owl2jsonParseError`.
 
 The harmonizer keeps private target extraction helpers for future metadata edit
 planning. They are not returned by `harmonize()`. The developer-configurable
@@ -596,6 +643,41 @@ External API call:
 
 - `requests.get(url, timeout=30)`
 
+### `Owl2json`
+
+Role: RDF/XML OWL to normalized term JSON converter.
+
+```python
+class Owl2json:
+    def __init__(owl_path):
+        self.owl_path = Path(owl_path)
+
+    def parse():
+        self._validate_rdf_xml_candidate()
+        graph = self._parse_graph()
+        return {
+            "ontology": self._extract_ontology_metadata(graph),
+            "terms": self._extract_terms(graph),
+        }
+
+    def write_json(output_path):
+        output_path.write_text(json.dumps(self.parse(), indent=2) + "\n")
+        return output_path
+```
+
+Internal behavior:
+
+- `_validate_rdf_xml_candidate()`: reads the first bytes and rejects HTML
+  content before invoking RDFLib.
+- `_parse_graph()`: calls `rdflib.Graph().parse(path, format="xml")` and wraps
+  parser exceptions in `Owl2jsonParseError`.
+- `_extract_ontology_metadata(graph)`: reads the `owl:Ontology` subject and
+  common title, description, version, version IRI, and license predicates.
+- `_extract_terms(graph)`: sorts URI-backed `owl:Class` subjects and emits one
+  normalized term dictionary per class.
+- `_unmapped_literal_properties(...)`: preserves ontology-specific literal
+  annotations that are not part of the normalized fields.
+
 ### `LLM`
 
 Role: platform routing facade for curator generation calls.
@@ -981,6 +1063,9 @@ Test coverage includes:
   construction, schema construction, and two-call ordering
 - ontology harmonizer imports, root exports, metadata-only return behavior, and
   `OntoStore` defaults/overrides
+- Owl2json imports, ontology metadata extraction, normalized term JSON,
+  accession fallback, deprecated/replaced terms, HTML rejection, and JSON file
+  writing
 - CLI direct inputs, UTF-8 file inputs, file precedence, stdout output, and
   `--out` writing
 - provider facade selection, Claude model routing, request construction, config
