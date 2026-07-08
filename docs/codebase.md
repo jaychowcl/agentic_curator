@@ -165,10 +165,12 @@ Most default `url` values use OLS4 `versionIri` values; EFO and UBERON use
 stable current URLs. `OntoStore.add_url(name, url, version=None)` adds or replaces
 one framework URL with optional version metadata, and
 `OntoStore.add_urls(ontology_frameworks)` merges a framework dictionary into
-the store, including any nested `version` fields. `OntoStore.get(name)` is the
-future ontology-serving entrypoint; for now, it returns the local `Path` when
-the ontology is already downloaded, otherwise downloads it and returns the
-downloaded path placeholder.
+the store, including any nested `version` fields. `OntoStore.get(name,
+force=False)` is the ontology-serving entrypoint. It returns a parsed JSON
+`Path` under `storage_dir / "jsons"`, reusing existing JSON unless
+`force=True`. When the JSON is missing, it parses an existing local `.owl` or
+downloads the `.owl` first. With `force=True`, it redownloads the `.owl` and
+overwrites the JSON.
 `OntoStore.download(name)` looks up
 `self.ontology_frameworks[name]["url"]`, downloads only that named framework
 with `requests.get(url, timeout=30)`, calls `raise_for_status()`, and returns
@@ -177,8 +179,10 @@ the saved `Path`. Successful downloads and existing-file hits are recorded in
 
 Downloaded files are saved under
 `src/agentic_curator/curators/ontology_harmonizer/ontology_frameworks/` using
-the URL basename. That directory is ignored by git. Existing files are skipped
-and returned without another network call. Unknown framework names raise
+the URL basename. Parsed JSON files are saved under the sibling `jsons/`
+directory within `storage_dir`. The default storage directory is ignored by
+git. Existing downloaded files are skipped by `download()` and existing JSON is
+skipped by `get()` unless `force=True`. Unknown framework names raise
 `KeyError`; missing or invalid URLs raise `ValueError`.
 
 `Owl2json(owl_path)` accepts a local `.owl` path and uses RDFLib to parse it as
@@ -605,14 +609,21 @@ class OntoStore:
 ```
 
 ```python
-def get(name):
-    target = self._target_path(name)
-    if target.exists():
-        self.downloaded_paths[name] = target
-        return target
+def get(name, force=False):
+    owl_path = self._target_path(name)
+    json_path = self._json_target_path(owl_path)
+    if json_path.exists() and not force:
+        return json_path
 
-    # Placeholder for future ontology parsing and serving.
-    return self.download(name)
+    if force:
+        self._download_to_path(name, owl_path)
+    elif owl_path.exists():
+        self.downloaded_paths[name] = owl_path
+    else:
+        owl_path = self.download(name)
+
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    return Owl2json(owl_path).write_json(json_path)
 
 def download(name):
     target = self._target_path(name)
@@ -620,6 +631,9 @@ def download(name):
         self.downloaded_paths[name] = target
         return target
 
+    return self._download_to_path(name, target)
+
+def _download_to_path(name, target):
     self.storage_dir.mkdir(parents=True, exist_ok=True)
     url = self._framework_url(name)
     response = requests.get(url, timeout=30)
@@ -631,17 +645,26 @@ def download(name):
 def _target_path(name):
     url = self._framework_url(name)
     return self.storage_dir / self._filename_from_url(name=name, url=url)
+
+def _json_target_path(owl_path):
+    return self.storage_dir / "jsons" / f"{owl_path.stem}.json"
 ```
 
 Internal calls from `get()`:
 
 - `_target_path(name)`: computes the local path for the configured ontology.
-- `download(name)`: downloads and records `downloaded_paths[name]` only when
-  the file is missing.
+- `_json_target_path(owl_path)`: computes the parsed JSON path.
+- `download(name)`: downloads and records `downloaded_paths[name]` when the
+  `.owl` file is missing.
+- `_download_to_path(name, owl_path)`: redownloads and overwrites the `.owl`
+  when `force=True`.
+- `Owl2json(owl_path).write_json(json_path)`: parses the `.owl` into JSON.
 
 Internal calls from `download()`:
 
 - `_target_path(name)`: computes the local path for the configured ontology.
+- `_download_to_path(name, target)`: writes the response bytes and records
+  `downloaded_paths[name]`.
 - `_framework_url(name)`: retrieves and validates `ontology_frameworks[name]["url"]`.
 - `_filename_from_url(name=name, url=url)`: derives a non-empty basename from
   the URL path.

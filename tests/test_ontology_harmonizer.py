@@ -8,6 +8,7 @@ from agentic_curator.curators import OntologyHarmonizer
 from agentic_curator.curators.ontology_harmonizer import (
     OntoStore,
     OntologyHarmonizer as SubpackageOntologyHarmonizer,
+    Owl2jsonParseError,
 )
 
 
@@ -89,6 +90,26 @@ class FakeResponse:
     def raise_for_status(self) -> None:
         if self.error is not None:
             raise self.error
+
+
+def ontology_bytes(*, title: str = "Cell Ontology", label: str = "cell") -> bytes:
+    return f"""<?xml version="1.0"?>
+<rdf:RDF xmlns="http://purl.obolibrary.org/obo/cl.owl#"
+     xmlns:dc="http://purl.org/dc/elements/1.1/"
+     xmlns:obo="http://purl.obolibrary.org/obo/"
+     xmlns:owl="http://www.w3.org/2002/07/owl#"
+     xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+     xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+     xmlns:oboInOwl="http://www.geneontology.org/formats/oboInOwl#">
+    <owl:Ontology rdf:about="http://purl.obolibrary.org/obo/cl.owl">
+        <dc:title>{title}</dc:title>
+    </owl:Ontology>
+    <owl:Class rdf:about="http://purl.obolibrary.org/obo/CL_0000000">
+        <oboInOwl:id>CL:0000000</oboInOwl:id>
+        <rdfs:label>{label}</rdfs:label>
+    </owl:Class>
+</rdf:RDF>
+""".encode("utf-8")
 
 
 def test_ontology_harmonizer_can_be_imported_from_subpackage() -> None:
@@ -345,7 +366,7 @@ def test_get_downloads_missing_ontology_and_returns_path(
 
     def fake_get(url, *, timeout):
         calls.append({"url": url, "timeout": timeout})
-        return FakeResponse(content=b"cl ontology")
+        return FakeResponse(content=ontology_bytes())
 
     monkeypatch.setattr(ontology_store.requests, "get", fake_get)
     store = OntoStore(
@@ -355,15 +376,16 @@ def test_get_downloads_missing_ontology_and_returns_path(
 
     result = store.get("CL")
 
-    assert result == tmp_path / "cl.owl"
-    assert result.read_bytes() == b"cl ontology"
+    assert result == tmp_path / "jsons" / "cl.json"
+    assert (tmp_path / "cl.owl").read_bytes() == ontology_bytes()
+    assert '"CL:0000000"' in result.read_text(encoding="utf-8")
     assert store.downloaded_paths == {"CL": tmp_path / "cl.owl"}
     assert calls == [{"url": "https://example.org/cl.owl", "timeout": 30}]
 
 
 def test_get_uses_existing_downloaded_file(monkeypatch, tmp_path: Path) -> None:
     existing = tmp_path / "cl.owl"
-    existing.write_bytes(b"existing ontology")
+    existing.write_bytes(ontology_bytes())
 
     def fake_get(url, *, timeout):
         raise AssertionError("requests.get should not be called")
@@ -376,14 +398,18 @@ def test_get_uses_existing_downloaded_file(monkeypatch, tmp_path: Path) -> None:
 
     result = store.get("CL")
 
-    assert result == existing
-    assert existing.read_bytes() == b"existing ontology"
+    assert result == tmp_path / "jsons" / "cl.json"
+    assert existing.read_bytes() == ontology_bytes()
+    assert '"CL:0000000"' in result.read_text(encoding="utf-8")
     assert store.downloaded_paths == {"CL": existing}
 
 
-def test_get_returns_existing_file_without_calling_download(tmp_path: Path) -> None:
+def test_get_returns_existing_json_without_calling_download(tmp_path: Path) -> None:
     existing = tmp_path / "cl.owl"
-    existing.write_bytes(b"existing ontology")
+    existing.write_bytes(b"invalid existing ontology")
+    existing_json = tmp_path / "jsons" / "cl.json"
+    existing_json.parent.mkdir(parents=True)
+    existing_json.write_text('{"cached": true}\n', encoding="utf-8")
 
     class DownloadFailingStore(OntoStore):
         def download(self, name: str) -> Path:
@@ -396,9 +422,39 @@ def test_get_returns_existing_file_without_calling_download(tmp_path: Path) -> N
 
     result = store.get("CL")
 
-    assert result == existing
-    assert existing.read_bytes() == b"existing ontology"
-    assert store.downloaded_paths == {"CL": existing}
+    assert result == existing_json
+    assert result.read_text(encoding="utf-8") == '{"cached": true}\n'
+    assert store.downloaded_paths == {}
+
+
+def test_get_force_redownloads_and_reparses_existing_files(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    existing_owl = tmp_path / "cl.owl"
+    existing_owl.write_bytes(ontology_bytes(title="Old Cell Ontology", label="old cell"))
+    existing_json = tmp_path / "jsons" / "cl.json"
+    existing_json.parent.mkdir(parents=True)
+    existing_json.write_text('{"cached": true}\n', encoding="utf-8")
+    calls = []
+
+    def fake_get(url, *, timeout):
+        calls.append({"url": url, "timeout": timeout})
+        return FakeResponse(content=ontology_bytes(title="New Cell Ontology"))
+
+    monkeypatch.setattr(ontology_store.requests, "get", fake_get)
+    store = OntoStore(
+        ontology_frameworks={"CL": {"url": "https://example.org/cl.owl"}},
+        storage_dir=tmp_path,
+    )
+
+    result = store.get("CL", force=True)
+
+    assert result == existing_json
+    assert existing_owl.read_bytes() == ontology_bytes(title="New Cell Ontology")
+    assert "New Cell Ontology" in existing_json.read_text(encoding="utf-8")
+    assert store.downloaded_paths == {"CL": existing_owl}
+    assert calls == [{"url": "https://example.org/cl.owl", "timeout": 30}]
 
 
 def test_get_propagates_download_errors(monkeypatch, tmp_path: Path) -> None:
@@ -416,6 +472,26 @@ def test_get_propagates_download_errors(monkeypatch, tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="bad response"):
         store.get("CL")
     assert store.downloaded_paths == {}
+
+
+def test_get_propagates_parse_errors_for_invalid_download(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    def fake_get(url, *, timeout):
+        return FakeResponse(content=b"not rdf xml")
+
+    monkeypatch.setattr(ontology_store.requests, "get", fake_get)
+    store = OntoStore(
+        ontology_frameworks={"CL": {"url": "https://example.org/cl.owl"}},
+        storage_dir=tmp_path,
+    )
+
+    with pytest.raises(Owl2jsonParseError):
+        store.get("CL")
+    assert (tmp_path / "cl.owl").read_bytes() == b"not rdf xml"
+    assert not (tmp_path / "jsons" / "cl.json").exists()
+    assert store.downloaded_paths == {"CL": tmp_path / "cl.owl"}
 
 
 def test_harmonize_returns_metadata_only() -> None:

@@ -6,6 +6,8 @@ from urllib.parse import urlparse
 
 import requests
 
+from agentic_curator.curators.ontology_harmonizer.owl2json import Owl2json
+
 
 OntologyFrameworkConfig = dict[str, dict[str, Any]]
 
@@ -105,14 +107,21 @@ class OntoStore:
     def add_urls(self, ontology_frameworks: OntologyFrameworkConfig) -> None:
         self.ontology_frameworks.update(ontology_frameworks)
 
-    def get(self, name: str) -> Path:
-        target = self._target_path(name)
-        if target.exists():
-            self.downloaded_paths[name] = target
-            return target
+    def get(self, name: str, force: bool = False) -> Path:
+        owl_path = self._target_path(name)
+        json_path = self._json_target_path(owl_path)
+        if json_path.exists() and not force:
+            return json_path
 
-        # Placeholder for future ontology parsing and serving.
-        return self.download(name)
+        if force:
+            self._download_to_path(name, owl_path)
+        elif owl_path.exists():
+            self.downloaded_paths[name] = owl_path
+        else:
+            owl_path = self.download(name)
+
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+        return Owl2json(owl_path).write_json(json_path)
 
     def download(self, name: str) -> Path:
         target = self._target_path(name)
@@ -120,6 +129,9 @@ class OntoStore:
             self.downloaded_paths[name] = target
             return target
 
+        return self._download_to_path(name, target)
+
+    def _download_to_path(self, name: str, target: Path) -> Path:
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         url = self._framework_url(name)
         response = requests.get(url, timeout=30)
@@ -127,6 +139,9 @@ class OntoStore:
         target.write_bytes(response.content)
         self.downloaded_paths[name] = target
         return target
+
+    def _json_target_path(self, owl_path: Path) -> Path:
+        return self.storage_dir / "jsons" / f"{owl_path.stem}.json"
 
     def _target_path(self, name: str) -> Path:
         url = self._framework_url(name)

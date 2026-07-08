@@ -318,8 +318,8 @@ store = OntoStore(
     }
 )
 store.add_url("extra", "https://example.org/extra.owl", version="v2")
-path = store.get("efo")
-assert store.downloaded_paths["efo"] == path
+json_path = store.get("efo")
+owl_path = store.downloaded_paths["efo"]
 ```
 
 Default frameworks include EFO, MONDO, UBERON, HP, CL, ChEBI, PATO, OBI,
@@ -334,10 +334,11 @@ directory, records `store.downloaded_paths[name] = path`, and returns a `Path`.
 `downloaded_paths` is an in-memory `dict[str, Path]` keyed by the ontology id
 passed to `download()`.
 
-`get(name)` is the future ontology-serving entrypoint. For now, it returns the
-local `Path` if the ontology is already downloaded; otherwise it calls
-`download(name)` and returns the downloaded path as a placeholder until ontology
-parsing and serving are implemented.
+`get(name, force=False)` is the ontology-serving entrypoint. It returns a JSON
+`Path` under `storage_dir / "jsons"` after parsing the local `.owl` with
+`Owl2json`. If the JSON already exists, `get()` returns it without reparsing. If
+the `.owl` is missing, `get()` downloads it first. Use `get(name, force=True)`
+to redownload the `.owl` and overwrite the parsed JSON.
 
 ### Code flow
 
@@ -510,13 +511,18 @@ def _extract_harmonization_targets(metadata, start_paths=None):
 
 ```python
 class OntoStore:
-    def get(name):
-        target = target_path(name)
-        if target.exists():
-            downloaded_paths[name] = target
-            return target
-        # Placeholder for future ontology parsing and serving.
-        return download(name)
+    def get(name, force=False):
+        owl_path = target_path(name)
+        json_path = json_target_path(owl_path)
+        if json_path.exists() and not force:
+            return json_path
+        if force:
+            download_to_path(name, owl_path)
+        elif owl_path.exists():
+            downloaded_paths[name] = owl_path
+        else:
+            owl_path = download(name)
+        return Owl2json(owl_path).write_json(json_path)
 
     def download(name):
         target = target_path(name)
