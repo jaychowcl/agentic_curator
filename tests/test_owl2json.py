@@ -50,6 +50,10 @@ OWL_FIXTURE = """<?xml version="1.0"?>
         <rdfs:label>iri fallback term</rdfs:label>
     </owl:Class>
 
+    <owl:Class rdf:about="http://purl.obolibrary.org/obo/TEST_0002_DUPLICATE">
+        <rdfs:label>iri fallback term</rdfs:label>
+    </owl:Class>
+
     <owl:Class rdf:about="http://purl.obolibrary.org/obo/TEST_0003">
         <obo:IAO_0100001
             rdf:resource="http://purl.obolibrary.org/obo/TEST_0004"/>
@@ -78,8 +82,9 @@ def test_owl2json_extracts_ontology_metadata_and_terms(tmp_path: Path) -> None:
         "version": "2026-01-01",
         "license": "https://creativecommons.org/licenses/by/4.0/",
     }
+    assert set(result["terms"]) == {"accession", "iri", "label"}
 
-    assert result["terms"][0] == {
+    assert result["terms"]["accession"]["TEST:0001"] == {
         "iri": "http://purl.obolibrary.org/obo/TEST_0001",
         "accession": "TEST:0001",
         "title": "example term",
@@ -100,18 +105,35 @@ def test_owl2json_extracts_ontology_metadata_and_terms(tmp_path: Path) -> None:
             "http://purl.obolibrary.org/obo/TEST_annot": ["custom literal"],
         },
     }
+    assert (
+        result["terms"]["iri"]["http://purl.obolibrary.org/obo/TEST_0001"]
+        == result["terms"]["accession"]["TEST:0001"]
+    )
+    assert result["terms"]["label"]["example term"] == [
+        result["terms"]["accession"]["TEST:0001"]
+    ]
 
 
 def test_owl2json_derives_accession_from_obo_iri(tmp_path: Path) -> None:
     result = Owl2json(write_fixture(tmp_path)).parse()
 
-    assert result["terms"][1]["accession"] == "TEST:0002"
+    assert result["terms"]["accession"]["TEST:0002"]["accession"] == "TEST:0002"
+
+
+def test_owl2json_label_index_preserves_duplicate_labels(tmp_path: Path) -> None:
+    result = Owl2json(write_fixture(tmp_path)).parse()
+
+    matching_terms = result["terms"]["label"]["iri fallback term"]
+    assert [term["accession"] for term in matching_terms] == [
+        "TEST:0002",
+        "TEST:0002_DUPLICATE",
+    ]
 
 
 def test_owl2json_extracts_deprecated_and_replaced_by(tmp_path: Path) -> None:
     result = Owl2json(write_fixture(tmp_path)).parse()
 
-    obsolete = result["terms"][2]
+    obsolete = result["terms"]["accession"]["TEST:0003"]
     assert obsolete["deprecated"] is True
     assert obsolete["replaced_by"] == "TEST:0004"
 

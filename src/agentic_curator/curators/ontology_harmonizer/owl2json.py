@@ -87,13 +87,28 @@ class Owl2json:
             or self._first_value(graph, ontology, DC.license),
         }
 
-    def _extract_terms(self, graph: Graph) -> list[dict[str, Any]]:
+    def _extract_terms(self, graph: Graph) -> dict[str, Any]:
         subjects = sorted(
             subject
             for subject in graph.subjects(RDF.type, OWL.Class)
             if not isinstance(subject, BNode)
         )
-        return [self._extract_term(graph, subject) for subject in subjects]
+        terms = [self._extract_term(graph, subject) for subject in subjects]
+        by_accession = {
+            term["accession"]: term for term in terms if term["accession"] is not None
+        }
+        by_iri = {term["iri"]: term for term in terms}
+        by_label: dict[str, list[dict[str, Any]]] = {}
+        for term in terms:
+            if term["title"] is None:
+                continue
+            by_label.setdefault(term["title"], []).append(term)
+
+        return {
+            "accession": by_accession,
+            "iri": by_iri,
+            "label": by_label,
+        }
 
     def _extract_term(self, graph: Graph, subject: Identifier) -> dict[str, Any]:
         iri = str(subject)

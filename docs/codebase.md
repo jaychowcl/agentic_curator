@@ -194,22 +194,26 @@ RDF/XML. `parse()` returns:
         "version": "...",
         "license": "...",
     },
-    "terms": [
-        {
-            "iri": "http://purl.obolibrary.org/obo/CHEBI_100",
-            "accession": "CHEBI:100",
-            "title": "...",
-            "description": "...",
-            "parents": ["CHEBI:16114"],
-            "parent_iris": ["http://purl.obolibrary.org/obo/CHEBI_16114"],
-            "synonyms": {"exact": [], "related": [], "broad": [], "narrow": []},
-            "xrefs": [],
-            "subsets": [],
-            "deprecated": False,
-            "replaced_by": None,
-            "properties": {},
-        }
-    ],
+    "terms": {
+        "accession": {
+            "CHEBI:100": {
+                "iri": "http://purl.obolibrary.org/obo/CHEBI_100",
+                "accession": "CHEBI:100",
+                "title": "...",
+                "description": "...",
+                "parents": ["CHEBI:16114"],
+                "parent_iris": ["http://purl.obolibrary.org/obo/CHEBI_16114"],
+                "synonyms": {"exact": [], "related": [], "broad": [], "narrow": []},
+                "xrefs": [],
+                "subsets": [],
+                "deprecated": False,
+                "replaced_by": None,
+                "properties": {},
+            }
+        },
+        "iri": {"http://purl.obolibrary.org/obo/CHEBI_100": "..."},
+        "label": {"term label": ["..."]},
+    },
 }
 ```
 
@@ -218,11 +222,14 @@ expressions are ignored as entries. Labels come from `rdfs:label`, descriptions
 from `obo:IAO_0000115`, accessions from `oboInOwl:id` with an OBO IRI fallback,
 parents from URI-valued `rdfs:subClassOf`, synonyms and xrefs from common
 `oboInOwl` predicates, deprecation from `owl:deprecated`, and replacements from
-`obo:IAO_0100001`. Unmapped literal annotations are preserved in `properties`
-by predicate IRI. `write_json(output_path)` writes deterministic pretty JSON and
-returns the output path. HTML-like files, such as a bad `.owl` download that
-starts with `<!DOCTYPE html>` or `<html`, and RDFLib parse failures raise
-`Owl2jsonParseError`.
+`obo:IAO_0100001`. The `terms` object indexes the same normalized term records
+by accession, IRI, and label. Label values are lists because labels are not
+guaranteed unique. Terms without accessions or labels are omitted from those
+specific indexes but remain available by IRI. Unmapped literal annotations are
+preserved in `properties` by predicate IRI. `write_json(output_path)` writes
+deterministic pretty JSON and returns the output path. HTML-like files, such as
+a bad `.owl` download that starts with `<!DOCTYPE html>` or `<html`, and RDFLib
+parse failures raise `Owl2jsonParseError`.
 
 The harmonizer keeps private target extraction helpers for future metadata edit
 planning. They are not returned by `harmonize()`. The developer-configurable
@@ -673,8 +680,8 @@ Internal behavior:
   parser exceptions in `Owl2jsonParseError`.
 - `_extract_ontology_metadata(graph)`: reads the `owl:Ontology` subject and
   common title, description, version, version IRI, and license predicates.
-- `_extract_terms(graph)`: sorts URI-backed `owl:Class` subjects and emits one
-  normalized term dictionary per class.
+- `_extract_terms(graph)`: sorts URI-backed `owl:Class` subjects, normalizes
+  each term, and returns `accession`, `iri`, and `label` lookup dictionaries.
 - `_unmapped_literal_properties(...)`: preserves ontology-specific literal
   annotations that are not part of the normalized fields.
 
