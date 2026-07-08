@@ -318,7 +318,7 @@ store = OntoStore(
     }
 )
 store.add_url("extra", "https://example.org/extra.owl", version="v2")
-path = store.download("efo")
+path = store.get("efo")
 assert store.downloaded_paths["efo"] == path
 ```
 
@@ -333,6 +333,10 @@ existing files, calls `requests.get(url, timeout=30)`, calls
 directory, records `store.downloaded_paths[name] = path`, and returns a `Path`.
 `downloaded_paths` is an in-memory `dict[str, Path]` keyed by the ontology id
 passed to `download()`.
+
+`get(name)` is the future ontology-serving entrypoint. For now, it ensures the
+ontology exists locally by calling `download(name)`, then returns the local
+`Path` as a placeholder until ontology parsing and serving are implemented.
 
 ### Code flow
 
@@ -505,6 +509,11 @@ def _extract_harmonization_targets(metadata, start_paths=None):
 
 ```python
 class OntoStore:
+    def get(name):
+        path = download(name)
+        # Placeholder for future ontology parsing and serving.
+        return path
+
     def download(name):
         url = _framework_url(name)
         target = storage_dir / filename_from_url(url)

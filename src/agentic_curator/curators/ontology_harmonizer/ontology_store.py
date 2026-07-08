@@ -105,6 +105,11 @@ class OntoStore:
     def add_urls(self, ontology_frameworks: OntologyFrameworkConfig) -> None:
         self.ontology_frameworks.update(ontology_frameworks)
 
+    def get(self, name: str) -> Path:
+        path = self.download(name)
+        # Placeholder for future ontology parsing and serving.
+        return path
+
     def download(self, name: str) -> Path:
         url = self._framework_url(name)
         target = self.storage_dir / self._filename_from_url(name=name, url=url)

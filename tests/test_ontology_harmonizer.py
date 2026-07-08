@@ -339,6 +339,67 @@ def test_download_propagates_http_errors(monkeypatch, tmp_path: Path) -> None:
     assert store.downloaded_paths == {}
 
 
+def test_get_downloads_missing_ontology_and_returns_path(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls = []
+
+    def fake_get(url, *, timeout):
+        calls.append({"url": url, "timeout": timeout})
+        return FakeResponse(content=b"cl ontology")
+
+    monkeypatch.setattr(ontology_store.requests, "get", fake_get)
+    store = OntoStore(
+        ontology_frameworks={"CL": {"url": "https://example.org/cl.owl"}},
+        storage_dir=tmp_path,
+    )
+
+    result = store.get("CL")
+
+    assert result == tmp_path / "cl.owl"
+    assert result.read_bytes() == b"cl ontology"
+    assert store.downloaded_paths == {"CL": tmp_path / "cl.owl"}
+    assert calls == [{"url": "https://example.org/cl.owl", "timeout": 30}]
+
+
+def test_get_uses_existing_downloaded_file(monkeypatch, tmp_path: Path) -> None:
+    existing = tmp_path / "cl.owl"
+    existing.write_bytes(b"existing ontology")
+
+    def fake_get(url, *, timeout):
+        raise AssertionError("requests.get should not be called")
+
+    monkeypatch.setattr(ontology_store.requests, "get", fake_get)
+    store = OntoStore(
+        ontology_frameworks={"CL": {"url": "https://example.org/cl.owl"}},
+        storage_dir=tmp_path,
+    )
+
+    result = store.get("CL")
+
+    assert result == existing
+    assert existing.read_bytes() == b"existing ontology"
+    assert store.downloaded_paths == {"CL": existing}
+
+
+def test_get_propagates_download_errors(monkeypatch, tmp_path: Path) -> None:
+    error = RuntimeError("bad response")
+
+    def fake_get(url, *, timeout):
+        return FakeResponse(error=error)
+
+    monkeypatch.setattr(ontology_store.requests, "get", fake_get)
+    store = OntoStore(
+        ontology_frameworks={"CL": {"url": "https://example.org/cl.owl"}},
+        storage_dir=tmp_path,
+    )
+
+    with pytest.raises(RuntimeError, match="bad response"):
+        store.get("CL")
+    assert store.downloaded_paths == {}
+
+
 def test_harmonize_returns_metadata_only() -> None:
     metadata = {
         "organism": [{"taxid": "9606", "value": "Homo sapiens"}],

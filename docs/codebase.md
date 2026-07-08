@@ -161,7 +161,10 @@ Most default `url` values use OLS4 `versionIri` values; UBERON uses the stable
 latest PURL. `OntoStore.add_url(name, url, version=None)` adds or replaces
 one framework URL with optional version metadata, and
 `OntoStore.add_urls(ontology_frameworks)` merges a framework dictionary into
-the store, including any nested `version` fields. `OntoStore.download(name)` looks up
+the store, including any nested `version` fields. `OntoStore.get(name)` is the
+future ontology-serving entrypoint; for now, it ensures the ontology exists
+locally via `download(name)` and returns the local `Path` placeholder.
+`OntoStore.download(name)` looks up
 `self.ontology_frameworks[name]["url"]`, downloads only that named framework
 with `requests.get(url, timeout=30)`, calls `raise_for_status()`, and returns
 the saved `Path`. Successful downloads and existing-file hits are recorded in
@@ -547,6 +550,11 @@ class OntoStore:
 ```
 
 ```python
+def get(name):
+    path = self.download(name)
+    # Placeholder for future ontology parsing and serving.
+    return path
+
 def download(name):
     url = self._framework_url(name)
     target = self.storage_dir / self._filename_from_url(name=name, url=url)
@@ -561,6 +569,11 @@ def download(name):
     self.downloaded_paths[name] = target
     return target
 ```
+
+Internal calls from `get()`:
+
+- `download(name)`: ensures the ontology file exists locally and records
+  `downloaded_paths[name]`.
 
 Internal calls from `download()`:
 
