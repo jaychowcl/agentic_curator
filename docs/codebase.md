@@ -113,8 +113,8 @@ integration yet.
 
 Public methods:
 
-- `harmonize_miniml_json(publication_context=None, miniml_json=None, ontostore=None, target_paths=None) -> dict`
-- `harmonize(publication_context=None, harmonization_targets=None, ontostore=None, target_paths=None) -> dict`
+- `harmonize_miniml_json(publication_context=None, miniml_json=None, ontostore=None, target_paths=None, strategy="identity") -> dict`
+- `harmonize(publication_context=None, harmonization_targets=None, target=None, strategy="identity", ontostore=None, target_paths=None) -> dict`
 
 `harmonize_miniml_json(...)` extracts targets from MINiML-style JSON with
 `HarmonizationTargetExtractor`, then calls `harmonize(...)`. When `target_paths`
@@ -129,15 +129,18 @@ The lower-level `harmonize(...)` currently returns only a target wrapper:
 ```python
 {
     "publication_context": publication_context,
-    "harmonization_targets": harmonization_targets or [],
+    "harmonization_targets": normalized_targets,
+    "strategy": "identity",
     "target_paths": target_paths,
 }
 ```
 
 `publication_context` may be a string or `None`, `miniml_json` may be a
 dictionary, list, or `None`, `harmonization_targets` may be a list of extracted
-target dictionaries or `None`, and a per-call `ontostore` override must be an
-`OntoStore`.
+target dictionaries, a single target dictionary, or `None`, and `target` may be
+a single target dictionary. Passing both `target` and `harmonization_targets`
+raises `ValueError`. Supported strategies are `identity` and `noop`; `noop` is
+normalized to `identity`. A per-call `ontostore` override must be an `OntoStore`.
 
 `OntologyHarmonizer(ontology_frameworks=None)` creates a default `OntoStore`
 when no framework object is supplied. A per-call `ontostore` can override the
@@ -398,9 +401,9 @@ Major orchestration flow:
 The current code does not parse model JSON responses, configure logging, or wrap
 provider exceptions. Those responsibilities stay with callers.
 
-`OntologyHarmonizer.harmonize(...)` is separate from this LLM flow. It returns a
-target wrapper directly and does not call `LLM`, provider adapters, or prompt
-files.
+`OntologyHarmonizer.harmonize(...)` is separate from this LLM flow. It normalizes
+single-target input, validates the selected strategy, returns a target wrapper
+directly, and does not call `LLM`, provider adapters, or prompt files.
 
 <a id="method-orchestrator-pseudocode"></a>
 ## Method Orchestrator Pseudocode
@@ -545,14 +548,22 @@ class OntologyHarmonizer:
     def harmonize(
         publication_context=None,
         harmonization_targets=None,
+        target=None,
+        strategy="identity",
         ontostore=None,
         target_paths=None,
     ):
         effective_ontostore = self._effective_ontostore(ontostore)
         # effective_ontostore is validated but not used yet.
+        strategy = self._normalize_strategy(strategy)
+        targets = self._normalize_targets(
+            harmonization_targets=harmonization_targets,
+            target=target,
+        )
         return {
             "publication_context": publication_context,
-            "harmonization_targets": harmonization_targets or [],
+            "harmonization_targets": targets,
+            "strategy": strategy,
             "target_paths": target_paths,
         }
 
@@ -561,6 +572,7 @@ class OntologyHarmonizer:
         miniml_json=None,
         ontostore=None,
         target_paths=None,
+        strategy="identity",
     ):
         should_dedupe_targets = target_paths is None
         effective_target_paths = target_paths
@@ -579,6 +591,8 @@ class OntologyHarmonizer:
         return self.harmonize(
             publication_context=publication_context,
             harmonization_targets=harmonization_targets,
+            target=None,
+            strategy=strategy,
             ontostore=ontostore,
             target_paths=effective_target_paths,
         )

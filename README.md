@@ -128,6 +128,7 @@ Ontology harmonizer output currently wraps extracted harmonization targets:
 {
     "publication_context": publication_context,
     "harmonization_targets": harmonization_targets,
+    "strategy": "identity",
     "target_paths": target_paths,
 }
 ```
@@ -312,20 +313,26 @@ print(result)
 ```
 
 `harmonize_miniml_json(publication_context=None, miniml_json=None,
-ontostore=None, target_paths=None)` extracts targets from MINiML-style JSON,
-then calls the lower-level target-based `harmonize(...)`. When `target_paths`
-is omitted it builds paths for every `sample[*].channel[*]`, extracts
-meaningful sample metadata (`source`, `molecule`, `organism`, and
-`characteristics`), and dedupes by `pre_hz_field:pre_hz_label` while
-preserving every source path only in an `occurrences` list.
+ontostore=None, target_paths=None, strategy="identity")` extracts targets from
+MINiML-style JSON, then calls the lower-level target-based `harmonize(...)`.
+When `target_paths` is omitted it builds paths for every
+`sample[*].channel[*]`, extracts meaningful sample metadata (`source`,
+`molecule`, `organism`, and `characteristics`), and dedupes by
+`pre_hz_field:pre_hz_label` while preserving every source path only in an
+`occurrences` list.
 
-`harmonize(publication_context=None, harmonization_targets=None,
-ontostore=None, target_paths=None)` currently returns:
+`harmonize(publication_context=None, harmonization_targets=None, target=None,
+strategy="identity", ontostore=None, target_paths=None)` accepts either a list
+of targets, a single target dictionary via `target=`, or a single dictionary in
+`harmonization_targets`. Passing both `target` and `harmonization_targets`
+raises `ValueError`. Supported strategies are `identity` and `noop`; `noop` is
+normalized to `identity`. It currently returns:
 
 ```python
 {
     "publication_context": publication_context,
-    "harmonization_targets": harmonization_targets or [],
+    "harmonization_targets": normalized_targets,
+    "strategy": "identity",
     "target_paths": target_paths,
 }
 ```
@@ -515,18 +522,40 @@ def main(argv=None):
 
 ```python
 class OntologyHarmonizer:
-    def harmonize_miniml_json(publication_context, miniml_json, ontostore, target_paths):
+    def harmonize_miniml_json(
+        publication_context,
+        miniml_json,
+        ontostore,
+        target_paths,
+        strategy="identity",
+    ):
         effective_paths = target_paths or target_extractor.build_miniml_sample_target_paths(miniml_json)
         targets = self.target_extractor.extract(miniml_json, start_paths=effective_paths)
         if target_paths is None:
             targets = self.target_extractor.dedupe_targets(targets)
-        return self.harmonize(publication_context, targets, ontostore, effective_paths)
+        return self.harmonize(
+            publication_context,
+            harmonization_targets=targets,
+            strategy=strategy,
+            ontostore=ontostore,
+            target_paths=effective_paths,
+        )
 
-    def harmonize(publication_context, harmonization_targets, ontostore, target_paths):
+    def harmonize(
+        publication_context,
+        harmonization_targets=None,
+        target=None,
+        strategy="identity",
+        ontostore=None,
+        target_paths=None,
+    ):
         effective_store = ontostore or self.ontology_frameworks
+        targets = normalize_target_inputs(harmonization_targets, target)
+        strategy = normalize_strategy(strategy)
         return {
             "publication_context": publication_context,
-            "harmonization_targets": harmonization_targets or [],
+            "harmonization_targets": targets,
+            "strategy": strategy,
             "target_paths": target_paths,
         }
 ```

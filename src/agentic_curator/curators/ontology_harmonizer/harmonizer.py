@@ -16,6 +16,10 @@ class OntologyHarmonizer:
     """Curator for harmonizing publication metadata against ontologies."""
 
     DEFAULT_TARGET_PATHS = HarmonizationTargetExtractor.DEFAULT_TARGET_PATHS
+    STRATEGY_ALIASES = {
+        "identity": "identity",
+        "noop": "identity",
+    }
 
     def __init__(self, ontology_frameworks: OntologyFrameworks | None = None) -> None:
         self.ontology_frameworks = (
@@ -26,18 +30,23 @@ class OntologyHarmonizer:
     def harmonize(
         self,
         publication_context: str | None = None,
-        harmonization_targets: list[dict[str, Any]] | None = None,
+        harmonization_targets: dict[str, Any] | list[dict[str, Any]] | None = None,
+        target: dict[str, Any] | None = None,
+        strategy: str = "identity",
         ontostore: OntoStore | None = None,
         target_paths: list[StartPathSpec] | None = None,
     ) -> dict[str, Any]:
         effective_ontostore = self._effective_ontostore(ontostore)
         _ = effective_ontostore
+        normalized_strategy = self._normalize_strategy(strategy)
 
         return {
             "publication_context": publication_context,
-            "harmonization_targets": (
-                [] if harmonization_targets is None else harmonization_targets
+            "harmonization_targets": self._normalize_targets(
+                harmonization_targets=harmonization_targets,
+                target=target,
             ),
+            "strategy": normalized_strategy,
             "target_paths": target_paths,
         }
 
@@ -47,6 +56,7 @@ class OntologyHarmonizer:
         miniml_json: dict[str, Any] | list[Any] | None = None,
         ontostore: OntoStore | None = None,
         target_paths: list[StartPathSpec] | None = None,
+        strategy: str = "identity",
     ) -> dict[str, Any]:
         should_dedupe_targets = target_paths is None
         effective_target_paths = target_paths
@@ -65,9 +75,41 @@ class OntologyHarmonizer:
         return self.harmonize(
             publication_context=publication_context,
             harmonization_targets=harmonization_targets,
+            target=None,
+            strategy=strategy,
             ontostore=ontostore,
             target_paths=effective_target_paths,
         )
+
+    def _normalize_targets(
+        self,
+        *,
+        harmonization_targets: dict[str, Any] | list[dict[str, Any]] | None = None,
+        target: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        if target is not None and harmonization_targets is not None:
+            raise ValueError("Provide either target or harmonization_targets, not both.")
+
+        if target is not None:
+            return [target]
+
+        if harmonization_targets is None:
+            return []
+
+        if isinstance(harmonization_targets, dict):
+            return [harmonization_targets]
+
+        return harmonization_targets
+
+    def _normalize_strategy(self, strategy: str) -> str:
+        normalized = self.STRATEGY_ALIASES.get(strategy)
+        if normalized is None:
+            supported = ", ".join(sorted(self.STRATEGY_ALIASES))
+            raise ValueError(
+                f"Unknown harmonization strategy {strategy!r}. "
+                f"Supported strategies: {supported}."
+            )
+        return normalized
 
     def _effective_ontostore(self, ontostore: OntoStore | None = None) -> OntoStore:
         effective_ontostore = (

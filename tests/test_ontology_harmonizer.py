@@ -570,8 +570,62 @@ def test_harmonize_returns_targets_wrapper() -> None:
     assert result == {
         "publication_context": "Full publication context",
         "harmonization_targets": harmonization_targets,
+        "strategy": "identity",
         "target_paths": ["/sample"],
     }
+
+
+def test_harmonize_accepts_single_target() -> None:
+    target = {
+        "id": "target-0",
+        "source": "metadata",
+        "pre_hz_field": "tissue",
+        "pre_hz_label": "lung",
+    }
+
+    result = OntologyHarmonizer().harmonize(target=target)
+
+    assert result == {
+        "publication_context": None,
+        "harmonization_targets": [target],
+        "strategy": "identity",
+        "target_paths": None,
+    }
+
+
+def test_harmonize_accepts_dict_harmonization_target() -> None:
+    target = {
+        "id": "target-0",
+        "source": "metadata",
+        "pre_hz_field": "organism",
+        "pre_hz_label": "Homo sapiens",
+    }
+
+    result = OntologyHarmonizer().harmonize(harmonization_targets=target)
+
+    assert result["harmonization_targets"] == [target]
+
+
+def test_harmonize_rejects_target_and_targets_together() -> None:
+    with pytest.raises(ValueError, match="target"):
+        OntologyHarmonizer().harmonize(
+            target={"id": "target-0"},
+            harmonization_targets=[{"id": "target-1"}],
+        )
+
+
+def test_harmonize_accepts_noop_strategy_alias() -> None:
+    result = OntologyHarmonizer().harmonize(
+        harmonization_targets=[],
+        strategy="noop",
+    )
+
+    assert result["strategy"] == "identity"
+
+
+def test_harmonize_rejects_unknown_strategy() -> None:
+    with pytest.raises(ValueError, match="strategy"):
+        OntologyHarmonizer().harmonize(strategy="exact_match")
 
 
 def test_harmonize_signature_excludes_old_metadata_api() -> None:
@@ -589,6 +643,7 @@ def test_harmonize_defaults_to_empty_targets() -> None:
     assert result == {
         "publication_context": None,
         "harmonization_targets": [],
+        "strategy": "identity",
         "target_paths": None,
     }
 
@@ -624,6 +679,7 @@ def test_harmonize_accepts_ontostore_override() -> None:
     assert result == {
         "publication_context": None,
         "harmonization_targets": [],
+        "strategy": "identity",
         "target_paths": None,
     }
 
@@ -842,6 +898,7 @@ def test_harmonize_miniml_json_accepts_explicit_target_paths() -> None:
                 "hz_label": "lung",
             }
         ],
+        "strategy": "identity",
         "target_paths": ["/sample"],
     }
 
@@ -854,6 +911,8 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
             self,
             publication_context=None,
             harmonization_targets=None,
+            target=None,
+            strategy="identity",
             ontostore=None,
             target_paths=None,
         ):
@@ -861,6 +920,8 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
                 {
                     "publication_context": publication_context,
                     "harmonization_targets": harmonization_targets,
+                    "target": target,
+                    "strategy": strategy,
                     "ontostore": ontostore,
                     "target_paths": target_paths,
                 }
@@ -871,6 +932,7 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
     result = RecordingHarmonizer().harmonize_miniml_json(
         publication_context="context",
         miniml_json={"sample": {"tissue": "lung"}},
+        strategy="noop",
         ontostore=store,
         target_paths=["/sample"],
     )
@@ -892,6 +954,8 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
                     "hz_label": "lung",
                 }
             ],
+            "target": None,
+            "strategy": "noop",
             "ontostore": store,
             "target_paths": ["/sample"],
         }
@@ -1039,6 +1103,7 @@ def test_harmonize_accepts_target_paths() -> None:
     assert result == {
         "publication_context": None,
         "harmonization_targets": [],
+        "strategy": "identity",
         "target_paths": [],
     }
 
