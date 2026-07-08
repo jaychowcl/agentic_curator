@@ -264,7 +264,7 @@ The extractor still supports root-level default path specs:
 
 `HarmonizationTargetExtractor.extract(metadata, start_paths=...)` traverses
 dictionaries and lists, skips raw string metadata, skips `None`, and does not
-create targets for scalar list items without an object key. Each target
+create targets for scalar list items without an object key. Raw extracted targets
 includes:
 
 ```python
@@ -281,12 +281,35 @@ includes:
 }
 ```
 
+After `dedupe_targets(...)`, target-level paths are moved into `occurrences`:
+
+```python
+{
+    "id": "target-0",
+    "source": "metadata",
+    "pre_hz_field": "tissue",
+    "pre_hz_label": "lung",
+    "hz_field": "tissue",
+    "hz_label": "lung",
+    "occurrences": [
+        {
+            "pre_hz_field_path": "/sample/tissue",
+            "pre_hz_label_path": "/sample/tissue",
+            "parent_path": "/sample",
+            "hz_field": "tissue",
+            "hz_label": "lung",
+        }
+    ],
+}
+```
+
 `pre_hz_field_path`, `pre_hz_label_path`, and `parent_path` use JSON
 Pointer-style paths with escaped path segments (`~` becomes `~0`, `/` becomes
-`~1`). These coordinates are intended to let future harmonization results edit
-both field names and label values back into structured metadata. `hz_field` and
-`hz_label` are initialized from the extracted values until actual ontology
-harmonization is implemented.
+`~1`). Deduped targets keep these paths only inside `occurrences`. These
+coordinates are intended to let future harmonization results edit both field
+names and label values back into structured metadata. `hz_field` and `hz_label`
+are initialized from the extracted values until actual ontology harmonization is
+implemented.
 
 `HarmonizationTargetExtractor.extract(metadata, start_paths=None)` can also
 receive a list of JSON Pointer start paths or path specs. When `start_paths` is
@@ -623,10 +646,10 @@ package in a top-level list, and returns path specs for every sample channel's
 `source`, `molecule`, `organism`, and `characteristics`. It intentionally skips
 channel `position` and long protocol fields.
 
-`dedupe_targets(...)` preserves first-seen target order, keeps the first target's
-singular path fields for compatibility, adds `occurrences` with every matched
-path/value location, and reassigns stable sequential ids. The dedupe identity is
-the exact `pre_hz_field:pre_hz_label` pair.
+`dedupe_targets(...)` preserves first-seen target order, removes top-level path
+fields, adds `occurrences` with every matched path/value location, and reassigns
+stable sequential ids. The dedupe identity is the exact
+`pre_hz_field:pre_hz_label` pair.
 
 Internal target extraction dispatch:
 

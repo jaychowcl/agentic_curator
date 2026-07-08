@@ -699,9 +699,6 @@ def test_target_extractor_dedupes_field_label_pairs_with_occurrences() -> None:
             "source": "metadata",
             "pre_hz_field": "tissue",
             "pre_hz_label": "lung",
-            "pre_hz_field_path": "/sample/0/channel/0/characteristics/0/tag",
-            "pre_hz_label_path": "/sample/0/channel/0/characteristics/0/value",
-            "parent_path": "/sample/0/channel/0/characteristics/0",
             "hz_field": "tissue",
             "hz_label": "lung",
             "occurrences": [
@@ -726,9 +723,6 @@ def test_target_extractor_dedupes_field_label_pairs_with_occurrences() -> None:
             "source": "metadata",
             "pre_hz_field": "tissue",
             "pre_hz_label": "heart",
-            "pre_hz_field_path": "/sample/2/channel/0/characteristics/0/tag",
-            "pre_hz_label_path": "/sample/2/channel/0/characteristics/0/value",
-            "parent_path": "/sample/2/channel/0/characteristics/0",
             "hz_field": "tissue",
             "hz_label": "heart",
             "occurrences": [
@@ -751,8 +745,16 @@ def test_target_extractor_schema_excludes_old_target_keys() -> None:
 
     assert targets
     old_keys = {"field", "label", "field_path", "label_path", "key", "value"}
+    top_level_path_keys = {"pre_hz_field_path", "pre_hz_label_path", "parent_path"}
+    occurrence_path_keys = {
+        "pre_hz_field_path",
+        "pre_hz_label_path",
+        "parent_path",
+    }
     assert old_keys.isdisjoint(targets[0])
     assert old_keys.isdisjoint(targets[0]["occurrences"][0])
+    assert top_level_path_keys.isdisjoint(targets[0])
+    assert occurrence_path_keys.issubset(targets[0]["occurrences"][0])
 
 
 def test_harmonize_miniml_json_extracts_default_targets() -> None:

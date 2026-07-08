@@ -317,7 +317,7 @@ then calls the lower-level target-based `harmonize(...)`. When `target_paths`
 is omitted it builds paths for every `sample[*].channel[*]`, extracts
 meaningful sample metadata (`source`, `molecule`, `organism`, and
 `characteristics`), and dedupes by `pre_hz_field:pre_hz_label` while
-preserving every source path in an `occurrences` list.
+preserving every source path only in an `occurrences` list.
 
 `harmonize(publication_context=None, harmonization_targets=None,
 ontostore=None, target_paths=None)` currently returns:
@@ -551,7 +551,7 @@ class HarmonizationTargetExtractor:
         return targets
 
     def dedupe_targets(targets):
-        return one target per pre_hz_field:pre_hz_label with all source paths in occurrences
+        return one target per pre_hz_field:pre_hz_label with paths only in occurrences
 
 def _extract_harmonization_targets(metadata, start_paths=None):
     return self.target_extractor.extract(metadata, start_paths=start_paths)

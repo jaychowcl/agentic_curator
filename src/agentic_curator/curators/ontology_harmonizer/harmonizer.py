@@ -114,6 +114,9 @@ class HarmonizationTargetExtractor:
             deduped_target = dict(target)
             deduped_target["id"] = f"target-{len(deduped_targets)}"
             deduped_target["occurrences"] = [occurrence]
+            deduped_target.pop("pre_hz_field_path", None)
+            deduped_target.pop("pre_hz_label_path", None)
+            deduped_target.pop("parent_path", None)
             target_indexes[dedupe_key] = len(deduped_targets)
             deduped_targets.append(deduped_target)
 
