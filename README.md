@@ -1,27 +1,43 @@
 # agentic-curator
 
-LLM-assisted thematic relevance review for life science publications.
+LLM-assisted thematic relevance review and ontology metadata utilities for life science publications.
 
 ## Description
 
-`agentic-curator` reviews publication text against a thematic curation target.
-The current package provides a thematic reviewer that first extracts relevant
-evidence statements, then judges whether those evidences satisfy the theme. It
-also exposes an ontology harmonizer API for metadata harmonization work.
+`agentic-curator` helps review publication text against a thematic curation
+target. Its main reviewer extracts evidence statements from publication content,
+then judges whether those evidences satisfy the requested theme.
 
-The reviewer requests JSON-formatted model responses but returns raw generated
-text to callers. Parsing, validation, and downstream storage are left to the
-calling application.
+The package also includes ontology metadata utilities:
 
-Runtime provider support currently includes Gemini through the Google Gen AI SDK
-and Claude on Vertex AI through the Anthropic Vertex SDK.
+- `OntologyHarmonizer` is a metadata harmonization API scaffold that currently
+  returns metadata unchanged.
+- `OntoStore` stores OLS4-sourced ontology framework metadata and downloads
+  configured ontology URLs.
+- `LLM` routes generation calls to Gemini Enterprise or Claude on Vertex AI.
+
+The reviewer asks model providers for JSON-formatted responses, but returns raw
+generated text strings. Callers are responsible for JSON parsing, validation,
+storage, and error handling.
 
 ## Installation
+
+Install from the repository in editable mode:
+
+```bash
+python -m pip install -e ".[dev]"
+```
+
+For normal package use without test tools:
+
+```bash
+python -m pip install -e .
+```
 
 ### Requirements
 
 - Python `>=3.10`
-- Runtime dependencies from `pyproject.toml`:
+- Runtime dependencies:
   - `google-genai>=1.72,<2`
   - `anthropic[vertex]>=0.107,<1`
   - `requests>=2,<3`
@@ -30,13 +46,12 @@ and Claude on Vertex AI through the Anthropic Vertex SDK.
 - Provider credentials and project configuration for live Gemini or Claude
   Vertex AI calls.
 
-Install in editable mode:
-
-```bash
-python -m pip install -e ".[dev]"
-```
-
 ## Quickstart
+
+### Python
+
+Use `ThematicReviewer` for the two-step evidence and judgement workflow. See
+the [Python API guide](#python-api-guide) for all options.
 
 ```python
 from agentic_curator import ThematicReviewer
@@ -53,13 +68,10 @@ print(result["evidences"])
 print(result["judgement"])
 ```
 
-`result["evidences"]` and `result["judgement"]` are raw provider-generated text
-strings. The reviewer asks for JSON, but it does not parse or validate the JSON
-before returning it.
+### CLI
 
-## CLI
-
-Run the installed console script:
+Run the installed console script. See the [CLI guide](#cli-guide) for all
+arguments.
 
 ```bash
 cli_thematic_reviewer \
@@ -70,7 +82,178 @@ cli_thematic_reviewer \
   --out decision.json
 ```
 
-Or run the module directly:
+### Ontology Utilities
+
+Use `OntoStore` to inspect or download configured ontology frameworks. See the
+[ontology guide](#ontology-guide) for defaults and download behavior.
+
+```python
+from agentic_curator.curators.ontology_harmonizer import OntoStore
+
+store = OntoStore()
+path = store.download("efo")
+print(path)
+```
+
+### Docker
+
+This repository does not currently provide a Dockerfile or Docker Compose
+interface.
+
+### Inputs & Outputs
+
+Reviewer inputs:
+
+- `publication_text`: full text or extracted publication content.
+- `theme`: curation target or criteria.
+- `metadata`: optional string, dictionary, list, or `None`.
+- `title`: optional publication title.
+
+Reviewer output:
+
+```python
+{
+    "evidences": "raw provider-generated text",
+    "judgement": "raw provider-generated text",
+}
+```
+
+CLI output is the same reviewer result serialized as pretty-printed JSON. If
+`--out` is supplied, JSON is written to that file; otherwise it is written to
+stdout.
+
+Ontology harmonizer output currently wraps the input metadata unchanged:
+
+```python
+{"metadata": metadata}
+```
+
+## Guide
+
+### Python API Guide
+
+The main APIs are exported from both `agentic_curator` and
+`agentic_curator.curators`.
+
+```python
+from agentic_curator import OntologyHarmonizer, ThematicReviewer
+from agentic_curator.curators.ontology_harmonizer import OntoStore
+from agentic_curator.wrappers import LLM
+```
+
+#### Thematic Reviewer
+
+`ThematicReviewer(llm=None)` accepts an optional LLM-like object with a
+`generate_response(...)` method. If no object is provided, the reviewer lazily
+creates `LLM()` on the first generation call.
+
+| Method | Inputs | Output | Notes |
+| --- | --- | --- | --- |
+| `review_relevancy(publication_text=None, theme=None, metadata=None, title=None)` | Publication text, theme, metadata, title. | `{"evidences": str, "judgement": str}` | Runs evidence extraction, then final judging. |
+| `extract_evidence(publication_text=None, theme=None, metadata=None, title=None)` | Publication text, theme, metadata, title. | Raw generated text string. | Loads `evidence_extraction.md` and requests JSON with an `evidences` array. |
+| `judge_evidence(evidences, theme=None, title=None)` | Evidence text/object, theme, title. | Raw generated text string. | Loads `judge_evidence.md` and requests JSON with `judgement`, `reasoning`, and `confidence`. |
+
+Dictionary and list metadata are inserted into prompts as sorted, indented JSON.
+`None` values become empty prompt blocks.
+
+#### LLM Facade
+
+`LLM(platform="gemini_enterprise", **platform_options)` creates a provider
+facade. Supported platforms are:
+
+- `gemini_enterprise`
+- `claude_vertex`
+
+```python
+from agentic_curator.wrappers import LLM
+
+llm = LLM(
+    platform="gemini_enterprise",
+    project="my-gcp-project",
+    location="global",
+)
+
+text = llm.generate_response(
+    "Summarize this publication.",
+    model="gemini-2.5-flash",
+    config={"temperature": 0.2},
+)
+```
+
+`LLM.generate_response(prompt, model=None, config=None, tools=None,
+**extra_options)` delegates to the configured platform. If the model name starts
+with `claude-` and the current platform is not `claude_vertex`, the facade
+creates and caches a `ClaudeVertexPlatform` route using compatible platform
+options.
+
+#### Provider Adapters
+
+Gemini Enterprise:
+
+```python
+from agentic_curator.wrappers import GeminiEnterprisePlatform
+
+platform = GeminiEnterprisePlatform(
+    project="my-gcp-project",
+    location="global",
+    model="gemini-2.5-flash",
+    config={"temperature": 0.2},
+)
+text = platform.generate_response("Prompt text")
+```
+
+The Gemini adapter calls:
+
+```python
+client.models.generate_content(
+    model=effective_model,
+    contents=prompt,
+    config=generation_config,
+    tools=tools_if_any,
+    **extra_options,
+)
+```
+
+Claude Vertex:
+
+```python
+from agentic_curator.wrappers import ClaudeVertexPlatform
+
+platform = ClaudeVertexPlatform(
+    project="my-gcp-project",
+    location="global",
+    model="claude-opus-4-8",
+)
+text = platform.generate_response("Prompt text")
+```
+
+The Claude adapter calls:
+
+```python
+client.messages.create(
+    model=effective_model,
+    messages=[{"role": "user", "content": prompt}],
+    max_tokens=max_output_tokens,
+    temperature=temperature,
+    output_config=json_schema_config_if_any,
+    tools=tools_if_any,
+    **extra_options,
+)
+```
+
+Response adapters normalize provider-specific response shapes to a string. They
+look for Claude content blocks, Gemini candidate parts, `text`, `response`, and
+finally fall back to `str(response)`.
+
+### CLI Guide
+
+The console script is installed from `pyproject.toml`:
+
+```bash
+cli_thematic_reviewer --help
+```
+
+Equivalent module form:
 
 ```bash
 python -m agentic_curator.cli.cli_thematic_reviewer --help
@@ -90,46 +273,20 @@ Options:
 | `--title-file` | UTF-8 file containing the title. Overrides `--title`. |
 | `--out` | Output file for pretty-printed JSON. If omitted, JSON is written to stdout. |
 
-Logging: the CLI does not currently expose logging, verbosity, quiet, or debug
-flags. Stdout is reserved for the JSON result unless `--out` is used. Provider
-and runtime errors are not wrapped by the CLI.
+File arguments take precedence over direct string arguments. Provider and
+runtime exceptions are not wrapped by the CLI. Stdout is reserved for JSON
+unless `--out` is used.
 
-## Python API
+### Ontology Guide
 
-The main API is exported from both `agentic_curator` and
-`agentic_curator.curators`.
-
-```python
-from agentic_curator import OntologyHarmonizer, ThematicReviewer
-from agentic_curator.wrappers import LLM
-```
-
-### Orchestrator
-
-| API | Inputs | Output | Notes |
-| --- | --- | --- | --- |
-| `ThematicReviewer(llm=None)` | Optional LLM-like object with `generate_response(...)`. | Reviewer instance. | Lazily creates `LLM()` if no object is supplied. |
-| `review_relevancy(publication_text=None, theme=None, metadata=None, title=None)` | Publication text, theme, metadata, and title. | `{"evidences": str, "judgement": str}`. | Calls evidence extraction first, then evidence judging. |
-| `OntologyHarmonizer(ontology_frameworks=None)` | Optional ontology framework dictionary or `OntoStore`. | Harmonizer instance. | Creates a default `OntoStore` if none is supplied. |
-| `harmonize(publication_text=None, metadata=None, title=None, ontology_frameworks=None, target_paths=None)` | Publication text, metadata, title, optional ontology framework dictionary or `OntoStore`, and optional target path specs. | `{"metadata": str | dict | list | None}`. | Returns only the metadata wrapper; ontology framework inputs are accepted for future harmonization behavior. |
-
-### Reviewer Primitives
-
-| API | Inputs | Output | Notes |
-| --- | --- | --- | --- |
-| `extract_evidence(publication_text=None, theme=None, metadata=None, title=None)` | Publication text, theme, metadata, and title. | Raw generated text string. | Uses the packaged evidence extraction prompt and requests JSON with an `evidences` array. |
-| `judge_evidence(evidences, theme=None, title=None)` | Extracted evidences, theme, and title. | Raw generated text string. | Uses the packaged judge prompt and requests JSON with `judgement`, `reasoning`, and `confidence`. |
-
-`metadata` may be a string, dictionary, list, or `None` in reviewer calls.
-Dictionary and list values are inserted into prompts as sorted, indented JSON.
-
-Ontology harmonization currently returns metadata only:
+`OntologyHarmonizer(ontology_frameworks=None)` accepts either an ontology
+framework dictionary or an `OntoStore`. If omitted, it creates a default
+`OntoStore`.
 
 ```python
 from agentic_curator import OntologyHarmonizer
-from agentic_curator.curators.ontology_harmonizer import OntoStore
 
-harmonizer = OntologyHarmonizer(ontology_frameworks=OntoStore())
+harmonizer = OntologyHarmonizer()
 result = harmonizer.harmonize(
     publication_text="Full publication text",
     metadata={
@@ -137,74 +294,232 @@ result = harmonizer.harmonize(
         "characteristics": [{"tag": "tissue", "value": "lung"}],
     },
     title="Fibrosis atlas publication",
-    ontology_frameworks={"anatomy": "UBERON", "cell_type": "CL"},
 )
+print(result)
 ```
 
-`result` is `{"metadata": ...}`. `OntoStore` stores ontology framework URL
-configuration, downloads named frameworks, and is reserved for future parsing
-and serving methods. The harmonizer still accepts ontology framework input at
-construction time or per `harmonize()` call so future behavior can use either a
-dictionary configuration or an `OntoStore`.
+`harmonize(publication_text=None, metadata=None, title=None,
+ontology_frameworks=None, target_paths=None)` currently returns:
 
-`OntoStore` can download named framework URLs:
+```python
+{"metadata": metadata}
+```
+
+It does not call `LLM`, prompt files, provider SDKs, or ontology parsers yet.
+
+`OntoStore` manages ontology framework URL configuration and downloads.
 
 ```python
 from agentic_curator.curators.ontology_harmonizer import OntoStore
 
 store = OntoStore(
     ontology_frameworks={
-        "CL": {"url": "https://example.org/cl.owl"},
-        "UBERON": {"url": "https://example.org/uberon.owl", "version": "v2"},
+        "custom": {"url": "https://example.org/custom.owl", "version": "v1"},
     }
 )
-store.add_url("PATO", "https://example.org/pato.owl", version="v1")
-path = store.download("mondo")
+store.add_url("extra", "https://example.org/extra.owl", version="v2")
+path = store.download("efo")
 ```
 
-Stores include EFO, MONDO, UBERON, HP, CL, ChEBI, PATO, OBI, SNOMED CT,
-NCIT, and NCBITaxon by default, so `OntoStore().download("efo")` and
-`OntoStore().download("mondo")` work without adding URLs first. Built-in
-framework configs include OLS4-sourced `title`, `description`, `version`, and
-`url` metadata. Default `url` values use OLS4 `versionIri` values.
-`download(name)` resolves `name` through `store.ontology_frameworks[name]["url"]`,
-downloads with `requests`, and saves the response body using the URL basename
-under `src/agentic_curator/curators/ontology_harmonizer/ontology_frameworks/`.
-That directory is gitignored. Existing files are not re-downloaded.
+Default frameworks include EFO, MONDO, UBERON, HP, CL, ChEBI, PATO, OBI,
+SNOMED CT, NCIT, and NCBITaxon. Built-in `title`, `description`, `version`, and
+`url` metadata are sourced from OLS4. Default `url` values use OLS4
+`versionIri` values.
 
-### LLM Facade And Providers
+`download(name)` resolves `store.ontology_frameworks[name]["url"]`, skips
+existing files, calls `requests.get(url, timeout=30)`, calls
+`raise_for_status()`, writes bytes under the local `ontology_frameworks`
+directory, and returns a `Path`.
 
-| API | Inputs | Output | Notes |
-| --- | --- | --- | --- |
-| `LLM(platform="gemini_enterprise", **platform_options)` | Platform name plus provider options such as `project`, `location`, `model`, `config`, `tools`, or `client`. | Facade instance. | Supported platforms are `gemini_enterprise` and `claude_vertex`. |
-| `LLM.generate_response(prompt, model=None, config=None, tools=None, **extra_options)` | Prompt text plus optional model, config, tools, and provider-specific request options. | Raw generated text string. | Claude model names route to Claude Vertex when the default platform is Gemini. |
-| `GeminiEnterprisePlatform(...)` | Google Gen AI options, optional injected `client`, default config, and tools. | Provider adapter. | Calls `client.models.generate_content(...)`. |
-| `ClaudeVertexPlatform(...)` | Anthropic Vertex options, optional injected `client`, default config, and tools. | Provider adapter. | Calls `client.messages.create(...)`. |
+### Code flow
 
-Provider config behavior:
+#### Reviewer Orchestrator
 
-- Gemini defaults include temperature `0.2`, max output tokens `8192`, candidate
-  count `1`, and optional response schema/mime/safety fields.
-- Claude maps `max_output_tokens` to `max_tokens`, preserves temperature, and
-  translates response schemas to Anthropic `output_config` JSON schema format.
-- Response adapters return text from provider-specific content blocks when
-  possible, then fall back to `text`, `response`, candidate parts, or
-  `str(response)`.
+```python
+class ThematicReviewer:
+    def review_relevancy(publication_text, theme, metadata, title):
+        evidences = self.extract_evidence(
+            publication_text=publication_text,
+            theme=theme,
+            metadata=metadata,
+            title=title,
+        )
+        judgement = self.judge_evidence(
+            evidences=evidences,
+            theme=theme,
+            title=title,
+        )
+        return {"evidences": evidences, "judgement": judgement}
+```
 
-Logging: the Python API does not configure logging or expose logging options.
-Provider SDK exceptions propagate to the caller.
+#### Evidence Extraction
 
-## More Information
+```python
+def extract_evidence(publication_text, theme, metadata, title):
+    prompt = _evidence_prompt(publication_text, theme, metadata, title)
+    return _llm().generate_response(
+        prompt,
+        config={
+            "response_mime_type": "application/json",
+            "response_schema": _evidence_response_schema(),
+        },
+    )
 
+def _evidence_prompt(...):
+    initial_prompt = read_package_text("prompts/evidence_extraction.md")
+    return join_blocks(
+        initial_prompt,
+        "Theme:", prompt_text(theme),
+        "Title:", prompt_text(title),
+        "Publication Text:", prompt_text(publication_text),
+        "Metadata:", prompt_text(metadata),
+    )
+```
+
+Internal calls:
+
+- `_evidence_prompt(...)`
+- `_prompt_text(...)`
+- `_llm()`
+- `LLM.generate_response(...)`
+- provider adapter `generate_response(...)`
+- Gemini `client.models.generate_content(...)` or Claude
+  `client.messages.create(...)`
+
+#### Evidence Judging
+
+```python
+def judge_evidence(evidences, theme, title):
+    prompt = _judge_evidence_prompt(evidences, theme, title)
+    return _llm().generate_response(
+        prompt,
+        config={
+            "response_mime_type": "application/json",
+            "response_schema": _judge_evidence_response_schema(),
+        },
+    )
+
+def _judge_evidence_prompt(...):
+    initial_prompt = read_package_text("prompts/judge_evidence.md")
+    return join_blocks(
+        initial_prompt,
+        "Theme:", prompt_text(theme),
+        "Title:", prompt_text(title),
+        "Evidences:", prompt_text(evidences),
+    )
+```
+
+#### LLM Routing
+
+```python
+class LLM:
+    def generate_response(prompt, model=None, config=None, tools=None, **extra):
+        platform = _platform_for_model(model)
+        return platform.generate_response(
+            prompt,
+            model=model,
+            config=config,
+            tools=tools,
+            **extra,
+        )
+
+    def _platform_for_model(model):
+        if model startswith "claude-" and default platform is not claude_vertex:
+            create cached ClaudeVertexPlatform
+            return cached ClaudeVertexPlatform
+        return configured platform
+```
+
+#### Provider Requests
+
+```python
+class GeminiEnterprisePlatform:
+    def generate_response(prompt, model=None, config=None, tools=None, **extra):
+        request = {
+            "model": model or default_model,
+            "contents": prompt,
+            "config": merged_config_without_none,
+            **extra,
+        }
+        if tools:
+            request["tools"] = tools
+        raw = client.models.generate_content(**request)
+        return model_adapter.parse_response(raw)
+```
+
+```python
+class ClaudeVertexPlatform:
+    def generate_response(prompt, model=None, config=None, tools=None, **extra):
+        request = {
+            "model": model or default_model,
+            "messages": [{"role": "user", "content": prompt}],
+            **claude_config,
+            **extra,
+        }
+        if tools:
+            request["tools"] = tools
+        raw = client.messages.create(**request)
+        return ClaudeModelAdapter().parse_response(raw)
+```
+
+#### CLI Orchestrator
+
+```python
+def main(argv=None):
+    args = parser.parse_args(argv)
+    result = ThematicReviewer().review_relevancy(
+        publication_text=input_value(args.publication_text, args.publication_text_file),
+        theme=input_value(args.theme, args.theme_file),
+        metadata=input_value(args.metadata, args.metadata_file),
+        title=input_value(args.title, args.title_file),
+    )
+    write result as JSON to args.out or stdout
+    return 0
+```
+
+#### Ontology Utilities
+
+```python
+class OntologyHarmonizer:
+    def harmonize(publication_text, metadata, title, ontology_frameworks, target_paths):
+        effective_frameworks = ontology_frameworks or self.ontology_frameworks
+        return {"metadata": metadata}
+```
+
+Private target extraction is available for future harmonization work:
+
+```python
+def _extract_harmonization_targets(metadata, start_paths=None):
+    if metadata is not dict/list:
+        return []
+    if start_paths is None:
+        collect scalar targets from whole metadata tree
+    for each start path or path spec:
+        resolve JSON Pointer
+        collect targets by mode: scalar, tag_value, or container_value
+    return targets
+```
+
+```python
+class OntoStore:
+    def download(name):
+        url = _framework_url(name)
+        target = storage_dir / filename_from_url(url)
+        if target.exists():
+            return target
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        target.write_bytes(response.content)
+        return target
+```
+
+## Docs
+
+- [Documentation index](docs/index.md)
 - [Codebase handoff](docs/codebase.md)
 - [Code flow](docs/codebase.md#code-flow)
 - [Reviewer workflow](docs/codebase.md#reviewer-workflow)
+- [Ontology harmonizer](docs/codebase.md#ontology-harmonizer)
 - [CLI behavior](docs/codebase.md#cli)
 - [LLM wrapper](docs/codebase.md#llm-wrapper)
-- [Gemini Enterprise platform](docs/codebase.md#gemini-enterprise-platform)
-- [Claude Vertex platform](docs/codebase.md#claude-vertex-platform)
-- [Documentation index](docs/index.md)
 
-## Authors
-
-Created by [jaychowcl](https://github.com/jaychowcl) @ [Saez-Rodriguez Group](https://saezlab.org) & [EMBL-EBI Functional Genomics Team](https://www.ebi.ac.uk/about/teams/functional-genomics/) on May 2026
