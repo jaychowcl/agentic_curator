@@ -111,24 +111,34 @@ current implementation.
 metadata harmonization curator. It has no LLM, prompt, provider, or CLI
 integration yet.
 
-Public method:
+Public methods:
 
-- `harmonize(publication_text=None, metadata=None, ontology_frameworks=None, target_paths=None) -> dict`
+- `harmonize_miniml_json(publication_context=None, miniml_json=None, ontostore=None, target_paths=None) -> dict`
+- `harmonize(publication_context=None, harmonization_targets=None, ontostore=None, target_paths=None) -> dict`
 
-The method currently returns only a metadata wrapper:
+`harmonize_miniml_json(...)` extracts targets from MINiML-style JSON with
+`HarmonizationTargetExtractor`, using the default target paths unless
+`target_paths` is supplied, then calls `harmonize(...)`.
+
+The lower-level `harmonize(...)` currently returns only a target wrapper:
 
 ```python
-{"metadata": metadata}
+{
+    "publication_context": publication_context,
+    "harmonization_targets": harmonization_targets or [],
+    "target_paths": target_paths,
+}
 ```
 
-`publication_text` may be a string or `None`, `metadata` may be a string,
-dictionary, list, or `None`, and a per-call `ontology_frameworks` override must
-be an `OntoStore`.
+`publication_context` may be a string or `None`, `miniml_json` may be a
+dictionary, list, or `None`, `harmonization_targets` may be a list of extracted
+target dictionaries or `None`, and a per-call `ontostore` override must be an
+`OntoStore`.
 
 `OntologyHarmonizer(ontology_frameworks=None)` creates a default `OntoStore`
-when no framework object is supplied. A per-call `ontology_frameworks` `OntoStore`
-can override the constructor value for future harmonization behavior. The
-effective ontology framework object is accepted but not used yet.
+when no framework object is supplied. A per-call `ontostore` can override the
+constructor value for future harmonization behavior. The effective store is
+validated but not used for matching yet.
 
 `OntoStore`, `Owl2json`, and `Owl2jsonParseError` are exported from
 `agentic_curator.curators.ontology_harmonizer`. `OntoStore` stores ontology
@@ -357,9 +367,9 @@ Major orchestration flow:
 The current code does not parse model JSON responses, configure logging, or wrap
 provider exceptions. Those responsibilities stay with callers.
 
-`OntologyHarmonizer.harmonize(...)` is separate from this LLM flow. It returns
-`{"metadata": metadata}` directly and does not call `LLM`, provider adapters, or
-prompt files.
+`OntologyHarmonizer.harmonize(...)` is separate from this LLM flow. It returns a
+target wrapper directly and does not call `LLM`, provider adapters, or prompt
+files.
 
 <a id="method-orchestrator-pseudocode"></a>
 ## Method Orchestrator Pseudocode
@@ -503,21 +513,40 @@ class OntologyHarmonizer:
         self.target_extractor = HarmonizationTargetExtractor()
 
     def harmonize(
-        publication_text=None,
-        metadata=None,
-        ontology_frameworks=None,
+        publication_context=None,
+        harmonization_targets=None,
+        ontostore=None,
         target_paths=None,
     ):
-        if ontology_frameworks is not None and not isinstance(ontology_frameworks, OntoStore):
-            raise TypeError("ontology_frameworks must be an OntoStore.")
-        effective_ontology_frameworks = (
-            self.ontology_frameworks
-            if ontology_frameworks is None
-            else ontology_frameworks
+        effective_ontostore = self._effective_ontostore(ontostore)
+        # effective_ontostore is validated but not used yet.
+        return {
+            "publication_context": publication_context,
+            "harmonization_targets": harmonization_targets or [],
+            "target_paths": target_paths,
+        }
+
+    def harmonize_miniml_json(
+        publication_context=None,
+        miniml_json=None,
+        ontostore=None,
+        target_paths=None,
+    ):
+        effective_target_paths = (
+            HarmonizationTargetExtractor.DEFAULT_TARGET_PATHS
+            if target_paths is None
+            else target_paths
         )
-        # publication_text, target_paths, and effective frameworks are accepted
-        # but not used yet.
-        return {"metadata": metadata}
+        harmonization_targets = self.target_extractor.extract(
+            miniml_json,
+            start_paths=effective_target_paths,
+        )
+        return self.harmonize(
+            publication_context=publication_context,
+            harmonization_targets=harmonization_targets,
+            ontostore=ontostore,
+            target_paths=effective_target_paths,
+        )
 ```
 
 No external API calls are made by `harmonize()` in the current implementation.

@@ -308,25 +308,52 @@ class OntologyHarmonizer:
 
     def harmonize(
         self,
-        publication_text: str | None = None,
-        metadata: str | dict[str, Any] | list[Any] | None = None,
-        ontology_frameworks: OntoStore | None = None,
+        publication_context: str | None = None,
+        harmonization_targets: list[dict[str, Any]] | None = None,
+        ontostore: OntoStore | None = None,
         target_paths: list[StartPathSpec] | None = None,
     ) -> dict[str, Any]:
-        _ = publication_text, target_paths
-        if ontology_frameworks is not None and not isinstance(
-            ontology_frameworks, OntoStore
-        ):
-            raise TypeError("ontology_frameworks must be an OntoStore.")
+        effective_ontostore = self._effective_ontostore(ontostore)
+        _ = effective_ontostore
 
-        effective_ontology_frameworks = (
-            self.ontology_frameworks
-            if ontology_frameworks is None
-            else ontology_frameworks
+        return {
+            "publication_context": publication_context,
+            "harmonization_targets": (
+                [] if harmonization_targets is None else harmonization_targets
+            ),
+            "target_paths": target_paths,
+        }
+
+    def harmonize_miniml_json(
+        self,
+        publication_context: str | None = None,
+        miniml_json: dict[str, Any] | list[Any] | None = None,
+        ontostore: OntoStore | None = None,
+        target_paths: list[StartPathSpec] | None = None,
+    ) -> dict[str, Any]:
+        effective_target_paths = (
+            HarmonizationTargetExtractor.DEFAULT_TARGET_PATHS
+            if target_paths is None
+            else target_paths
         )
-        _ = effective_ontology_frameworks
+        harmonization_targets = self.target_extractor.extract(
+            miniml_json,
+            start_paths=effective_target_paths,
+        )
+        return self.harmonize(
+            publication_context=publication_context,
+            harmonization_targets=harmonization_targets,
+            ontostore=ontostore,
+            target_paths=effective_target_paths,
+        )
 
-        return {"metadata": metadata}
+    def _effective_ontostore(self, ontostore: OntoStore | None = None) -> OntoStore:
+        effective_ontostore = (
+            self.ontology_frameworks if ontostore is None else ontostore
+        )
+        if not isinstance(effective_ontostore, OntoStore):
+            raise TypeError("ontostore must be an OntoStore.")
+        return effective_ontostore
 
     def _extract_harmonization_targets(
         self,

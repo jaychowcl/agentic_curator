@@ -122,10 +122,14 @@ CLI output is the same reviewer result serialized as pretty-printed JSON. If
 `--out` is supplied, JSON is written to that file; otherwise it is written to
 stdout.
 
-Ontology harmonizer output currently wraps the input metadata unchanged:
+Ontology harmonizer output currently wraps extracted harmonization targets:
 
 ```python
-{"metadata": metadata}
+{
+    "publication_context": publication_context,
+    "harmonization_targets": harmonization_targets,
+    "target_paths": target_paths,
+}
 ```
 
 ## Guide
@@ -287,9 +291,9 @@ framework dictionary or an `OntoStore`. If omitted, it creates a default
 from agentic_curator import OntologyHarmonizer
 
 harmonizer = OntologyHarmonizer()
-result = harmonizer.harmonize(
-    publication_text="Full publication text",
-    metadata={
+result = harmonizer.harmonize_miniml_json(
+    publication_context="Full publication text",
+    miniml_json={
         "organism": [{"taxid": "9606", "value": "Homo sapiens"}],
         "characteristics": [{"tag": "tissue", "value": "lung"}],
     },
@@ -297,11 +301,19 @@ result = harmonizer.harmonize(
 print(result)
 ```
 
-`harmonize(publication_text=None, metadata=None, ontology_frameworks=None,
-target_paths=None)` currently returns:
+`harmonize_miniml_json(publication_context=None, miniml_json=None,
+ontostore=None, target_paths=None)` extracts targets from MINiML-style JSON,
+then calls the lower-level target-based `harmonize(...)`.
+
+`harmonize(publication_context=None, harmonization_targets=None,
+ontostore=None, target_paths=None)` currently returns:
 
 ```python
-{"metadata": metadata}
+{
+    "publication_context": publication_context,
+    "harmonization_targets": harmonization_targets or [],
+    "target_paths": target_paths,
+}
 ```
 
 It does not call `LLM`, prompt files, provider SDKs, or ontology parsers yet.
@@ -489,9 +501,18 @@ def main(argv=None):
 
 ```python
 class OntologyHarmonizer:
-    def harmonize(publication_text, metadata, ontology_frameworks, target_paths):
-        effective_frameworks = ontology_frameworks or self.ontology_frameworks
-        return {"metadata": metadata}
+    def harmonize_miniml_json(publication_context, miniml_json, ontostore, target_paths):
+        effective_paths = target_paths or HarmonizationTargetExtractor.DEFAULT_TARGET_PATHS
+        targets = self.target_extractor.extract(miniml_json, start_paths=effective_paths)
+        return self.harmonize(publication_context, targets, ontostore, effective_paths)
+
+    def harmonize(publication_context, harmonization_targets, ontostore, target_paths):
+        effective_store = ontostore or self.ontology_frameworks
+        return {
+            "publication_context": publication_context,
+            "harmonization_targets": harmonization_targets or [],
+            "target_paths": target_paths,
+        }
 ```
 
 Target extraction is handled by `HarmonizationTargetExtractor`; the harmonizer

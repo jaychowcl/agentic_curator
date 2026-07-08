@@ -500,33 +500,58 @@ def test_get_propagates_parse_errors_for_invalid_download(
     assert store.downloaded_paths == {"CL": tmp_path / "cl.owl"}
 
 
-def test_harmonize_returns_metadata_only() -> None:
-    metadata = {
+def miniml_metadata() -> dict:
+    return {
         "organism": [{"taxid": "9606", "value": "Homo sapiens"}],
         "characteristics": [
             {"tag": "disease state", "value": "Normal Oral mucosa"},
             {"tag": "tissue", "value": "lung"},
         ],
     }
-    ontology_frameworks = OntoStore()
+
+
+def test_harmonize_returns_targets_wrapper() -> None:
+    harmonization_targets = [
+        {
+            "id": "target-0",
+            "source": "metadata",
+            "field": "tissue",
+            "label": "lung",
+        }
+    ]
+    ontostore = OntoStore()
 
     result = OntologyHarmonizer().harmonize(
-        publication_text="Full publication text",
-        metadata=metadata,
-        ontology_frameworks=ontology_frameworks,
+        publication_context="Full publication context",
+        harmonization_targets=harmonization_targets,
+        ontostore=ontostore,
+        target_paths=["/sample"],
     )
 
-    assert result == {"metadata": metadata}
+    assert result == {
+        "publication_context": "Full publication context",
+        "harmonization_targets": harmonization_targets,
+        "target_paths": ["/sample"],
+    }
 
 
-def test_harmonize_signature_excludes_title() -> None:
-    assert "title" not in inspect.signature(OntologyHarmonizer.harmonize).parameters
+def test_harmonize_signature_excludes_old_metadata_api() -> None:
+    parameters = inspect.signature(OntologyHarmonizer.harmonize).parameters
+
+    assert "title" not in parameters
+    assert "metadata" not in parameters
+    assert "publication_text" not in parameters
+    assert "ontology_frameworks" not in parameters
 
 
-def test_harmonize_defaults_to_none_metadata() -> None:
+def test_harmonize_defaults_to_empty_targets() -> None:
     result = OntologyHarmonizer().harmonize()
 
-    assert result == {"metadata": None}
+    assert result == {
+        "publication_context": None,
+        "harmonization_targets": [],
+        "target_paths": None,
+    }
 
 
 def test_harmonizer_creates_default_ontostore() -> None:
@@ -550,23 +575,155 @@ def test_harmonizer_accepts_dict_ontology_frameworks_in_constructor() -> None:
 
 
 def test_harmonize_accepts_ontostore_override() -> None:
-    metadata = {"organism": [{"taxid": "9606", "value": "Homo sapiens"}]}
     store = OntoStore()
 
     result = OntologyHarmonizer().harmonize(
-        metadata=metadata,
-        ontology_frameworks=store,
+        harmonization_targets=[],
+        ontostore=store,
     )
 
-    assert result == {"metadata": metadata}
+    assert result == {
+        "publication_context": None,
+        "harmonization_targets": [],
+        "target_paths": None,
+    }
 
 
-def test_harmonize_rejects_dict_ontology_framework_override() -> None:
+def test_harmonize_rejects_dict_ontostore_override() -> None:
     with pytest.raises(TypeError, match="OntoStore"):
         OntologyHarmonizer().harmonize(
-            metadata={},
-            ontology_frameworks={"anatomy": "UBERON"},
+            harmonization_targets=[],
+            ontostore={"anatomy": "UBERON"},
         )
+
+
+def test_harmonize_rejects_constructor_non_ontostore_without_override() -> None:
+    with pytest.raises(TypeError, match="OntoStore"):
+        OntologyHarmonizer(ontology_frameworks={"anatomy": "UBERON"}).harmonize()
+
+
+def test_harmonize_miniml_json_extracts_default_targets() -> None:
+    result = OntologyHarmonizer().harmonize_miniml_json(
+        publication_context="Full publication context",
+        miniml_json=miniml_metadata(),
+    )
+
+    assert result == {
+        "publication_context": "Full publication context",
+        "harmonization_targets": [
+            {
+                "id": "target-0",
+                "source": "metadata",
+                "field": "organism",
+                "label": "Homo sapiens",
+                "field_path": "/organism",
+                "label_path": "/organism/0/value",
+                "parent_path": "/organism/0",
+                "key": "organism",
+                "value": "Homo sapiens",
+            },
+            {
+                "id": "target-1",
+                "source": "metadata",
+                "field": "disease state",
+                "label": "Normal Oral mucosa",
+                "field_path": "/characteristics/0/tag",
+                "label_path": "/characteristics/0/value",
+                "parent_path": "/characteristics/0",
+                "key": "disease state",
+                "value": "Normal Oral mucosa",
+            },
+            {
+                "id": "target-2",
+                "source": "metadata",
+                "field": "tissue",
+                "label": "lung",
+                "field_path": "/characteristics/1/tag",
+                "label_path": "/characteristics/1/value",
+                "parent_path": "/characteristics/1",
+                "key": "tissue",
+                "value": "lung",
+            },
+        ],
+        "target_paths": HarmonizationTargetExtractor.DEFAULT_TARGET_PATHS,
+    }
+
+
+def test_harmonize_miniml_json_accepts_explicit_target_paths() -> None:
+    result = OntologyHarmonizer().harmonize_miniml_json(
+        miniml_json={"sample": {"tissue": "lung"}},
+        target_paths=["/sample"],
+    )
+
+    assert result == {
+        "publication_context": None,
+        "harmonization_targets": [
+            {
+                "id": "target-0",
+                "source": "metadata",
+                "field": "tissue",
+                "label": "lung",
+                "field_path": "/sample/tissue",
+                "label_path": "/sample/tissue",
+                "parent_path": "/sample",
+                "key": "tissue",
+                "value": "lung",
+            }
+        ],
+        "target_paths": ["/sample"],
+    }
+
+
+def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
+    calls = []
+
+    class RecordingHarmonizer(OntologyHarmonizer):
+        def harmonize(
+            self,
+            publication_context=None,
+            harmonization_targets=None,
+            ontostore=None,
+            target_paths=None,
+        ):
+            calls.append(
+                {
+                    "publication_context": publication_context,
+                    "harmonization_targets": harmonization_targets,
+                    "ontostore": ontostore,
+                    "target_paths": target_paths,
+                }
+            )
+            return {"delegated": True}
+
+    store = OntoStore()
+    result = RecordingHarmonizer().harmonize_miniml_json(
+        publication_context="context",
+        miniml_json={"sample": {"tissue": "lung"}},
+        ontostore=store,
+        target_paths=["/sample"],
+    )
+
+    assert result == {"delegated": True}
+    assert calls == [
+        {
+            "publication_context": "context",
+            "harmonization_targets": [
+                {
+                    "id": "target-0",
+                    "source": "metadata",
+                    "field": "tissue",
+                    "label": "lung",
+                    "field_path": "/sample/tissue",
+                    "label_path": "/sample/tissue",
+                    "parent_path": "/sample",
+                    "key": "tissue",
+                    "value": "lung",
+                }
+            ],
+            "ontostore": store,
+            "target_paths": ["/sample"],
+        }
+    ]
 
 
 def test_extract_harmonization_targets_from_flat_metadata() -> None:
@@ -701,18 +858,17 @@ def test_extract_harmonization_targets_skips_uneditable_metadata() -> None:
     assert harmonizer._extract_harmonization_targets({"samples": []}) == []
 
 
-def test_harmonize_accepts_target_paths_without_returning_targets() -> None:
-    metadata = {
-        "organism": [{"taxid": "9606", "value": "Homo sapiens"}],
-        "characteristics": [{"tag": "tissue", "value": "lung"}],
-    }
-
+def test_harmonize_accepts_target_paths() -> None:
     result = OntologyHarmonizer().harmonize(
-        metadata=metadata,
+        harmonization_targets=[],
         target_paths=[],
     )
 
-    assert result == {"metadata": metadata}
+    assert result == {
+        "publication_context": None,
+        "harmonization_targets": [],
+        "target_paths": [],
+    }
 
 
 def test_extract_harmonization_targets_starts_from_selected_subtree() -> None:
