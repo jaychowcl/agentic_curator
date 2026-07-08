@@ -495,18 +495,23 @@ class OntologyHarmonizer:
         return {"metadata": metadata}
 ```
 
-Private target extraction is available for future harmonization work:
+Target extraction is handled by `HarmonizationTargetExtractor`; the harmonizer
+keeps a private delegation wrapper for future harmonization work:
 
 ```python
+class HarmonizationTargetExtractor:
+    def extract(metadata, start_paths=None):
+        if metadata is not dict/list:
+            return []
+        if start_paths is None:
+            collect scalar targets from whole metadata tree
+        for each start path or path spec:
+            resolve JSON Pointer
+            collect targets by mode: scalar, tag_value, or container_value
+        return targets
+
 def _extract_harmonization_targets(metadata, start_paths=None):
-    if metadata is not dict/list:
-        return []
-    if start_paths is None:
-        collect scalar targets from whole metadata tree
-    for each start path or path spec:
-        resolve JSON Pointer
-        collect targets by mode: scalar, tag_value, or container_value
-    return targets
+    return self.target_extractor.extract(metadata, start_paths=start_paths)
 ```
 
 ```python

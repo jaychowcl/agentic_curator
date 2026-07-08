@@ -10,38 +10,15 @@ StartPathSpec = str | dict[str, Any]
 OntologyFrameworks = dict[str, Any] | OntoStore
 
 
-class OntologyHarmonizer:
-    """Curator for harmonizing publication metadata against ontologies."""
+class HarmonizationTargetExtractor:
+    """Extract editable metadata targets for future ontology harmonization."""
 
     DEFAULT_TARGET_PATHS: list[StartPathSpec] = [
         {"path": "/organism", "mode": "container_value"},
         {"path": "/characteristics", "mode": "tag_value"},
     ]
 
-    def __init__(self, ontology_frameworks: OntologyFrameworks | None = None) -> None:
-        self.ontology_frameworks = (
-            OntoStore() if ontology_frameworks is None else ontology_frameworks
-        )
-
-    def harmonize(
-        self,
-        publication_text: str | None = None,
-        metadata: str | dict[str, Any] | list[Any] | None = None,
-        title: str | None = None,
-        ontology_frameworks: OntologyFrameworks | None = None,
-        target_paths: list[StartPathSpec] | None = None,
-    ) -> dict[str, Any]:
-        _ = publication_text, title, target_paths
-        effective_ontology_frameworks = (
-            self.ontology_frameworks
-            if ontology_frameworks is None
-            else ontology_frameworks
-        )
-        _ = effective_ontology_frameworks
-
-        return {"metadata": metadata}
-
-    def _extract_harmonization_targets(
+    def extract(
         self,
         metadata: str | dict[str, Any] | list[Any] | None,
         start_paths: list[StartPathSpec] | None = None,
@@ -316,3 +293,40 @@ class OntologyHarmonizer:
     @staticmethod
     def _unescape_json_pointer_segment(segment: str) -> str:
         return segment.replace("~1", "/").replace("~0", "~")
+
+
+class OntologyHarmonizer:
+    """Curator for harmonizing publication metadata against ontologies."""
+
+    DEFAULT_TARGET_PATHS = HarmonizationTargetExtractor.DEFAULT_TARGET_PATHS
+
+    def __init__(self, ontology_frameworks: OntologyFrameworks | None = None) -> None:
+        self.ontology_frameworks = (
+            OntoStore() if ontology_frameworks is None else ontology_frameworks
+        )
+        self.target_extractor = HarmonizationTargetExtractor()
+
+    def harmonize(
+        self,
+        publication_text: str | None = None,
+        metadata: str | dict[str, Any] | list[Any] | None = None,
+        title: str | None = None,
+        ontology_frameworks: OntologyFrameworks | None = None,
+        target_paths: list[StartPathSpec] | None = None,
+    ) -> dict[str, Any]:
+        _ = publication_text, title, target_paths
+        effective_ontology_frameworks = (
+            self.ontology_frameworks
+            if ontology_frameworks is None
+            else ontology_frameworks
+        )
+        _ = effective_ontology_frameworks
+
+        return {"metadata": metadata}
+
+    def _extract_harmonization_targets(
+        self,
+        metadata: str | dict[str, Any] | list[Any] | None,
+        start_paths: list[StartPathSpec] | None = None,
+    ) -> list[dict[str, Any]]:
+        return self.target_extractor.extract(metadata, start_paths=start_paths)

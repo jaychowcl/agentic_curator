@@ -235,9 +235,11 @@ deterministic pretty JSON and returns the output path. HTML-like files, such as
 a bad `.owl` download that starts with `<!DOCTYPE html>` or `<html`, and RDFLib
 parse failures raise `Owl2jsonParseError`.
 
-The harmonizer keeps private target extraction helpers for future metadata edit
-planning. They are not returned by `harmonize()`. The developer-configurable
-class default `DEFAULT_TARGET_PATHS` is:
+`HarmonizationTargetExtractor` performs target extraction for future metadata
+edit planning. `OntologyHarmonizer` owns `self.target_extractor` and keeps
+`_extract_harmonization_targets(...)` as a private compatibility wrapper around
+`self.target_extractor.extract(...)`. Targets are not returned by `harmonize()`.
+The developer-configurable class default `DEFAULT_TARGET_PATHS` is:
 
 ```python
 [
@@ -246,7 +248,7 @@ class default `DEFAULT_TARGET_PATHS` is:
 ]
 ```
 
-`_extract_harmonization_targets(metadata, start_paths=...)` traverses
+`HarmonizationTargetExtractor.extract(metadata, start_paths=...)` traverses
 dictionaries and lists, skips raw string metadata, skips `None`, and does not
 create targets for scalar list items without an object key. Each target
 includes:
@@ -270,13 +272,13 @@ escaped path segments (`~` becomes `~0`, `/` becomes `~1`). These coordinates
 are intended to let future harmonization results edit both field names and
 label values back into structured metadata.
 
-`_extract_harmonization_targets(metadata, start_paths=None)` can also receive a
-list of JSON Pointer start paths or path specs. When `start_paths` is omitted,
-extraction starts at the metadata root. Plain string paths use the default
-`scalar` mode and preserve the original behavior: only resolved dictionaries or
-lists are traversed, output target paths remain absolute from the metadata root,
-and missing, invalid, scalar, or unresolvable start paths are skipped. The empty
-string `""` means the metadata root.
+`HarmonizationTargetExtractor.extract(metadata, start_paths=None)` can also
+receive a list of JSON Pointer start paths or path specs. When `start_paths` is
+omitted, extraction starts at the metadata root. Plain string paths use the
+default `scalar` mode and preserve the original behavior: only resolved
+dictionaries or lists are traversed, output target paths remain absolute from
+the metadata root, and missing, invalid, scalar, or unresolvable start paths are
+skipped. The empty string `""` means the metadata root.
 
 Path specs allow selected metadata subtrees to use domain-aware extraction
 modes:
@@ -486,21 +488,19 @@ def _prompt_text(value):
 ### `OntologyHarmonizer`
 
 Role: metadata harmonization curator scaffold. The public method currently
-preserves metadata unchanged; private helpers extract structured edit targets
-for future harmonization.
+preserves metadata unchanged. It delegates structured edit target discovery to
+`HarmonizationTargetExtractor` for future harmonization.
 
 ```python
 class OntologyHarmonizer:
-    DEFAULT_TARGET_PATHS = [
-        {"path": "/organism", "mode": "container_value"},
-        {"path": "/characteristics", "mode": "tag_value"},
-    ]
+    DEFAULT_TARGET_PATHS = HarmonizationTargetExtractor.DEFAULT_TARGET_PATHS
 
     def __init__(ontology_frameworks=None):
         if ontology_frameworks is None:
             self.ontology_frameworks = OntoStore()
         else:
             self.ontology_frameworks = ontology_frameworks
+        self.target_extractor = HarmonizationTargetExtractor()
 
     def harmonize(
         publication_text=None,
@@ -523,6 +523,28 @@ No external API calls are made by `harmonize()` in the current implementation.
 
 ```python
 def _extract_harmonization_targets(metadata, start_paths=None):
+    return self.target_extractor.extract(metadata, start_paths=start_paths)
+```
+
+### `HarmonizationTargetExtractor`
+
+Role: extract normalized metadata edit targets from dictionaries and lists.
+
+```python
+class HarmonizationTargetExtractor:
+    DEFAULT_TARGET_PATHS = [
+        {"path": "/organism", "mode": "container_value"},
+        {"path": "/characteristics", "mode": "tag_value"},
+    ]
+
+    def extract(metadata, start_paths=None):
+        ...
+```
+
+Target extraction flow:
+
+```python
+def extract(metadata, start_paths=None):
     targets = []
     if metadata is not dict or list:
         return targets

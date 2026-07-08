@@ -6,6 +6,7 @@ from agentic_curator import OntologyHarmonizer as RootOntologyHarmonizer
 from agentic_curator.curators.ontology_harmonizer import ontology_store
 from agentic_curator.curators import OntologyHarmonizer
 from agentic_curator.curators.ontology_harmonizer import (
+    HarmonizationTargetExtractor,
     OntoStore,
     OntologyHarmonizer as SubpackageOntologyHarmonizer,
     Owl2jsonParseError,
@@ -122,6 +123,10 @@ def test_ontology_harmonizer_is_exported_from_package_root() -> None:
 
 def test_ontostore_can_be_imported_from_subpackage() -> None:
     assert OntoStore.__name__ == "OntoStore"
+
+
+def test_harmonization_target_extractor_can_be_imported_from_subpackage() -> None:
+    assert HarmonizationTargetExtractor.__name__ == "HarmonizationTargetExtractor"
 
 
 def test_ontostore_initializes_with_default_frameworks(tmp_path: Path) -> None:
@@ -595,6 +600,24 @@ def test_extract_harmonization_targets_from_flat_metadata() -> None:
     ]
 
 
+def test_target_extractor_extracts_flat_metadata() -> None:
+    assert HarmonizationTargetExtractor().extract(
+        {"organism": "human", "missing": None}
+    ) == [
+        {
+            "id": "target-0",
+            "source": "metadata",
+            "field": "organism",
+            "label": "human",
+            "field_path": "/organism",
+            "label_path": "/organism",
+            "parent_path": "",
+            "key": "organism",
+            "value": "human",
+        }
+    ]
+
+
 def test_extract_harmonization_targets_from_nested_metadata() -> None:
     assert OntologyHarmonizer()._extract_harmonization_targets(
         {"sample": {"tissue": "lung"}}
@@ -844,6 +867,25 @@ def test_extract_harmonization_targets_uses_tag_value_path_specs() -> None:
             "key": "tissue",
             "value": "Oral buccal mucosa",
         },
+    ]
+
+
+def test_target_extractor_uses_tag_value_path_specs() -> None:
+    assert HarmonizationTargetExtractor().extract(
+        {"characteristics": [{"tag": "tissue", "value": "lung"}]},
+        start_paths=[{"path": "/characteristics", "mode": "tag_value"}],
+    ) == [
+        {
+            "id": "target-0",
+            "source": "metadata",
+            "field": "tissue",
+            "label": "lung",
+            "field_path": "/characteristics/0/tag",
+            "label_path": "/characteristics/0/value",
+            "parent_path": "/characteristics/0",
+            "key": "tissue",
+            "value": "lung",
+        }
     ]
 
 
