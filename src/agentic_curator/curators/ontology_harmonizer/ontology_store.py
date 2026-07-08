@@ -16,8 +16,8 @@ class OntoStore:
     DEFAULT_ONTOLOGY_FRAMEWORKS: OntologyFrameworkConfig = {
         "efo": {
             "title": "Experimental Factor Ontology",
-            "url": "http://www.ebi.ac.uk/efo/efo.owl",
-            "version": "v3.91.0",
+            "url": "http://www.ebi.ac.uk/efo/releases/v3.91.0/efo.owl",
+            "version": "3.91.0",
             "description": "The Experimental Factor Ontology (EFO) provides a systematic description of many experimental variables available in EBI databases, and for projects such as the NHGRI-EBI GWAS catalog. It combines parts of several biological ontologies, such as UBERON anatomy, ChEBI chemical compounds, Cell Ontology and the Monarch Disease Ontology (MONDO). The scope of EFO is to support the annotation, analysis and visualization of data handled by many groups at the EBI and as the core ontology for Open Targets.",
         },
         "mondo": {
@@ -27,15 +27,15 @@ class OntoStore:
             "description": "A semi-automatically constructed ontology that merges in multiple disease resources to yield a coherent merged ontology.",
         },
         "uberon": {
-            "title": "Uberon multi-species anatomy ontology",
-            "url": "http://purl.obolibrary.org/obo/uberon/releases/2026-04-01/uberon.owl",
-            "version": "2026-04-01",
+            "title": "Uber-anatomy ontology",
+            "url": "http://purl.obolibrary.org/obo/uberon/releases/2026-06-19/uberon.owl",
+            "version": None,
             "description": "Uberon is an integrated cross-species anatomy ontology representing a variety of entities classified according to traditional anatomical criteria such as structure, function and developmental lineage. The ontology includes comprehensive relationships to taxon-specific anatomical ontologies, allowing integration of functional, phenotype and expression data.",
         },
-        "hfo": {
-            "title": "Human Phenotype Ontology (HPO)",
-            "url": "http://purl.obolibrary.org/obo/hp/releases/2026-06-06/hp-international.owl",
-            "version": "2026-06-06",
+        "hp": {
+            "title": "Human Phenotype Ontology",
+            "url": "http://purl.obolibrary.org/obo/hp/releases/2026-06-23/hp-international.owl",
+            "version": "2026-06-23",
             "description": "The Human Phenotype Ontology (HPO) provides a standardized vocabulary of phenotypic abnormalities and clinical features encountered in human disease.",
         },
         "cl": {
@@ -51,7 +51,7 @@ class OntoStore:
             "description": "A structured classification of molecular entities of biological interest focusing on 'small' chemical compounds.",
         },
         "pato": {
-            "title": "Phenotype And Trait Ontology",
+            "title": "PATO - the Phenotype And Trait Ontology",
             "url": "http://purl.obolibrary.org/obo/pato/releases/2025-05-14/pato.owl",
             "version": "2025-05-14",
             "description": "An ontology of phenotypic qualities (properties, attributes or characteristics).",
@@ -65,7 +65,7 @@ class OntoStore:
         "snomed": {
             "title": "SNOMED CT (International Edition)",
             "url": "http://snomed.info/sct/900000000000207008/version/20251017",
-            "version": "20251017",
+            "version": None,
             "description": "SNOMED CT or SNOMED Clinical Terms is a systematically organized computer processable collection of medical terms providing codes, terms, synonyms and definitions used in clinical documentation and reporting.",
         },
         "ncit": {
