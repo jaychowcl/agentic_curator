@@ -16,8 +16,8 @@ class OntoStore:
     DEFAULT_ONTOLOGY_FRAMEWORKS: OntologyFrameworkConfig = {
         "efo": {
             "title": "Experimental Factor Ontology",
-            "url": "http://www.ebi.ac.uk/efo/releases/v3.91.0/efo.owl",
-            "version": "3.91.0",
+            "url": "http://www.ebi.ac.uk/efo/efo.owl",
+            "version": None,
             "description": "The Experimental Factor Ontology (EFO) provides a systematic description of many experimental variables available in EBI databases, and for projects such as the NHGRI-EBI GWAS catalog. It combines parts of several biological ontologies, such as UBERON anatomy, ChEBI chemical compounds, Cell Ontology and the Monarch Disease Ontology (MONDO). The scope of EFO is to support the annotation, analysis and visualization of data handled by many groups at the EBI and as the core ontology for Open Targets.",
         },
         "mondo": {

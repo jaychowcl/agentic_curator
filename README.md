@@ -325,7 +325,7 @@ assert store.downloaded_paths["efo"] == path
 Default frameworks include EFO, MONDO, UBERON, HP, CL, ChEBI, PATO, OBI,
 SNOMED CT, NCIT, and NCBITaxon. Built-in `title`, `description`, `version`, and
 `url` metadata are sourced from OLS4 where available. Most default `url` values
-use OLS4 `versionIri` values; UBERON uses the stable latest PURL.
+use OLS4 `versionIri` values; EFO and UBERON use stable current URLs.
 
 `download(name)` resolves `store.ontology_frameworks[name]["url"]`, skips
 existing files, calls `requests.get(url, timeout=30)`, calls

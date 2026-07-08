@@ -138,8 +138,8 @@ Framework config uses a nested dictionary:
 {
     "efo": {
         "title": "Experimental Factor Ontology",
-        "url": "http://www.ebi.ac.uk/efo/releases/v3.91.0/efo.owl",
-        "version": "3.91.0",
+        "url": "http://www.ebi.ac.uk/efo/efo.owl",
+        "version": None,
         "description": "...",
     },
     "mondo": {
@@ -157,8 +157,8 @@ Every `OntoStore` starts with built-in framework configs for EFO, MONDO,
 UBERON, HP, CL, ChEBI, PATO, OBI, SNOMED CT, NCIT, and NCBITaxon unless a
 caller overrides those entries in the constructor. Each built-in config
 includes OLS4-sourced `title`, `description`, `version`, and `url` metadata.
-Most default `url` values use OLS4 `versionIri` values; UBERON uses the stable
-latest PURL. `OntoStore.add_url(name, url, version=None)` adds or replaces
+Most default `url` values use OLS4 `versionIri` values; EFO and UBERON use
+stable current URLs. `OntoStore.add_url(name, url, version=None)` adds or replaces
 one framework URL with optional version metadata, and
 `OntoStore.add_urls(ontology_frameworks)` merges a framework dictionary into
 the store, including any nested `version` fields. `OntoStore.get(name)` is the
