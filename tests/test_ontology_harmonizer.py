@@ -543,8 +543,8 @@ def test_harmonize_returns_targets_wrapper() -> None:
         {
             "id": "target-0",
             "source": "metadata",
-            "field": "tissue",
-            "label": "lung",
+            "pre_hz_field": "tissue",
+            "pre_hz_label": "lung",
         }
     ]
     ontostore = OntoStore()
@@ -661,35 +661,35 @@ def test_target_extractor_dedupes_field_label_pairs_with_occurrences() -> None:
         {
             "id": "target-0",
             "source": "metadata",
-            "field": "tissue",
-            "label": "lung",
-            "field_path": "/sample/0/channel/0/characteristics/0/tag",
-            "label_path": "/sample/0/channel/0/characteristics/0/value",
+            "pre_hz_field": "tissue",
+            "pre_hz_label": "lung",
+            "pre_hz_field_path": "/sample/0/channel/0/characteristics/0/tag",
+            "pre_hz_label_path": "/sample/0/channel/0/characteristics/0/value",
             "parent_path": "/sample/0/channel/0/characteristics/0",
-            "key": "tissue",
-            "value": "lung",
+            "hz_field": "tissue",
+            "hz_label": "lung",
         },
         {
             "id": "target-1",
             "source": "metadata",
-            "field": "tissue",
-            "label": "lung",
-            "field_path": "/sample/1/channel/0/characteristics/0/tag",
-            "label_path": "/sample/1/channel/0/characteristics/0/value",
+            "pre_hz_field": "tissue",
+            "pre_hz_label": "lung",
+            "pre_hz_field_path": "/sample/1/channel/0/characteristics/0/tag",
+            "pre_hz_label_path": "/sample/1/channel/0/characteristics/0/value",
             "parent_path": "/sample/1/channel/0/characteristics/0",
-            "key": "tissue",
-            "value": "lung",
+            "hz_field": "tissue",
+            "hz_label": "lung",
         },
         {
             "id": "target-2",
             "source": "metadata",
-            "field": "tissue",
-            "label": "heart",
-            "field_path": "/sample/2/channel/0/characteristics/0/tag",
-            "label_path": "/sample/2/channel/0/characteristics/0/value",
+            "pre_hz_field": "tissue",
+            "pre_hz_label": "heart",
+            "pre_hz_field_path": "/sample/2/channel/0/characteristics/0/tag",
+            "pre_hz_label_path": "/sample/2/channel/0/characteristics/0/value",
             "parent_path": "/sample/2/channel/0/characteristics/0",
-            "key": "tissue",
-            "value": "heart",
+            "hz_field": "tissue",
+            "hz_label": "heart",
         },
     ]
 
@@ -697,51 +697,62 @@ def test_target_extractor_dedupes_field_label_pairs_with_occurrences() -> None:
         {
             "id": "target-0",
             "source": "metadata",
-            "field": "tissue",
-            "label": "lung",
-            "field_path": "/sample/0/channel/0/characteristics/0/tag",
-            "label_path": "/sample/0/channel/0/characteristics/0/value",
+            "pre_hz_field": "tissue",
+            "pre_hz_label": "lung",
+            "pre_hz_field_path": "/sample/0/channel/0/characteristics/0/tag",
+            "pre_hz_label_path": "/sample/0/channel/0/characteristics/0/value",
             "parent_path": "/sample/0/channel/0/characteristics/0",
-            "key": "tissue",
-            "value": "lung",
+            "hz_field": "tissue",
+            "hz_label": "lung",
             "occurrences": [
                 {
-                    "field_path": "/sample/0/channel/0/characteristics/0/tag",
-                    "label_path": "/sample/0/channel/0/characteristics/0/value",
+                    "pre_hz_field_path": "/sample/0/channel/0/characteristics/0/tag",
+                    "pre_hz_label_path": "/sample/0/channel/0/characteristics/0/value",
                     "parent_path": "/sample/0/channel/0/characteristics/0",
-                    "key": "tissue",
-                    "value": "lung",
+                    "hz_field": "tissue",
+                    "hz_label": "lung",
                 },
                 {
-                    "field_path": "/sample/1/channel/0/characteristics/0/tag",
-                    "label_path": "/sample/1/channel/0/characteristics/0/value",
+                    "pre_hz_field_path": "/sample/1/channel/0/characteristics/0/tag",
+                    "pre_hz_label_path": "/sample/1/channel/0/characteristics/0/value",
                     "parent_path": "/sample/1/channel/0/characteristics/0",
-                    "key": "tissue",
-                    "value": "lung",
+                    "hz_field": "tissue",
+                    "hz_label": "lung",
                 },
             ],
         },
         {
             "id": "target-1",
             "source": "metadata",
-            "field": "tissue",
-            "label": "heart",
-            "field_path": "/sample/2/channel/0/characteristics/0/tag",
-            "label_path": "/sample/2/channel/0/characteristics/0/value",
+            "pre_hz_field": "tissue",
+            "pre_hz_label": "heart",
+            "pre_hz_field_path": "/sample/2/channel/0/characteristics/0/tag",
+            "pre_hz_label_path": "/sample/2/channel/0/characteristics/0/value",
             "parent_path": "/sample/2/channel/0/characteristics/0",
-            "key": "tissue",
-            "value": "heart",
+            "hz_field": "tissue",
+            "hz_label": "heart",
             "occurrences": [
                 {
-                    "field_path": "/sample/2/channel/0/characteristics/0/tag",
-                    "label_path": "/sample/2/channel/0/characteristics/0/value",
+                    "pre_hz_field_path": "/sample/2/channel/0/characteristics/0/tag",
+                    "pre_hz_label_path": "/sample/2/channel/0/characteristics/0/value",
                     "parent_path": "/sample/2/channel/0/characteristics/0",
-                    "key": "tissue",
-                    "value": "heart",
+                    "hz_field": "tissue",
+                    "hz_label": "heart",
                 }
             ],
         },
     ]
+
+
+def test_target_extractor_schema_excludes_old_target_keys() -> None:
+    targets = HarmonizationTargetExtractor().dedupe_targets(
+        HarmonizationTargetExtractor().extract({"sample": {"tissue": "lung"}})
+    )
+
+    assert targets
+    old_keys = {"field", "label", "field_path", "label_path", "key", "value"}
+    assert old_keys.isdisjoint(targets[0])
+    assert old_keys.isdisjoint(targets[0]["occurrences"][0])
 
 
 def test_harmonize_miniml_json_extracts_default_targets() -> None:
@@ -761,7 +772,7 @@ def test_harmonize_miniml_json_extracts_default_targets() -> None:
         {"path": "/sample/1/channel/0/organism", "mode": "container_value"},
         {"path": "/sample/1/channel/0/characteristics", "mode": "tag_value"},
     ]
-    assert [target["field"] for target in result["harmonization_targets"]] == [
+    assert [target["pre_hz_field"] for target in result["harmonization_targets"]] == [
         "source",
         "molecule",
         "organism",
@@ -769,7 +780,7 @@ def test_harmonize_miniml_json_extracts_default_targets() -> None:
         "tissue",
         "disease state",
     ]
-    assert [target["label"] for target in result["harmonization_targets"]] == [
+    assert [target["pre_hz_label"] for target in result["harmonization_targets"]] == [
         "Oral buccal mucosa",
         "total RNA",
         "Homo sapiens",
@@ -785,16 +796,16 @@ def test_harmonize_miniml_json_extracts_default_targets() -> None:
         "target-4",
         "target-5",
     ]
-    by_field_label = {
-        (target["field"], target["label"]): target
+    by_pre_hz_field_label = {
+        (target["pre_hz_field"], target["pre_hz_label"]): target
         for target in result["harmonization_targets"]
     }
-    assert len(by_field_label[("source", "Oral buccal mucosa")]["occurrences"]) == 2
-    assert len(by_field_label[("molecule", "total RNA")]["occurrences"]) == 2
-    assert len(by_field_label[("organism", "Homo sapiens")]["occurrences"]) == 2
-    assert len(by_field_label[("tissue", "Oral buccal mucosa")]["occurrences"]) == 2
-    assert ("position", "1") not in by_field_label
-    assert ("extract_protocol", "Long protocol text is not a target.") not in by_field_label
+    assert len(by_pre_hz_field_label[("source", "Oral buccal mucosa")]["occurrences"]) == 2
+    assert len(by_pre_hz_field_label[("molecule", "total RNA")]["occurrences"]) == 2
+    assert len(by_pre_hz_field_label[("organism", "Homo sapiens")]["occurrences"]) == 2
+    assert len(by_pre_hz_field_label[("tissue", "Oral buccal mucosa")]["occurrences"]) == 2
+    assert ("position", "1") not in by_pre_hz_field_label
+    assert ("extract_protocol", "Long protocol text is not a target.") not in by_pre_hz_field_label
 
 
 def test_harmonize_miniml_json_accepts_explicit_target_paths() -> None:
@@ -809,13 +820,13 @@ def test_harmonize_miniml_json_accepts_explicit_target_paths() -> None:
             {
                 "id": "target-0",
                 "source": "metadata",
-                "field": "tissue",
-                "label": "lung",
-                "field_path": "/sample/tissue",
-                "label_path": "/sample/tissue",
+                "pre_hz_field": "tissue",
+                "pre_hz_label": "lung",
+                "pre_hz_field_path": "/sample/tissue",
+                "pre_hz_label_path": "/sample/tissue",
                 "parent_path": "/sample",
-                "key": "tissue",
-                "value": "lung",
+                "hz_field": "tissue",
+                "hz_label": "lung",
             }
         ],
         "target_paths": ["/sample"],
@@ -859,13 +870,13 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
                 {
                     "id": "target-0",
                     "source": "metadata",
-                    "field": "tissue",
-                    "label": "lung",
-                    "field_path": "/sample/tissue",
-                    "label_path": "/sample/tissue",
+                    "pre_hz_field": "tissue",
+                    "pre_hz_label": "lung",
+                    "pre_hz_field_path": "/sample/tissue",
+                    "pre_hz_label_path": "/sample/tissue",
                     "parent_path": "/sample",
-                    "key": "tissue",
-                    "value": "lung",
+                    "hz_field": "tissue",
+                    "hz_label": "lung",
                 }
             ],
             "ontostore": store,
@@ -881,35 +892,35 @@ def test_extract_harmonization_targets_from_flat_metadata() -> None:
         {
             "id": "target-0",
             "source": "metadata",
-            "field": "organism",
-            "label": "human",
-            "field_path": "/organism",
-            "label_path": "/organism",
+            "pre_hz_field": "organism",
+            "pre_hz_label": "human",
+            "pre_hz_field_path": "/organism",
+            "pre_hz_label_path": "/organism",
             "parent_path": "",
-            "key": "organism",
-            "value": "human",
+            "hz_field": "organism",
+            "hz_label": "human",
         },
         {
             "id": "target-1",
             "source": "metadata",
-            "field": "age",
-            "label": "42",
-            "field_path": "/age",
-            "label_path": "/age",
+            "pre_hz_field": "age",
+            "pre_hz_label": "42",
+            "pre_hz_field_path": "/age",
+            "pre_hz_label_path": "/age",
             "parent_path": "",
-            "key": "age",
-            "value": 42,
+            "hz_field": "age",
+            "hz_label": 42,
         },
         {
             "id": "target-2",
             "source": "metadata",
-            "field": "diseased",
-            "label": "True",
-            "field_path": "/diseased",
-            "label_path": "/diseased",
+            "pre_hz_field": "diseased",
+            "pre_hz_label": "True",
+            "pre_hz_field_path": "/diseased",
+            "pre_hz_label_path": "/diseased",
             "parent_path": "",
-            "key": "diseased",
-            "value": True,
+            "hz_field": "diseased",
+            "hz_label": True,
         },
     ]
 
@@ -921,13 +932,13 @@ def test_target_extractor_extracts_flat_metadata() -> None:
         {
             "id": "target-0",
             "source": "metadata",
-            "field": "organism",
-            "label": "human",
-            "field_path": "/organism",
-            "label_path": "/organism",
+            "pre_hz_field": "organism",
+            "pre_hz_label": "human",
+            "pre_hz_field_path": "/organism",
+            "pre_hz_label_path": "/organism",
             "parent_path": "",
-            "key": "organism",
-            "value": "human",
+            "hz_field": "organism",
+            "hz_label": "human",
         }
     ]
 
@@ -939,13 +950,13 @@ def test_extract_harmonization_targets_from_nested_metadata() -> None:
         {
             "id": "target-0",
             "source": "metadata",
-            "field": "tissue",
-            "label": "lung",
-            "field_path": "/sample/tissue",
-            "label_path": "/sample/tissue",
+            "pre_hz_field": "tissue",
+            "pre_hz_label": "lung",
+            "pre_hz_field_path": "/sample/tissue",
+            "pre_hz_label_path": "/sample/tissue",
             "parent_path": "/sample",
-            "key": "tissue",
-            "value": "lung",
+            "hz_field": "tissue",
+            "hz_label": "lung",
         }
     ]
 
@@ -957,24 +968,24 @@ def test_extract_harmonization_targets_from_list_of_dicts() -> None:
         {
             "id": "target-0",
             "source": "metadata",
-            "field": "tissue",
-            "label": "lung",
-            "field_path": "/samples/0/tissue",
-            "label_path": "/samples/0/tissue",
+            "pre_hz_field": "tissue",
+            "pre_hz_label": "lung",
+            "pre_hz_field_path": "/samples/0/tissue",
+            "pre_hz_label_path": "/samples/0/tissue",
             "parent_path": "/samples/0",
-            "key": "tissue",
-            "value": "lung",
+            "hz_field": "tissue",
+            "hz_label": "lung",
         },
         {
             "id": "target-1",
             "source": "metadata",
-            "field": "tissue",
-            "label": "heart",
-            "field_path": "/samples/1/tissue",
-            "label_path": "/samples/1/tissue",
+            "pre_hz_field": "tissue",
+            "pre_hz_label": "heart",
+            "pre_hz_field_path": "/samples/1/tissue",
+            "pre_hz_label_path": "/samples/1/tissue",
             "parent_path": "/samples/1",
-            "key": "tissue",
-            "value": "heart",
+            "hz_field": "tissue",
+            "hz_label": "heart",
         },
     ]
 
@@ -986,13 +997,13 @@ def test_extract_harmonization_targets_escapes_json_pointer_segments() -> None:
         {
             "id": "target-0",
             "source": "metadata",
-            "field": "label~name",
-            "label": "lung",
-            "field_path": "/sample~1type/label~0name",
-            "label_path": "/sample~1type/label~0name",
+            "pre_hz_field": "label~name",
+            "pre_hz_label": "lung",
+            "pre_hz_field_path": "/sample~1type/label~0name",
+            "pre_hz_label_path": "/sample~1type/label~0name",
             "parent_path": "/sample~1type",
-            "key": "label~name",
-            "value": "lung",
+            "hz_field": "label~name",
+            "hz_label": "lung",
         }
     ]
 
@@ -1030,13 +1041,13 @@ def test_extract_harmonization_targets_starts_from_selected_subtree() -> None:
         {
             "id": "target-0",
             "source": "metadata",
-            "field": "tissue",
-            "label": "lung",
-            "field_path": "/sample/tissue",
-            "label_path": "/sample/tissue",
+            "pre_hz_field": "tissue",
+            "pre_hz_label": "lung",
+            "pre_hz_field_path": "/sample/tissue",
+            "pre_hz_label_path": "/sample/tissue",
             "parent_path": "/sample",
-            "key": "tissue",
-            "value": "lung",
+            "hz_field": "tissue",
+            "hz_label": "lung",
         }
     ]
 
@@ -1049,13 +1060,13 @@ def test_extract_harmonization_targets_starts_from_list_item() -> None:
         {
             "id": "target-0",
             "source": "metadata",
-            "field": "tissue",
-            "label": "heart",
-            "field_path": "/samples/1/tissue",
-            "label_path": "/samples/1/tissue",
+            "pre_hz_field": "tissue",
+            "pre_hz_label": "heart",
+            "pre_hz_field_path": "/samples/1/tissue",
+            "pre_hz_label_path": "/samples/1/tissue",
             "parent_path": "/samples/1",
-            "key": "tissue",
-            "value": "heart",
+            "hz_field": "tissue",
+            "hz_label": "heart",
         }
     ]
 
@@ -1071,24 +1082,24 @@ def test_extract_harmonization_targets_uses_multiple_start_paths_in_order() -> N
         {
             "id": "target-0",
             "source": "metadata",
-            "field": "tissue",
-            "label": "lung",
-            "field_path": "/sample/tissue",
-            "label_path": "/sample/tissue",
+            "pre_hz_field": "tissue",
+            "pre_hz_label": "lung",
+            "pre_hz_field_path": "/sample/tissue",
+            "pre_hz_label_path": "/sample/tissue",
             "parent_path": "/sample",
-            "key": "tissue",
-            "value": "lung",
+            "hz_field": "tissue",
+            "hz_label": "lung",
         },
         {
             "id": "target-1",
             "source": "metadata",
-            "field": "organism",
-            "label": "human",
-            "field_path": "/publication/organism",
-            "label_path": "/publication/organism",
+            "pre_hz_field": "organism",
+            "pre_hz_label": "human",
+            "pre_hz_field_path": "/publication/organism",
+            "pre_hz_label_path": "/publication/organism",
             "parent_path": "/publication",
-            "key": "organism",
-            "value": "human",
+            "hz_field": "organism",
+            "hz_label": "human",
         },
     ]
 
@@ -1111,13 +1122,13 @@ def test_extract_harmonization_targets_resolves_escaped_start_path() -> None:
         {
             "id": "target-0",
             "source": "metadata",
-            "field": "label~name",
-            "label": "lung",
-            "field_path": "/sample~1type/label~0name",
-            "label_path": "/sample~1type/label~0name",
+            "pre_hz_field": "label~name",
+            "pre_hz_label": "lung",
+            "pre_hz_field_path": "/sample~1type/label~0name",
+            "pre_hz_label_path": "/sample~1type/label~0name",
             "parent_path": "/sample~1type",
-            "key": "label~name",
-            "value": "lung",
+            "hz_field": "label~name",
+            "hz_label": "lung",
         }
     ]
 
@@ -1161,24 +1172,24 @@ def test_extract_harmonization_targets_uses_tag_value_path_specs() -> None:
         {
             "id": "target-0",
             "source": "metadata",
-            "field": "disease state",
-            "label": "Normal Oral mucosa",
-            "field_path": "/characteristics/0/tag",
-            "label_path": "/characteristics/0/value",
+            "pre_hz_field": "disease state",
+            "pre_hz_label": "Normal Oral mucosa",
+            "pre_hz_field_path": "/characteristics/0/tag",
+            "pre_hz_label_path": "/characteristics/0/value",
             "parent_path": "/characteristics/0",
-            "key": "disease state",
-            "value": "Normal Oral mucosa",
+            "hz_field": "disease state",
+            "hz_label": "Normal Oral mucosa",
         },
         {
             "id": "target-1",
             "source": "metadata",
-            "field": "tissue",
-            "label": "Oral buccal mucosa",
-            "field_path": "/characteristics/1/tag",
-            "label_path": "/characteristics/1/value",
+            "pre_hz_field": "tissue",
+            "pre_hz_label": "Oral buccal mucosa",
+            "pre_hz_field_path": "/characteristics/1/tag",
+            "pre_hz_label_path": "/characteristics/1/value",
             "parent_path": "/characteristics/1",
-            "key": "tissue",
-            "value": "Oral buccal mucosa",
+            "hz_field": "tissue",
+            "hz_label": "Oral buccal mucosa",
         },
     ]
 
@@ -1191,13 +1202,13 @@ def test_target_extractor_uses_tag_value_path_specs() -> None:
         {
             "id": "target-0",
             "source": "metadata",
-            "field": "tissue",
-            "label": "lung",
-            "field_path": "/characteristics/0/tag",
-            "label_path": "/characteristics/0/value",
+            "pre_hz_field": "tissue",
+            "pre_hz_label": "lung",
+            "pre_hz_field_path": "/characteristics/0/tag",
+            "pre_hz_label_path": "/characteristics/0/value",
             "parent_path": "/characteristics/0",
-            "key": "tissue",
-            "value": "lung",
+            "hz_field": "tissue",
+            "hz_label": "lung",
         }
     ]
 
@@ -1210,13 +1221,13 @@ def test_extract_harmonization_targets_uses_container_value_path_specs() -> None
         {
             "id": "target-0",
             "source": "metadata",
-            "field": "organism",
-            "label": "Homo sapiens",
-            "field_path": "/organism",
-            "label_path": "/organism/0/value",
+            "pre_hz_field": "organism",
+            "pre_hz_label": "Homo sapiens",
+            "pre_hz_field_path": "/organism",
+            "pre_hz_label_path": "/organism/0/value",
             "parent_path": "/organism/0",
-            "key": "organism",
-            "value": "Homo sapiens",
+            "hz_field": "organism",
+            "hz_label": "Homo sapiens",
         }
     ]
 
@@ -1239,24 +1250,24 @@ def test_extract_harmonization_targets_mixes_path_spec_modes_in_order() -> None:
         {
             "id": "target-0",
             "source": "metadata",
-            "field": "tissue",
-            "label": "Oral buccal mucosa",
-            "field_path": "/characteristics/0/tag",
-            "label_path": "/characteristics/0/value",
+            "pre_hz_field": "tissue",
+            "pre_hz_label": "Oral buccal mucosa",
+            "pre_hz_field_path": "/characteristics/0/tag",
+            "pre_hz_label_path": "/characteristics/0/value",
             "parent_path": "/characteristics/0",
-            "key": "tissue",
-            "value": "Oral buccal mucosa",
+            "hz_field": "tissue",
+            "hz_label": "Oral buccal mucosa",
         },
         {
             "id": "target-1",
             "source": "metadata",
-            "field": "organism",
-            "label": "Homo sapiens",
-            "field_path": "/organism",
-            "label_path": "/organism/0/value",
+            "pre_hz_field": "organism",
+            "pre_hz_label": "Homo sapiens",
+            "pre_hz_field_path": "/organism",
+            "pre_hz_label_path": "/organism/0/value",
             "parent_path": "/organism/0",
-            "key": "organism",
-            "value": "Homo sapiens",
+            "hz_field": "organism",
+            "hz_label": "Homo sapiens",
         },
     ]
 
@@ -1269,13 +1280,13 @@ def test_extract_harmonization_targets_defaults_path_specs_to_scalar_mode() -> N
         {
             "id": "target-0",
             "source": "metadata",
-            "field": "tissue",
-            "label": "lung",
-            "field_path": "/sample/tissue",
-            "label_path": "/sample/tissue",
+            "pre_hz_field": "tissue",
+            "pre_hz_label": "lung",
+            "pre_hz_field_path": "/sample/tissue",
+            "pre_hz_label_path": "/sample/tissue",
             "parent_path": "/sample",
-            "key": "tissue",
-            "value": "lung",
+            "hz_field": "tissue",
+            "hz_label": "lung",
         }
     ]
 

@@ -100,8 +100,8 @@ class HarmonizationTargetExtractor:
         target_indexes: dict[tuple[str, str], int] = {}
 
         for target in targets:
-            field = str(target.get("field"))
-            label = str(target.get("label"))
+            field = str(target.get("pre_hz_field"))
+            label = str(target.get("pre_hz_label"))
             dedupe_key = (field, label)
             occurrence = self._target_occurrence(target)
 
@@ -338,13 +338,13 @@ class HarmonizationTargetExtractor:
         return {
             "id": f"target-{index}",
             "source": "metadata",
-            "field": str(key),
-            "label": str(value),
-            "field_path": path,
-            "label_path": path if label_path is None else label_path,
+            "pre_hz_field": str(key),
+            "pre_hz_label": str(value),
+            "pre_hz_field_path": path,
+            "pre_hz_label_path": path if label_path is None else label_path,
             "parent_path": parent_path,
-            "key": key,
-            "value": value,
+            "hz_field": key,
+            "hz_label": value,
         }
 
     @classmethod
@@ -372,11 +372,11 @@ class HarmonizationTargetExtractor:
     @staticmethod
     def _target_occurrence(target: dict[str, Any]) -> dict[str, Any]:
         return {
-            "field_path": target.get("field_path"),
-            "label_path": target.get("label_path"),
+            "pre_hz_field_path": target.get("pre_hz_field_path"),
+            "pre_hz_label_path": target.get("pre_hz_label_path"),
             "parent_path": target.get("parent_path"),
-            "key": target.get("key"),
-            "value": target.get("value"),
+            "hz_field": target.get("hz_field"),
+            "hz_label": target.get("hz_label"),
         }
 
     @staticmethod

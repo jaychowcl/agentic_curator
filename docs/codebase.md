@@ -120,9 +120,9 @@ Public methods:
 `HarmonizationTargetExtractor`, then calls `harmonize(...)`. When `target_paths`
 is omitted, it builds paths for every `sample[*].channel[*]`, extracts
 meaningful sample metadata (`source`, `molecule`, `organism`, and
-`characteristics`), and dedupes targets by exact `field:label` while preserving
-every source path in `occurrences`. Supplying `target_paths` keeps explicit path
-extraction behavior.
+`characteristics`), and dedupes targets by exact
+`pre_hz_field:pre_hz_label` while preserving every source path in
+`occurrences`. Supplying `target_paths` keeps explicit path extraction behavior.
 
 The lower-level `harmonize(...)` currently returns only a target wrapper:
 
@@ -271,20 +271,22 @@ includes:
 {
     "id": "target-0",
     "source": "metadata",
-    "field": "tissue",
-    "label": "lung",
-    "field_path": "/sample/tissue",
-    "label_path": "/sample/tissue",
+    "pre_hz_field": "tissue",
+    "pre_hz_label": "lung",
+    "pre_hz_field_path": "/sample/tissue",
+    "pre_hz_label_path": "/sample/tissue",
     "parent_path": "/sample",
-    "key": "tissue",
-    "value": "lung",
+    "hz_field": "tissue",
+    "hz_label": "lung",
 }
 ```
 
-`field_path`, `label_path`, and `parent_path` use JSON Pointer-style paths with
-escaped path segments (`~` becomes `~0`, `/` becomes `~1`). These coordinates
-are intended to let future harmonization results edit both field names and
-label values back into structured metadata.
+`pre_hz_field_path`, `pre_hz_label_path`, and `parent_path` use JSON
+Pointer-style paths with escaped path segments (`~` becomes `~0`, `/` becomes
+`~1`). These coordinates are intended to let future harmonization results edit
+both field names and label values back into structured metadata. `hz_field` and
+`hz_label` are initialized from the extracted values until actual ontology
+harmonization is implemented.
 
 `HarmonizationTargetExtractor.extract(metadata, start_paths=None)` can also
 receive a list of JSON Pointer start paths or path specs. When `start_paths` is
@@ -310,12 +312,12 @@ Supported modes:
 - `scalar`: default mode; extracts each scalar dictionary field as a separate
   target.
 - `tag_value`: for objects such as `{"tag": "tissue", "value": "lung"}`;
-  emits one target with `field_path` pointing to `tag` and `label_path` pointing
-  to `value`.
+  emits one target with `pre_hz_field_path` pointing to `tag` and
+  `pre_hz_label_path` pointing to `value`.
 - `container_value`: for containers such as
   `"organism": [{"taxid": "9606", "value": "Homo sapiens"}]`; emits one target
   per nested object with a scalar `value`, using the selected container path as
-  the field path.
+  the pre-harmonization field path.
 
 Invalid path specs, unsupported modes, missing `tag`/`value` fields, non-scalar
 labels, and scalar start paths are skipped.
@@ -623,7 +625,8 @@ channel `position` and long protocol fields.
 
 `dedupe_targets(...)` preserves first-seen target order, keeps the first target's
 singular path fields for compatibility, adds `occurrences` with every matched
-path/value location, and reassigns stable sequential ids.
+path/value location, and reassigns stable sequential ids. The dedupe identity is
+the exact `pre_hz_field:pre_hz_label` pair.
 
 Internal target extraction dispatch:
 
@@ -652,18 +655,20 @@ Path specs support these modes:
 
 - `scalar`: recursively collect scalar dictionary values under a subtree.
 - `field_value`: collect a direct scalar field value.
-- `tag_value`: collect `{tag, value}` entries where the tag is the field.
+- `tag_value`: collect `{tag, value}` entries where the tag is `pre_hz_field`.
 - `container_value`: collect nested `{value}` entries using the selected
-  container name as the field.
+  container name as `pre_hz_field`.
 
 Collector behavior:
 
 - `_collect_targets(...)`: recursively walks dictionaries and lists; each scalar
   dictionary value becomes a target.
 - `_collect_tag_value_targets(...)`: recognizes objects with scalar `tag` and
-  `value`; emits one target whose field is the tag and label is the value.
+  `value`; emits one target whose `pre_hz_field` is the tag and `pre_hz_label`
+  is the value.
 - `_collect_container_value_targets(...)`: recognizes nested objects with scalar
-  `value`; emits one target using the selected container path as the field path.
+  `value`; emits one target using the selected container path as the
+  `pre_hz_field_path`.
 - `_target(...)` constructs the normalized target dictionary.
 - `_join_json_pointer(...)`, `_escape_json_pointer_segment(...)`,
   `_unescape_json_pointer_segment(...)`, and `_field_from_path(...)` maintain
