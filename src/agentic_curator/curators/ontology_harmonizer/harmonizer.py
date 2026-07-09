@@ -122,6 +122,10 @@ class OntologyHarmonizer:
                         ontostore=effective_ontostore,
                         strategy=normalized_strategy,
                     )
+                    self._lookup_harmonized_label(
+                        normalized_target,
+                        ontostore=effective_ontostore,
+                    )
 
         LOGGER.info("Completed ontology harmonization.")
         return {
@@ -616,6 +620,64 @@ class OntologyHarmonizer:
             for ontology_id, framework in ontostore.ontology_frameworks.items()
             if self._framework_has_local_file(framework)
         ]
+
+    def _lookup_harmonized_label(
+        self,
+        target: dict[str, Any],
+        *,
+        ontostore: OntoStore,
+    ) -> Any:
+        label = target.get("hz_label")
+        if label is None:
+            LOGGER.info(
+                "Skipping post-strategy ontology lookup because target has no hz_label."
+            )
+            return False
+
+        for ontology_id in self._post_strategy_ontology_ids(target, ontostore):
+            hits = ontostore.lookup(str(label), ontology_id)
+            if hits:
+                break
+        else:
+            hits = []
+
+        if not hits:
+            LOGGER.info("Post-strategy ontology lookup returned no hits.")
+            return False
+
+        lookup = hits[0]
+        target["ontology_id"] = lookup["ontology_id"]
+        target["ontology_lookup"] = lookup
+        target["ontology_lookup_hits"] = hits
+        target["ontology_match"] = True
+        LOGGER.info(
+            "Post-strategy ontology lookup matched target %s with %d hits.",
+            target.get("id"),
+            len(hits),
+        )
+        return lookup
+
+    def _post_strategy_ontology_ids(
+        self,
+        target: dict[str, Any],
+        ontostore: OntoStore,
+    ) -> list[str]:
+        ontology_ids = []
+        stored_ontology_id = target.get("ontology_id")
+        if (
+            stored_ontology_id is not None
+            and str(stored_ontology_id) in ontostore.ontology_frameworks
+        ):
+            ontology_ids.append(str(stored_ontology_id))
+
+        for ontology_id in self._candidate_ontology_ids(target, ontostore):
+            if ontology_id not in ontostore.ontology_frameworks:
+                continue
+            if ontology_id in ontology_ids:
+                continue
+            ontology_ids.append(ontology_id)
+
+        return ontology_ids
 
     def _assignment_candidate_frameworks(
         self,

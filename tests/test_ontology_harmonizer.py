@@ -2257,6 +2257,206 @@ def test_harmonize_routes_failed_lookup_to_strategy_handler() -> None:
     }
 
 
+def test_harmonize_looks_up_strategy_harmonized_label_with_stored_ontology_id(
+    tmp_path: Path,
+) -> None:
+    term = {
+        "iri": "http://purl.obolibrary.org/obo/UBERON_0002048",
+        "accession": "UBERON:0002048",
+        "title": "lung",
+        "description": "Respiration organ.",
+    }
+    json_path = ontology_json_file(tmp_path, "uberon", {"label": {"lung": [term]}})
+    store = OntoStore(
+        ontology_frameworks={
+            "uberon": {"path": tmp_path / "missing.owl", "json_path": json_path},
+            "cl": {
+                "path": tmp_path / "missing-cl.owl",
+                "json_path": ontology_json_file(
+                    tmp_path,
+                    "cl",
+                    {"label": {"lung": [{"title": "wrong ontology"}]}},
+                ),
+            },
+        },
+        storage_dir=tmp_path,
+    )
+    target = {
+        "id": "target-0",
+        "pre_hz_field": "tissue",
+        "pre_hz_label": "lung tissue",
+    }
+
+    class RecordingHarmonizer(OntologyHarmonizer):
+        def lookup_label(
+            self,
+            target,
+            *,
+            publication_context,
+            ontostore,
+            strategy,
+            lookup_llm_judge=False,
+            lookup_llm_threshold=2,
+        ):
+            return False
+
+        def assign_onto_framework(self, target, *, publication_context, ontostore):
+            target["ontology_id"] = "cl"
+            return {"decision": "cl", "confidence": "low", "reason": "initial"}
+
+        def harmonize_field(self, target, *, publication_context, ontostore, llm=True):
+            return False
+
+        def harmonize_label(self, target, *, publication_context, ontostore, strategy):
+            target["hz_label"] = "lung"
+            target["ontology_id"] = "uberon"
+            target["ontology_strategy_result"] = {
+                "strategy": strategy,
+                "status": "matched",
+                "decision": "UBERON:0002048",
+                "confidence": "medium",
+                "reason": "strategy assigned label and framework",
+            }
+            return target["ontology_strategy_result"]
+
+    result = RecordingHarmonizer(ontostore=store, llm=FakeLLM()).harmonize(
+        publication_context="context",
+        target=target,
+        strategy="websearch",
+    )
+
+    assert result["harmonization_targets"] == [target]
+    assert target["ontology_match"] is True
+    assert target["ontology_id"] == "uberon"
+    assert target["ontology_lookup"] == {**term, "ontology_id": "uberon"}
+    assert target["ontology_lookup_hits"] == [{**term, "ontology_id": "uberon"}]
+    assert target["ontology_strategy_result"] == {
+        "strategy": "websearch",
+        "status": "matched",
+        "decision": "UBERON:0002048",
+        "confidence": "medium",
+        "reason": "strategy assigned label and framework",
+    }
+
+
+def test_harmonize_post_strategy_lookup_ignores_unconfigured_ontology_id(
+    tmp_path: Path,
+) -> None:
+    store = OntoStore(
+        ontology_frameworks={
+            "uberon": {
+                "path": tmp_path / "missing.owl",
+                "json_path": ontology_json_file(tmp_path, "uberon", {"label": {}}),
+            }
+        },
+        storage_dir=tmp_path,
+    )
+    target = {"id": "target-0", "pre_hz_label": "lung"}
+
+    class RecordingHarmonizer(OntologyHarmonizer):
+        def lookup_label(
+            self,
+            target,
+            *,
+            publication_context,
+            ontostore,
+            strategy,
+            lookup_llm_judge=False,
+            lookup_llm_threshold=2,
+        ):
+            return False
+
+        def assign_onto_framework(self, target, *, publication_context, ontostore):
+            return {"decision": "false", "confidence": "low", "reason": "none"}
+
+        def harmonize_field(self, target, *, publication_context, ontostore, llm=True):
+            return False
+
+        def harmonize_label(self, target, *, publication_context, ontostore, strategy):
+            target["ontology_id"] = "missing"
+            target["ontology_strategy_result"] = {
+                "strategy": strategy,
+                "status": "matched",
+                "decision": "missing",
+                "confidence": "low",
+                "reason": "strategy produced an unknown framework",
+            }
+            return target["ontology_strategy_result"]
+
+    RecordingHarmonizer(ontostore=store, llm=FakeLLM()).harmonize(
+        target=target,
+        strategy="websearch",
+    )
+
+    assert target["ontology_id"] == "missing"
+    assert target["ontology_match"] is False
+    assert "ontology_lookup" not in target
+    assert "ontology_lookup_hits" not in target
+    assert target["ontology_strategy_result"]["status"] == "matched"
+
+
+def test_harmonize_post_strategy_lookup_miss_preserves_strategy_result(
+    tmp_path: Path,
+) -> None:
+    store = OntoStore(
+        ontology_frameworks={
+            "uberon": {
+                "path": tmp_path / "missing.owl",
+                "json_path": ontology_json_file(tmp_path, "uberon", {"label": {}}),
+            }
+        },
+        storage_dir=tmp_path,
+    )
+    target = {"id": "target-0", "pre_hz_label": "lung"}
+
+    class RecordingHarmonizer(OntologyHarmonizer):
+        def lookup_label(
+            self,
+            target,
+            *,
+            publication_context,
+            ontostore,
+            strategy,
+            lookup_llm_judge=False,
+            lookup_llm_threshold=2,
+        ):
+            return False
+
+        def assign_onto_framework(self, target, *, publication_context, ontostore):
+            target["ontology_id"] = "uberon"
+            return {"decision": "uberon", "confidence": "low", "reason": "initial"}
+
+        def harmonize_field(self, target, *, publication_context, ontostore, llm=True):
+            return False
+
+        def harmonize_label(self, target, *, publication_context, ontostore, strategy):
+            target["hz_label"] = "not in store"
+            target["ontology_strategy_result"] = {
+                "strategy": strategy,
+                "status": "matched",
+                "decision": "UBERON:9999999",
+                "confidence": "low",
+                "reason": "strategy result should remain visible",
+            }
+            return target["ontology_strategy_result"]
+
+    RecordingHarmonizer(ontostore=store, llm=FakeLLM()).harmonize(
+        target=target,
+        strategy="websearch",
+    )
+
+    assert target["ontology_match"] is False
+    assert "ontology_lookup" not in target
+    assert "ontology_lookup_hits" not in target
+    assert target["ontology_strategy_result"] == {
+        "strategy": "websearch",
+        "status": "matched",
+        "decision": "UBERON:9999999",
+        "confidence": "low",
+        "reason": "strategy result should remain visible",
+    }
+
+
 def test_gemini_grounded_search_client_returns_citation_hits() -> None:
     llm = FakeGroundedLLM()
     client = GeminiGroundedSearchClient(llm=llm)

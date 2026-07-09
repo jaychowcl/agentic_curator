@@ -233,9 +233,16 @@ and `reason`, stores it at `ontology_framework_assignment`, and sets
 `ontology_id` when `decision` is a configured framework ID. After assignment,
 `harmonize(...)` calls
 `harmonize_field(...)`, which uses `OntoStore.lookup_fields(...)` and falls back
-to LLM-backed `assign_field(...)` only when `llm=True`. Then `harmonize(...)` calls
-`harmonize_label(...)` only for `websearch` and `rag`. The websearch handler
-uses OLS4 restricted to the assigned `ontology_id`, then falls back to
+to LLM-backed `assign_field(...)` only when `llm=True`. Then `harmonize(...)`
+calls `harmonize_label(...)` only for `websearch` and `rag`. After a strategy
+handler returns, the harmonizer performs a post-strategy `OntoStore.lookup(...)`
+for the current `hz_label`, preferring the target's stored `ontology_id` when
+that framework exists in `OntoStore`. If that lookup finds hits, it refreshes
+`ontology_id`, `ontology_lookup`, `ontology_lookup_hits`, and
+`ontology_match=True`; if it misses, the existing strategy result remains
+unchanged. This second lookup uses normal `OntoStore.lookup(...)` behavior,
+including download/parse for URL-backed configured frameworks. The websearch
+handler uses OLS4 restricted to the assigned `ontology_id`, then falls back to
 unrestricted OLS plus an injected web search client. `NullSearchClient` is the
 default and performs no network work. `GeminiGroundedSearchClient` is an
 opt-in Google Search grounding client backed by the LLM facade; it calls
@@ -544,7 +551,10 @@ choices. Provider exceptions are not wrapped; they propagate to callers.
 `OntologyHarmonizer.harmonize(...)` normalizes single-target input, validates
 the selected strategy, first assigns ontology metadata through
 `OntoStore.lookup(...)`, then calls `assign_onto_framework(...)`, the LLM, and
-the selected strategy handler only when exact lookup fails.
+the selected strategy handler only when exact lookup fails. After strategy
+handling, it tries a second `OntoStore.lookup(...)` for the harmonized label,
+preferring the target's current `ontology_id`, so strategy-generated ontology
+choices can be enriched with local ontology metadata.
 
 <a id="method-orchestrator-pseudocode"></a>
 ## Method Orchestrator Pseudocode
@@ -736,6 +746,10 @@ class OntologyHarmonizer:
                         publication_context=publication_context,
                         ontostore=effective_ontostore,
                         strategy=strategy,
+                    )
+                    self._lookup_harmonized_label(
+                        target,
+                        ontostore=effective_ontostore,
                     )
         return {
             "publication_context": publication_context,
@@ -972,7 +986,11 @@ selects a URL-backed framework whose configured JSON/OWL files are missing,
 lookup may reach `requests.get(...)` through `OntoStore.download(...)`.
 When `lookup_label()` returns `False`, `harmonize(...)` marks the target
 unmatched. With `llm=True`, it calls `assign_onto_framework()` with the packaged
-`assign_onto_framework.md` prompt and returns the parsed assignment JSON.
+`assign_onto_framework.md` prompt and returns the parsed assignment JSON. After
+field harmonization and strategy handling, `_lookup_harmonized_label()` tries to
+enrich the strategy-harmonized label from `OntoStore`, preferring the current
+`target["ontology_id"]` and falling back to configured candidate ontology IDs
+only when earlier IDs do not produce hits.
 
 ```python
 def _extract_harmonization_targets(metadata, start_paths=None):
