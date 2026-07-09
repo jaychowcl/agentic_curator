@@ -65,7 +65,9 @@ The package uses a `src/` layout with setuptools:
 - Python requirement: `>=3.10`
 - runtime dependencies: `anthropic[vertex]>=0.107,<1`, `google-genai>=1.72,<2`, `rdflib>=7,<8`, and `requests>=2,<3`
 - dev extra: `pytest>=8`
-- console script: `cli_thematic_reviewer = "agentic_curator.cli.cli_thematic_reviewer:main"`
+- console scripts:
+  - `cli_thematic_reviewer = "agentic_curator.cli.cli_thematic_reviewer:main"`
+  - `cli_ontology_harmonizer = "agentic_curator.cli.cli_ontology_harmonizer:main"`
 - package data: `agentic_curator/curators/*/prompts/*.md`
 
 The local development convention is to use `.env/bin/python`. A typical setup
@@ -475,8 +477,10 @@ array. Each evidence item requires `evidence`, `judgement`, `confidence`, and
 
 Major orchestration flow:
 
-1. CLI users call `cli_thematic_reviewer`, which reads direct or UTF-8 file
-   inputs and passes strings into `ThematicReviewer.review_relevancy(...)`.
+1. CLI users call `cli_thematic_reviewer` or `cli_ontology_harmonizer`. The
+   CLI helpers read direct or UTF-8 file inputs, parse JSON inputs where the
+   exposed curator method expects structured data, configure stderr logging
+   from `--verbosity`, and write pretty JSON to stdout or `--out`.
 2. `review_relevancy()` calls `extract_evidence(...)`, then passes that parsed
    evidence result into `judge_evidence(...)`.
 3. Each reviewer primitive loads its packaged Markdown prompt, appends labeled
@@ -491,8 +495,9 @@ Major orchestration flow:
 6. Curator methods that request JSON parse dict/list or JSON text responses
    before returning.
 
-The current code does not configure logging or wrap provider exceptions. Those
-responsibilities stay with callers.
+The CLI configures standard-library logging to stderr. Curator workflows emit
+INFO logs for orchestration boundaries and DEBUG logs for detailed internal
+choices. Provider exceptions are not wrapped; they propagate to callers.
 
 `OntologyHarmonizer.harmonize(...)` normalizes single-target input, validates
 the selected strategy, first assigns ontology metadata through
@@ -1630,23 +1635,55 @@ adapter behavior: `text`, `response`, candidate content part text, then
 <a id="cli"></a>
 ## CLI
 
-The installed console command is `cli_thematic_reviewer`. The module can also be
-run directly:
+The installed console commands are `cli_thematic_reviewer` and
+`cli_ontology_harmonizer`. The modules can also be run directly:
 
 ```bash
 .env/bin/python -m agentic_curator.cli.cli_thematic_reviewer --help
+.env/bin/python -m agentic_curator.cli.cli_ontology_harmonizer --help
 ```
 
-Inputs may be provided directly or from UTF-8 files:
+Both commands accept `--verbosity {quiet,error,warning,info,debug}`. Logs are
+written to stderr and JSON results stay on stdout unless `--out` is supplied.
+
+`cli_thematic_reviewer` exposes `ThematicReviewer` methods:
+
+- no subcommand or `review`: `review_relevancy(...)`
+- `extract-evidence`: `extract_evidence(...)`
+- `judge-evidence`: `judge_evidence(...)`
+
+Thematic reviewer inputs may be provided directly or from UTF-8 files:
 
 - `--publication-text` or `--publication-text-file`
 - `--theme` or `--theme-file`
 - `--metadata` or `--metadata-file`
 - `--title` or `--title-file`
+- `--evidences` or `--evidences-file` for `judge-evidence`
 
 For each input, the file option takes precedence over the direct value.
 Metadata files are read as UTF-8 text and passed through as strings; they are
-not parsed as JSON by the CLI.
+not parsed as JSON by the thematic review and extraction commands. Evidence
+inputs for `judge-evidence` are parsed as JSON.
+
+`cli_ontology_harmonizer` exposes `OntologyHarmonizer` methods:
+
+- `harmonize`: `harmonize(...)`
+- `harmonize-miniml-json`: `harmonize_miniml_json(...)`
+
+Ontology inputs include:
+
+- `--publication-context` or `--publication-context-file`
+- `--target` or `--target-file`
+- `--harmonization-targets` or `--harmonization-targets-file`
+- `--miniml-json` or `--miniml-json-file`
+- `--target-paths` or `--target-paths-file`
+- `--strategy websearch|rag`
+- `--lookup-llm-judge`
+- `--lookup-llm-threshold`
+- `--llm` or `--no-llm`
+- `--ontology-frameworks` or `--ontology-frameworks-file`
+- `--fields` or `--fields-file`
+- `--storage-dir`
 
 By default the CLI writes pretty JSON to stdout. When `--out` is provided, it
 writes pretty JSON to that file and keeps stdout quiet.
@@ -1669,8 +1706,10 @@ Test coverage includes:
 - Owl2json imports, ontology metadata extraction, normalized term JSON,
   accession fallback, deprecated/replaced terms, HTML rejection, and JSON file
   writing
-- CLI direct inputs, UTF-8 file inputs, file precedence, stdout output, and
+- thematic and ontology CLI direct inputs, UTF-8 file inputs, JSON inputs,
+  subcommand routing, verbosity logging, file precedence, stdout output, and
   `--out` writing
+- workflow logging for `ThematicReviewer`, `OntologyHarmonizer`, and `OntoStore`
 - provider facade selection, metadata responses, Claude model routing, request
   construction, config merging, schema normalization, tool overrides, and lazy
   import errors
@@ -1728,6 +1767,7 @@ Run CLI help:
 
 ```bash
 .env/bin/python -m agentic_curator.cli.cli_thematic_reviewer --help
+.env/bin/python -m agentic_curator.cli.cli_ontology_harmonizer --help
 ```
 
 Run the CLI against local fixtures, if present:
@@ -1739,4 +1779,14 @@ Run the CLI against local fixtures, if present:
   --metadata-file .dev/thematic_reviewer_metadata.json \
   --title-file .dev/thematic_reviewer_title.txt \
   --out .dev/thematic_reviewer_decision.json
+```
+
+Run ontology harmonization against a JSON target:
+
+```bash
+.env/bin/python -m agentic_curator.cli.cli_ontology_harmonizer harmonize \
+  --publication-context-file .dev/thematic_reviewer_publication_text.txt \
+  --target '{"id": "target-1", "pre_hz_field": "organism", "pre_hz_label": "mouse"}' \
+  --fields '{"organism": {"label": "organism"}}' \
+  --no-llm
 ```

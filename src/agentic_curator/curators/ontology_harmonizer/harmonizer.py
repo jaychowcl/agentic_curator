@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from agentic_curator.wrappers import LLM
 
 
 PROMPT_PACKAGE = "agentic_curator.curators.ontology_harmonizer"
+LOGGER = logging.getLogger(__name__)
 
 
 class OntologyHarmonizer:
@@ -55,11 +57,17 @@ class OntologyHarmonizer:
         lookup_llm_threshold: int = 2,
         llm: bool = True,
     ) -> dict[str, Any]:
+        LOGGER.info("Starting ontology harmonization.")
         effective_ontostore = self._effective_ontostore(ontostore)
         normalized_strategy = self._normalize_strategy(strategy)
         normalized_targets = self._normalize_targets(
             harmonization_targets=harmonization_targets,
             target=target,
+        )
+        LOGGER.debug(
+            "Ontology harmonization using strategy %s for %d targets.",
+            normalized_strategy,
+            len(normalized_targets),
         )
         for normalized_target in normalized_targets:
             self._harmonize_target(normalized_target, effective_ontostore)
@@ -72,8 +80,16 @@ class OntologyHarmonizer:
                 lookup_llm_threshold=lookup_llm_threshold,
             )
             if not lookup:
+                LOGGER.info(
+                    "Ontology lookup missed for target %s.",
+                    normalized_target.get("id"),
+                )
                 self._mark_ontology_miss(normalized_target)
                 if llm:
+                    LOGGER.info(
+                        "Assigning ontology framework for target %s.",
+                        normalized_target.get("id"),
+                    )
                     self.assign_onto_framework(
                         normalized_target,
                         publication_context=publication_context,
@@ -86,6 +102,11 @@ class OntologyHarmonizer:
                     llm=llm,
                 )
                 if normalized_strategy in self.STRATEGY_HANDLERS:
+                    LOGGER.info(
+                        "Routing target %s to %s strategy handler.",
+                        normalized_target.get("id"),
+                        normalized_strategy,
+                    )
                     self.harmonize_label(
                         normalized_target,
                         publication_context=publication_context,
@@ -93,6 +114,7 @@ class OntologyHarmonizer:
                         strategy=normalized_strategy,
                     )
 
+        LOGGER.info("Completed ontology harmonization.")
         return {
             "publication_context": publication_context,
             "harmonization_targets": normalized_targets,
@@ -111,12 +133,14 @@ class OntologyHarmonizer:
         lookup_llm_threshold: int = 2,
         llm: bool = True,
     ) -> dict[str, Any]:
+        LOGGER.info("Starting MINiML JSON ontology harmonization.")
         should_dedupe_targets = target_paths is None
         effective_target_paths = target_paths
         if effective_target_paths is None:
             effective_target_paths = (
                 self.target_extractor.build_miniml_sample_target_paths(miniml_json)
             )
+        LOGGER.debug("Extracting targets from %d target paths.", len(effective_target_paths))
         harmonization_targets = self.target_extractor.extract(
             miniml_json,
             start_paths=effective_target_paths,
@@ -138,6 +162,7 @@ class OntologyHarmonizer:
         )
         applied_targets = result.get("harmonization_targets", harmonization_targets)
         result["miniml_json"] = self.apply_targets(miniml_json, applied_targets)
+        LOGGER.info("Completed MINiML JSON ontology harmonization.")
         return result
 
     def apply_targets(
@@ -145,6 +170,7 @@ class OntologyHarmonizer:
         miniml_json: dict[str, Any] | list[Any] | None,
         harmonization_targets: list[dict[str, Any]],
     ) -> dict[str, Any] | list[Any] | None:
+        LOGGER.debug("Applying %d harmonization targets.", len(harmonization_targets))
         if not isinstance(miniml_json, (dict, list)) or not isinstance(
             harmonization_targets,
             list,
@@ -342,10 +368,17 @@ class OntologyHarmonizer:
         self._harmonize_target(target, ontostore)
         label = target.get("hz_label")
         if label is None:
+            LOGGER.info("Skipping ontology lookup because target has no hz_label.")
             return False
 
         hits: list[dict[str, Any]] = []
-        for ontology_id in self._candidate_ontology_ids(target, ontostore):
+        candidate_ontology_ids = self._candidate_ontology_ids(target, ontostore)
+        LOGGER.debug(
+            "Looking up label %r across ontology IDs: %s.",
+            label,
+            candidate_ontology_ids,
+        )
+        for ontology_id in candidate_ontology_ids:
             hits.extend(ontostore.lookup(str(label), ontology_id))
 
         if not hits:
@@ -362,6 +395,11 @@ class OntologyHarmonizer:
         target["ontology_lookup"] = lookup
         target["ontology_lookup_hits"] = hits
         target["ontology_match"] = True
+        LOGGER.info(
+            "Ontology lookup matched target %s with %d hits.",
+            target.get("id"),
+            len(hits),
+        )
         return lookup
 
     def _select_lookup_hit(
@@ -376,6 +414,7 @@ class OntologyHarmonizer:
         if not lookup_llm_judge or len(hits) < lookup_llm_threshold:
             return hits[0]
 
+        LOGGER.info("Judging %d ontology lookup hits with LLM.", len(hits))
         judgement = self.judge_lookup(
             target,
             publication_context=publication_context,
@@ -421,6 +460,7 @@ class OntologyHarmonizer:
         publication_context: str | None,
         ontostore: OntoStore,
     ) -> dict[str, Any]:
+        LOGGER.info("Assigning ontology framework with LLM.")
         self._mark_ontology_miss(target)
         framework_configs = self._assignment_candidate_frameworks(target, ontostore)
         prompt = self._assign_onto_framework_prompt(
@@ -456,15 +496,18 @@ class OntologyHarmonizer:
         self._harmonize_target(target, ontostore)
         field = target.get("hz_field")
         if field is None:
+            LOGGER.info("Skipping field harmonization because target has no hz_field.")
             return False
 
         lookup = ontostore.lookup_fields(field)
         if lookup:
             target["hz_field"] = lookup["field"]
             target["field_lookup"] = lookup
+            LOGGER.info("Field harmonization matched %s.", lookup["field"])
             return lookup
 
         if llm:
+            LOGGER.info("Assigning field with LLM.")
             return self.assign_field(
                 target,
                 publication_context=publication_context,
@@ -479,6 +522,7 @@ class OntologyHarmonizer:
         publication_context: str | None,
         ontostore: OntoStore,
     ) -> dict[str, Any]:
+        LOGGER.info("Assigning harmonized field with LLM.")
         prompt = self._assign_field_prompt(
             target=target,
             publication_context=publication_context,
@@ -523,6 +567,7 @@ class OntologyHarmonizer:
                 f"Supported strategies: {supported}."
             )
 
+        LOGGER.info("Running ontology harmonization strategy %s.", strategy)
         return handler_class().handle(
             target,
             publication_context=publication_context,

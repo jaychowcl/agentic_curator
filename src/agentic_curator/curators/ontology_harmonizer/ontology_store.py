@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -14,6 +15,7 @@ from agentic_curator.curators.ontology_harmonizer.owl2json import Owl2json
 
 
 OntologyFrameworkConfig = dict[str, dict[str, Any]]
+LOGGER = logging.getLogger(__name__)
 
 
 class OntoStore:
@@ -119,6 +121,7 @@ class OntoStore:
         description: str | None = None,
         remove: bool = False,
     ) -> None:
+        LOGGER.info("Configuring ontology framework %s.", name)
         metadata = {
             "version": version,
             "title": title,
@@ -136,6 +139,7 @@ class OntoStore:
                     "remove=True cannot be combined with url, path, or metadata."
                 )
             del self.ontology_frameworks[name]
+            LOGGER.info("Removed ontology framework %s.", name)
             return
 
         raw_framework: dict[str, Any] = {}
@@ -154,6 +158,7 @@ class OntoStore:
             name=name,
             framework=raw_framework,
         )
+        LOGGER.debug("Configured ontology framework %s.", name)
 
     def add_url(
         self,
@@ -166,6 +171,7 @@ class OntoStore:
         title: str | None = None,
         description: str | None = None,
     ) -> None:
+        LOGGER.info("Adding ontology framework URL %s.", name)
         self.configure_framework(
             name,
             url=url,
@@ -177,6 +183,7 @@ class OntoStore:
         )
 
     def add_urls(self, ontology_frameworks: OntologyFrameworkConfig) -> None:
+        LOGGER.info("Adding %d ontology framework URLs/configs.", len(ontology_frameworks))
         self.ontology_frameworks.update(
             self._normalize_frameworks(ontology_frameworks)
         )
@@ -246,20 +253,26 @@ class OntoStore:
         }
 
     def get(self, name: str, force: bool = False) -> Path:
+        LOGGER.info("Getting ontology framework %s.", name)
         owl_path = self._target_path(name)
         json_path = self._json_target_path(name)
         if json_path.exists() and not force:
+            LOGGER.debug("Using cached ontology JSON %s.", json_path)
             return self._ensure_json_ontology_id(json_path, name)
 
         if force and self._is_url_framework(name):
+            LOGGER.info("Redownloading ontology framework %s.", name)
             self._download_to_path(name, owl_path)
         elif not owl_path.exists():
             owl_path = self.download(name)
 
         json_path.parent.mkdir(parents=True, exist_ok=True)
-        return Owl2json(owl_path).write_json(json_path, ontology_id=name)
+        result = Owl2json(owl_path).write_json(json_path, ontology_id=name)
+        LOGGER.info("Wrote ontology JSON for %s.", name)
+        return result
 
     def lookup(self, label: str, ontology_id: str) -> list[dict[str, Any]]:
+        LOGGER.info("Looking up ontology label.")
         json_path = self.get(ontology_id)
         ontology = json.loads(json_path.read_text(encoding="utf-8"))
         terms = ontology.get("terms", {})
@@ -274,11 +287,18 @@ class OntoStore:
                 continue
             hits.extend(self._lookup_index(index, lookup_label))
 
-        return self._dedupe_lookup_hits(
+        result = self._dedupe_lookup_hits(
             self._metadata_with_ontology_id(hits, ontology_id)
         )
+        LOGGER.info(
+            "Ontology label lookup returned %d hits for %s.",
+            len(result),
+            ontology_id,
+        )
+        return result
 
     def lookup_fields(self, field: Any) -> Any:
+        LOGGER.info("Looking up ontology field.")
         lookup_field = self.harmonize_key(field)
         for field_key, metadata in self.fields.items():
             candidates = [field_key]
@@ -292,8 +312,10 @@ class OntoStore:
             if lookup_field in {
                 self.harmonize_key(candidate) for candidate in candidates
             }:
+                LOGGER.info("Ontology field lookup matched %s.", field_key)
                 return {"field": field_key, **metadata}
 
+        LOGGER.info("Ontology field lookup missed.")
         return False
 
     @staticmethod
@@ -362,23 +384,28 @@ class OntoStore:
         return json.dumps(hit, sort_keys=True, default=str)
 
     def download(self, name: str) -> Path:
+        LOGGER.info("Downloading ontology framework %s if needed.", name)
         target = self._target_path(name)
         if self._is_path_framework(name):
             if not target.exists():
                 raise FileNotFoundError(target)
+            LOGGER.debug("Using configured local ontology path %s.", target)
             return target
 
         if target.exists():
+            LOGGER.debug("Using cached ontology OWL %s.", target)
             return target
 
         return self._download_to_path(name, target)
 
     def _download_to_path(self, name: str, target: Path) -> Path:
+        LOGGER.info("Downloading ontology framework %s to %s.", name, target)
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         url = self._framework_url(name)
         response = requests.get(url, timeout=30)
         response.raise_for_status()
         target.write_bytes(response.content)
+        LOGGER.info("Downloaded ontology framework %s.", name)
         return target
 
     def _json_target_path(self, name: str) -> Path:

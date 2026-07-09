@@ -77,6 +77,27 @@ cli_thematic_reviewer \
   --out decision.json
 ```
 
+Use method subcommands when you only need one reviewer step:
+
+```bash
+cli_thematic_reviewer extract-evidence \
+  --publication-text-file publication.txt \
+  --theme-file theme.txt
+```
+
+### CLI Ontology Harmonization
+
+Use the ontology CLI for target or MINiML JSON harmonization. See the
+[CLI guide](#cli-guide) for all arguments.
+
+```bash
+cli_ontology_harmonizer harmonize \
+  --publication-context-file publication.txt \
+  --target '{"id": "target-1", "pre_hz_field": "organism", "pre_hz_label": "mouse"}' \
+  --fields '{"organism": {"label": "organism"}}' \
+  --no-llm
+```
+
 ### Python Ontology Utilities
 
 Use `OntoStore` to download and parse a configured ontology framework. See the
@@ -177,13 +198,36 @@ prompts as sorted, indented JSON. Invalid JSON text returned by the LLM raises
 
 ### CLI Guide
 
-The installed command is `cli_thematic_reviewer`.
+The package installs two curator commands:
 
 ```bash
 cli_thematic_reviewer --help
+cli_ontology_harmonizer --help
 ```
 
-Arguments:
+Both commands accept `--verbosity {quiet,error,warning,info,debug}` before the
+subcommand or method arguments. Logs are written to stderr; JSON results stay on
+stdout unless `--out` is supplied.
+
+`cli_thematic_reviewer` exposes the `ThematicReviewer` orchestrator methods:
+
+| Command | Curator method |
+| --- | --- |
+| no subcommand or `review` | `review_relevancy(...)` |
+| `extract-evidence` | `extract_evidence(...)` |
+| `judge-evidence` | `judge_evidence(...)` |
+
+The legacy no-subcommand form is still supported:
+
+```bash
+cli_thematic_reviewer \
+  --publication-text-file publication.txt \
+  --theme-file theme.txt \
+  --metadata-file metadata.json \
+  --title-file title.txt
+```
+
+Thematic reviewer arguments:
 
 | Argument | Description |
 | --- | --- |
@@ -195,10 +239,34 @@ Arguments:
 | `--metadata-file` | UTF-8 file containing metadata text. Takes precedence over `--metadata`. |
 | `--title` | Title supplied directly. |
 | `--title-file` | UTF-8 file containing the title. Takes precedence over `--title`. |
+| `--evidences` | JSON evidence object for `judge-evidence`. |
+| `--evidences-file` | UTF-8 JSON file for `judge-evidence`. Takes precedence over `--evidences`. |
 | `--out` | Output JSON file. If omitted, JSON is written to stdout. |
 
-The CLI passes all inputs to `ThematicReviewer.review_relevancy(...)` and writes
-pretty-printed JSON.
+`cli_ontology_harmonizer` exposes the `OntologyHarmonizer` orchestrator methods:
+
+| Command | Curator method |
+| --- | --- |
+| `harmonize` | `harmonize(...)` |
+| `harmonize-miniml-json` | `harmonize_miniml_json(...)` |
+
+Ontology CLI arguments:
+
+| Argument | Description |
+| --- | --- |
+| `--publication-context` / `--publication-context-file` | Publication context text or UTF-8 file. |
+| `--target` / `--target-file` | JSON single target for `harmonize`. |
+| `--harmonization-targets` / `--harmonization-targets-file` | JSON target list or target object for `harmonize`. |
+| `--miniml-json` / `--miniml-json-file` | JSON MINiML payload for `harmonize-miniml-json`. |
+| `--target-paths` / `--target-paths-file` | JSON target path specs. |
+| `--strategy` | `websearch` or `rag`; defaults to `websearch`. |
+| `--lookup-llm-judge` | Use the LLM to choose among multiple lookup hits when the threshold is met. |
+| `--lookup-llm-threshold` | Minimum hit count for LLM lookup judgement; defaults to `2`. |
+| `--llm` / `--no-llm` | Enable or disable LLM fallback assignment; enabled by default. |
+| `--ontology-frameworks` / `--ontology-frameworks-file` | JSON framework config for `OntoStore`. |
+| `--fields` / `--fields-file` | JSON field config for `OntoStore`. |
+| `--storage-dir` | Ontology framework storage directory. |
+| `--out` | Output JSON file. If omitted, JSON is written to stdout. |
 
 ### Ontology Guide
 
@@ -332,12 +400,17 @@ CLI orchestration:
 ```python
 def main(argv):
     args = argparse.parse_args(argv)
-    result = ThematicReviewer().review_relevancy(
-        publication_text=input_or_file(args.publication_text),
-        theme=input_or_file(args.theme),
-        metadata=input_or_file(args.metadata),
-        title=input_or_file(args.title),
-    )
+    configure_logging(args.verbosity)
+    if command is thematic review:
+        result = ThematicReviewer().review_relevancy(...)
+    if command is thematic extract-evidence:
+        result = ThematicReviewer().extract_evidence(...)
+    if command is thematic judge-evidence:
+        result = ThematicReviewer().judge_evidence(...)
+    if command is ontology harmonize:
+        result = OntologyHarmonizer(ontostore=store_from_json_options).harmonize(...)
+    if command is ontology harmonize-miniml-json:
+        result = OntologyHarmonizer(...).harmonize_miniml_json(...)
     write_json_to_outfile_or_stdout(result)
 ```
 

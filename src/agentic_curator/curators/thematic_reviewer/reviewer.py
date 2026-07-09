@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from importlib.resources import files
 from typing import Any
 
@@ -9,6 +10,7 @@ from agentic_curator.wrappers import LLM
 
 
 PROMPT_PACKAGE = "agentic_curator.curators.thematic_reviewer"
+LOGGER = logging.getLogger(__name__)
 
 
 class ThematicReviewer:
@@ -24,6 +26,7 @@ class ThematicReviewer:
         metadata: str | dict[str, Any] | None = None,
         title: str | None = None,
     ) -> dict[str, Any]:
+        LOGGER.info("Starting thematic relevance review.")
         evidences = self.extract_evidence(
             publication_text=publication_text,
             theme=theme,
@@ -31,6 +34,7 @@ class ThematicReviewer:
             title=title,
         )
         judgement = self.judge_evidence(evidences=evidences, theme=theme, title=title)
+        LOGGER.info("Completed thematic relevance review.")
         return {"evidences": evidences, "judgement": judgement}
 
     def extract_evidence(
@@ -40,6 +44,7 @@ class ThematicReviewer:
         metadata: str | dict[str, Any] | None = None,
         title: str | None = None,
     ) -> dict[str, Any] | list[Any]:
+        LOGGER.info("Starting evidence extraction.")
         prompt = self._evidence_prompt(
             publication_text=publication_text,
             theme=theme,
@@ -53,7 +58,9 @@ class ThematicReviewer:
                 "response_schema": self._evidence_response_schema(),
             },
         )
-        return parse_json_response(response)
+        result = parse_json_response(response)
+        LOGGER.info("Completed evidence extraction.")
+        return result
 
     def judge_evidence(
         self,
@@ -61,6 +68,7 @@ class ThematicReviewer:
         theme: str | None = None,
         title: str | None = None,
     ) -> dict[str, Any] | list[Any]:
+        LOGGER.info("Starting evidence judgement.")
         prompt = self._judge_evidence_prompt(
             evidences=evidences,
             theme=theme,
@@ -73,10 +81,13 @@ class ThematicReviewer:
                 "response_schema": self._judge_evidence_response_schema(),
             },
         )
-        return parse_json_response(response)
+        result = parse_json_response(response)
+        LOGGER.info("Completed evidence judgement.")
+        return result
 
     def _llm(self) -> Any:
         if self.llm is None:
+            LOGGER.debug("Creating default LLM facade for thematic reviewer.")
             self.llm = LLM()
 
         return self.llm
@@ -88,6 +99,7 @@ class ThematicReviewer:
         metadata: str | dict[str, Any] | list[Any] | None = None,
         title: str | None = None,
     ) -> str:
+        LOGGER.debug("Building evidence extraction prompt.")
         initial_prompt = files(PROMPT_PACKAGE).joinpath(
             "prompts/evidence_extraction.md"
         ).read_text(encoding="utf-8").strip()
@@ -113,6 +125,7 @@ class ThematicReviewer:
         theme: str | None = None,
         title: str | None = None,
     ) -> str:
+        LOGGER.debug("Building evidence judgement prompt.")
         initial_prompt = files(PROMPT_PACKAGE).joinpath(
             "prompts/judge_evidence.md"
         ).read_text(encoding="utf-8").strip()
