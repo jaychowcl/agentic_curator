@@ -842,7 +842,7 @@ def test_lookup_returns_false_when_label_is_absent(tmp_path: Path) -> None:
     assert store.lookup("lung", "empty") is False
 
 
-def test_assign_onto_framework_matches_available_store_framework(
+def test_lookup_label_matches_available_store_framework(
     tmp_path: Path,
 ) -> None:
     term = {
@@ -859,7 +859,7 @@ def test_assign_onto_framework_matches_available_store_framework(
     )
     target = {"id": "target-0", "pre_hz_label": "lung"}
 
-    result = OntologyHarmonizer().assign_onto_framework(
+    result = OntologyHarmonizer().lookup_label(
         target,
         publication_context=None,
         ontostore=store,
@@ -873,7 +873,7 @@ def test_assign_onto_framework_matches_available_store_framework(
     assert target["ontology_match"] is True
 
 
-def test_assign_onto_framework_respects_target_framework_subset(
+def test_lookup_label_respects_target_framework_subset(
     tmp_path: Path,
 ) -> None:
     term = {
@@ -901,10 +901,31 @@ def test_assign_onto_framework_respects_target_framework_subset(
         "ontology_frameworks": ["empty"],
     }
 
-    result = OntologyHarmonizer().assign_onto_framework(
+    result = OntologyHarmonizer().lookup_label(
         target,
         publication_context=None,
         ontostore=store,
+        strategy="identity",
+    )
+
+    assert result is False
+    assert "ontology_match" not in target
+    assert "ontology_id" not in target
+    assert "ontology_lookup" not in target
+
+
+def test_assign_onto_framework_marks_lookup_miss() -> None:
+    target = {
+        "id": "target-0",
+        "pre_hz_label": "lung",
+        "ontology_id": "old",
+        "ontology_lookup": {"title": "old"},
+    }
+
+    result = OntologyHarmonizer().assign_onto_framework(
+        target,
+        publication_context=None,
+        ontostore=OntoStore(),
         strategy="identity",
     )
 
@@ -1174,6 +1195,82 @@ def test_harmonize_calls_assign_onto_framework_for_each_target() -> None:
             "strategy": "identity",
         },
     ]
+
+
+def test_harmonize_calls_lookup_label_before_assign_onto_framework() -> None:
+    calls = []
+
+    class RecordingHarmonizer(OntologyHarmonizer):
+        def lookup_label(
+            self,
+            target,
+            *,
+            publication_context,
+            ontostore,
+            strategy,
+        ):
+            calls.append(("lookup", target["id"], publication_context, strategy))
+            return False
+
+        def assign_onto_framework(
+            self,
+            target,
+            *,
+            publication_context,
+            ontostore,
+            strategy,
+        ):
+            calls.append(("assign", target["id"], publication_context, strategy))
+            return False
+
+    target = {"id": "target-0", "pre_hz_label": "lung"}
+
+    RecordingHarmonizer().harmonize(
+        publication_context="context",
+        target=target,
+        strategy="noop",
+    )
+
+    assert calls == [
+        ("lookup", "target-0", "context", "identity"),
+        ("assign", "target-0", "context", "identity"),
+    ]
+
+
+def test_harmonize_skips_assign_onto_framework_when_lookup_label_succeeds() -> None:
+    calls = []
+
+    class RecordingHarmonizer(OntologyHarmonizer):
+        def lookup_label(
+            self,
+            target,
+            *,
+            publication_context,
+            ontostore,
+            strategy,
+        ):
+            calls.append("lookup")
+            target["ontology_match"] = True
+            return {"title": "lung"}
+
+        def assign_onto_framework(
+            self,
+            target,
+            *,
+            publication_context,
+            ontostore,
+            strategy,
+        ):
+            calls.append("assign")
+            return False
+
+    target = {"id": "target-0", "pre_hz_label": "lung"}
+
+    result = RecordingHarmonizer().harmonize(target=target)
+
+    assert calls == ["lookup"]
+    assert result["harmonization_targets"] == [target]
+    assert target["ontology_match"] is True
 
 
 def test_harmonize_single_target_calls_assign_onto_framework_once() -> None:

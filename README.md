@@ -333,9 +333,12 @@ strategy="identity", ontostore=None, target_paths=None)` accepts either a list
 of targets, a single target dictionary via `target=`, or a single dictionary in
 `harmonization_targets`. Passing both `target` and `harmonization_targets`
 raises `ValueError`. Supported strategies are `identity` and `noop`; `noop` is
-normalized to `identity`. Before returning, `harmonize(...)` calls the public
-empty hook `assign_onto_framework(...)` once for each normalized target. It
-currently returns:
+normalized to `identity`. Before returning, `harmonize(...)` calls
+`lookup_label(...)` once for each normalized target. If lookup succeeds, the
+target receives `ontology_match=True`, `ontology_id`, and `ontology_lookup`. If
+lookup fails, `harmonize(...)` calls the fallback
+`assign_onto_framework(...)`, which currently marks the target unmatched. It
+returns:
 
 ```python
 {
@@ -586,12 +589,19 @@ class OntologyHarmonizer:
         targets = normalize_target_inputs(harmonization_targets, target)
         strategy = normalize_strategy(strategy)
         for target in targets:
-            self.assign_onto_framework(
+            lookup = self.lookup_label(
                 target,
                 publication_context=publication_context,
                 ontostore=effective_store,
                 strategy=strategy,
             )
+            if not lookup:
+                self.assign_onto_framework(
+                    target,
+                    publication_context=publication_context,
+                    ontostore=effective_store,
+                    strategy=strategy,
+                )
         return {
             "publication_context": publication_context,
             "harmonization_targets": targets,
@@ -599,14 +609,21 @@ class OntologyHarmonizer:
             "target_paths": target_paths,
         }
 
+    def lookup_label(target, publication_context, ontostore, strategy):
+        search candidate ontology frameworks through ontostore.lookup(...)
+        if match:
+            set target ontology fields and return lookup metadata
+        return False
+
     def assign_onto_framework(target, publication_context, ontostore, strategy):
-        pass
+        mark target as unmatched fallback
+        return False
 ```
 
 Target extraction is handled by
 `ontology_harmonizer.harmonization_target_extractor.HarmonizationTargetExtractor`;
-the harmonizer keeps a public empty framework-assignment hook and a private
-target-extraction delegation wrapper for future harmonization work:
+the harmonizer keeps public lookup and framework-assignment hooks and a private
+target-extraction delegation wrapper:
 
 ```python
 class HarmonizationTargetExtractor:

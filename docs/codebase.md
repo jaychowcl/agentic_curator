@@ -113,9 +113,10 @@ integration yet.
 
 Public methods:
 
-- `assign_onto_framework(target, *, publication_context, ontostore, strategy) -> Any`
+- `assign_onto_framework(target, *, publication_context, ontostore, strategy) -> bool`
 - `harmonize_miniml_json(publication_context=None, miniml_json=None, ontostore=None, target_paths=None, strategy="identity") -> dict`
 - `harmonize(publication_context=None, harmonization_targets=None, target=None, strategy="identity", ontostore=None, target_paths=None) -> dict`
+- `lookup_label(target, *, publication_context, ontostore, strategy) -> Any`
 
 `harmonize_miniml_json(...)` extracts targets from MINiML-style JSON with
 `HarmonizationTargetExtractor`, then calls `harmonize(...)`. When `target_paths`
@@ -142,21 +143,22 @@ target dictionaries, a single target dictionary, or `None`, and `target` may be
 a single target dictionary. Passing both `target` and `harmonization_targets`
 raises `ValueError`. Supported strategies are `identity` and `noop`; `noop` is
 normalized to `identity`. A per-call `ontostore` override must be an `OntoStore`.
-`harmonize(...)` calls `assign_onto_framework(...)` once for each normalized
-target before returning. Assignment mutates each target with
-`ontology_match=False` on a miss. On a match, the target receives
-`ontology_match=True`, `ontology_id`, and `ontology_lookup` from
-`OntoStore.lookup(...)`.
+`harmonize(...)` calls `lookup_label(...)` once for each normalized target. On a
+match, `lookup_label(...)` mutates the target with `ontology_match=True`,
+`ontology_id`, and `ontology_lookup` from `OntoStore.lookup(...)`. When
+`lookup_label(...)` returns `False`, `harmonize(...)` calls
+`assign_onto_framework(...)` as the fallback assignment step; the current
+fallback marks `ontology_match=False` and removes stale ontology fields.
 
 `OntologyHarmonizer(ontostore=None)` creates a default `OntoStore` when no store
 is supplied. Custom ontology framework dictionaries should be passed to
 `OntoStore(ontology_frameworks=...)`, then injected into the harmonizer. A
 per-call `ontostore` can override the constructor value for harmonization. The
-effective store is validated before assignment. Targets may constrain lookup by
-setting `ontology_frameworks` or `ontology_ids` to a string or sequence of
-framework IDs. Without an explicit constraint, assignment searches only
-path-backed frameworks with existing local OWL or JSON files, avoiding implicit
-downloads of every built-in URL-backed framework.
+effective store is validated before lookup and assignment. Targets may constrain
+lookup by setting `ontology_frameworks` or `ontology_ids` to a string or
+sequence of framework IDs. Without an explicit constraint, `lookup_label(...)`
+searches only path-backed frameworks with existing local OWL or JSON files,
+avoiding implicit downloads of every built-in URL-backed framework.
 
 `OntoStore`, `Owl2json`, and `Owl2jsonParseError` are exported from
 `agentic_curator.curators.ontology_harmonizer`. `OntoStore` stores ontology
@@ -582,12 +584,19 @@ class OntologyHarmonizer:
             target=target,
         )
         for target in targets:
-            self.assign_onto_framework(
+            lookup = self.lookup_label(
                 target,
                 publication_context=publication_context,
                 ontostore=effective_ontostore,
                 strategy=strategy,
             )
+            if not lookup:
+                self.assign_onto_framework(
+                    target,
+                    publication_context=publication_context,
+                    ontostore=effective_ontostore,
+                    strategy=strategy,
+                )
         return {
             "publication_context": publication_context,
             "harmonization_targets": targets,
@@ -595,7 +604,7 @@ class OntologyHarmonizer:
             "target_paths": target_paths,
         }
 
-    def assign_onto_framework(
+    def lookup_label(
         target,
         *,
         publication_context,
@@ -604,7 +613,7 @@ class OntologyHarmonizer:
     ):
         label = target.get("pre_hz_label")
         if label is None:
-            return self._mark_ontology_miss(target)
+            return False
 
         for ontology_id in self._candidate_ontology_ids(target, ontostore):
             lookup = ontostore.lookup(str(label), ontology_id)
@@ -614,6 +623,15 @@ class OntologyHarmonizer:
                 target["ontology_match"] = True
                 return lookup
 
+        return False
+
+    def assign_onto_framework(
+        target,
+        *,
+        publication_context,
+        ontostore,
+        strategy,
+    ):
         return self._mark_ontology_miss(target)
 
     def _candidate_ontology_ids(target, ontostore):
@@ -662,11 +680,13 @@ class OntologyHarmonizer:
         )
 ```
 
-`assign_onto_framework()` calls `OntoStore.lookup(...)`, which calls
+`lookup_label()` calls `OntoStore.lookup(...)`, which calls
 `OntoStore.get(...)`. For unconstrained targets it only considers path-backed
 local frameworks, so no external API call is made. If a target explicitly
 selects a URL-backed framework whose configured JSON/OWL files are missing,
 lookup may reach `requests.get(...)` through `OntoStore.download(...)`.
+`assign_onto_framework()` is called only when `lookup_label()` returns `False`;
+the current fallback marks the target as unmatched.
 
 ```python
 def _extract_harmonization_targets(metadata, start_paths=None):
@@ -1329,7 +1349,7 @@ Test coverage includes:
 - reviewer instantiation, public exports, missing legacy module, prompt
   construction, schema construction, and two-call ordering
 - ontology harmonizer imports, root exports, target wrapper behavior,
-  `assign_onto_framework()` lookup mutation, and `OntoStore`
+  `lookup_label()` lookup mutation, fallback assignment, and `OntoStore`
   defaults/overrides/download/get/lookup behavior
 - Owl2json imports, ontology metadata extraction, normalized term JSON,
   accession fallback, deprecated/replaced terms, HTML rejection, and JSON file

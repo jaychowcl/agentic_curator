@@ -39,12 +39,19 @@ class OntologyHarmonizer:
             target=target,
         )
         for normalized_target in normalized_targets:
-            self.assign_onto_framework(
+            lookup = self.lookup_label(
                 normalized_target,
                 publication_context=publication_context,
                 ontostore=effective_ontostore,
                 strategy=normalized_strategy,
             )
+            if not lookup:
+                self.assign_onto_framework(
+                    normalized_target,
+                    publication_context=publication_context,
+                    ontostore=effective_ontostore,
+                    strategy=normalized_strategy,
+                )
 
         return {
             "publication_context": publication_context,
@@ -114,7 +121,7 @@ class OntologyHarmonizer:
             )
         return normalized
 
-    def assign_onto_framework(
+    def lookup_label(
         self,
         target: dict[str, Any],
         *,
@@ -126,7 +133,7 @@ class OntologyHarmonizer:
 
         label = target.get("pre_hz_label")
         if label is None:
-            return self._mark_ontology_miss(target)
+            return False
 
         for ontology_id in self._candidate_ontology_ids(target, ontostore):
             lookup = ontostore.lookup(str(label), ontology_id)
@@ -136,6 +143,17 @@ class OntologyHarmonizer:
                 target["ontology_match"] = True
                 return lookup
 
+        return False
+
+    def assign_onto_framework(
+        self,
+        target: dict[str, Any],
+        *,
+        publication_context: str | None,
+        ontostore: OntoStore,
+        strategy: str,
+    ) -> bool:
+        del publication_context, ontostore, strategy
         return self._mark_ontology_miss(target)
 
     def _effective_ontostore(self, ontostore: OntoStore | None = None) -> OntoStore:
