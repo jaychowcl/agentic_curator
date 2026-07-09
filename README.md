@@ -347,10 +347,10 @@ punctuation, and collapse spaces to underscores. Occurrence-level `hz_field` and
 receives `ontology_match=True`, `ontology_id`, and `ontology_lookup`. If lookup
 fails, `harmonize(...)` calls the fallback
 `assign_onto_framework(...)`. That fallback marks the target unmatched, sends
-the target, publication context, strategy, and candidate ontology framework
-config to the LLM, parses a JSON object with `decision`, `confidence`, and
-`reason`, stores it at `ontology_framework_assignment`, and sets `ontology_id`
-when `decision` is a configured framework ID. It returns:
+the target, publication context, and candidate ontology framework config to the
+LLM, parses a JSON object with `decision`, `confidence`, and `reason`, stores it
+at `ontology_framework_assignment`, and sets `ontology_id` when `decision` is a
+configured framework ID. It returns:
 
 ```python
 {
@@ -616,7 +616,6 @@ class OntologyHarmonizer:
                     target,
                     publication_context=publication_context,
                     ontostore=effective_store,
-                    strategy=strategy,
                 )
         return {
             "publication_context": publication_context,
@@ -632,11 +631,11 @@ class OntologyHarmonizer:
             set target ontology fields and return lookup metadata
         return False
 
-    def assign_onto_framework(target, publication_context, ontostore, strategy):
+    def assign_onto_framework(target, publication_context, ontostore):
         mark target as unmatched fallback
         candidate_frameworks = configured target frameworks or all store frameworks
         prompt = _assign_onto_framework_prompt(
-            target, publication_context, candidate_frameworks, strategy
+            target, publication_context, candidate_frameworks
         )
         response = _llm().generate_response(
             prompt,

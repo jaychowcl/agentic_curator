@@ -113,7 +113,7 @@ and an injected or lazy `LLM` for framework assignment when lookup fails.
 
 Public methods:
 
-- `assign_onto_framework(target, *, publication_context, ontostore, strategy) -> dict`
+- `assign_onto_framework(target, *, publication_context, ontostore) -> dict`
 - `harmonize_miniml_json(publication_context=None, miniml_json=None, ontostore=None, target_paths=None, strategy="identity") -> dict`
 - `harmonize(publication_context=None, harmonization_targets=None, target=None, strategy="identity", ontostore=None, target_paths=None) -> dict`
 - `lookup_label(target, *, publication_context, ontostore, strategy) -> Any`
@@ -154,8 +154,8 @@ when a target has `occurrences`. When `lookup_label(...)` returns `False`,
 `harmonize(...)` calls
 `assign_onto_framework(...)` as the fallback assignment step. The fallback marks
 `ontology_match=False`, removes stale `ontology_lookup`, prompts the LLM with
-the target, publication context, strategy, and candidate ontology framework
-config, parses JSON with `decision`, `confidence`, and `reason`, stores it at
+the target, publication context, and candidate ontology framework config, parses
+JSON with `decision`, `confidence`, and `reason`, stores it at
 `ontology_framework_assignment`, and sets `ontology_id` when `decision` is a
 configured framework ID.
 
@@ -618,7 +618,6 @@ class OntologyHarmonizer:
                     target,
                     publication_context=publication_context,
                     ontostore=effective_ontostore,
-                    strategy=strategy,
                 )
         return {
             "publication_context": publication_context,
@@ -654,7 +653,6 @@ class OntologyHarmonizer:
         *,
         publication_context,
         ontostore,
-        strategy,
     ):
         self._mark_ontology_miss(target)
         framework_configs = self._assignment_candidate_frameworks(target, ontostore)
@@ -662,7 +660,6 @@ class OntologyHarmonizer:
             target=target,
             publication_context=publication_context,
             ontology_frameworks=framework_configs,
-            strategy=strategy,
         )
         response = self._llm().generate_response(
             prompt,

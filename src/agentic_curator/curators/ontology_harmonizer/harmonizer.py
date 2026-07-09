@@ -63,7 +63,6 @@ class OntologyHarmonizer:
                     normalized_target,
                     publication_context=publication_context,
                     ontostore=effective_ontostore,
-                    strategy=normalized_strategy,
                 )
 
         return {
@@ -165,7 +164,6 @@ class OntologyHarmonizer:
         *,
         publication_context: str | None,
         ontostore: OntoStore,
-        strategy: str,
     ) -> dict[str, Any]:
         self._mark_ontology_miss(target)
         framework_configs = self._assignment_candidate_frameworks(target, ontostore)
@@ -173,7 +171,6 @@ class OntologyHarmonizer:
             target=target,
             publication_context=publication_context,
             ontology_frameworks=framework_configs,
-            strategy=strategy,
         )
         response = self._llm().generate_response(
             prompt,
@@ -283,16 +280,12 @@ class OntologyHarmonizer:
         target: dict[str, Any],
         publication_context: str | None,
         ontology_frameworks: dict[str, Any],
-        strategy: str,
     ) -> str:
         initial_prompt = files(PROMPT_PACKAGE).joinpath(
             "prompts/assign_onto_framework.md"
         ).read_text(encoding="utf-8").strip()
         prompt_parts = [
             initial_prompt,
-            "Strategy:",
-            self._prompt_text(strategy),
-            "",
             "Publication Context:",
             self._prompt_text(publication_context),
             "",

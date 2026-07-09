@@ -1064,7 +1064,6 @@ def test_assign_onto_framework_uses_llm_framework_decision(tmp_path: Path) -> No
         target,
         publication_context="sample is from lung tissue",
         ontostore=store,
-        strategy="identity",
     )
 
     assert result == response
@@ -1080,6 +1079,7 @@ def test_assign_onto_framework_uses_llm_framework_decision(tmp_path: Path) -> No
         "response_schema": OntologyHarmonizer()._assign_onto_framework_response_schema(),
     }
     assert fake_llm.calls[0]["prompt"].startswith(ASSIGN_ONTO_FRAMEWORK_PROMPT)
+    assert "Strategy:" not in fake_llm.calls[0]["prompt"]
     assert "Publication Context:\nsample is from lung tissue" in fake_llm.calls[0][
         "prompt"
     ]
@@ -1105,7 +1105,6 @@ def test_assign_onto_framework_stores_false_decision_without_ontology_id() -> No
         target,
         publication_context=None,
         ontostore=OntoStore(),
-        strategy="identity",
     )
 
     assert result == response
@@ -1135,7 +1134,6 @@ def test_assign_onto_framework_raises_value_error_for_invalid_json_response() ->
             target,
             publication_context=None,
             ontostore=OntoStore(),
-            strategy="identity",
         )
 
 
@@ -1369,14 +1367,12 @@ def test_harmonize_calls_assign_onto_framework_for_each_target() -> None:
             *,
             publication_context,
             ontostore,
-            strategy,
         ):
             calls.append(
                 {
                     "target": target,
                     "publication_context": publication_context,
                     "ontostore": ontostore,
-                    "strategy": strategy,
                 }
             )
 
@@ -1398,13 +1394,11 @@ def test_harmonize_calls_assign_onto_framework_for_each_target() -> None:
             "target": targets[0],
             "publication_context": "context",
             "ontostore": store,
-            "strategy": "identity",
         },
         {
             "target": targets[1],
             "publication_context": "context",
             "ontostore": store,
-            "strategy": "identity",
         },
     ]
 
@@ -1430,9 +1424,8 @@ def test_harmonize_calls_lookup_label_before_assign_onto_framework() -> None:
             *,
             publication_context,
             ontostore,
-            strategy,
         ):
-            calls.append(("assign", target["id"], publication_context, strategy))
+            calls.append(("assign", target["id"], publication_context))
             return False
 
     target = {"id": "target-0", "pre_hz_label": "lung"}
@@ -1445,7 +1438,7 @@ def test_harmonize_calls_lookup_label_before_assign_onto_framework() -> None:
 
     assert calls == [
         ("lookup", "target-0", "context", "identity"),
-        ("assign", "target-0", "context", "identity"),
+        ("assign", "target-0", "context"),
     ]
 
 
@@ -1471,7 +1464,6 @@ def test_harmonize_skips_assign_onto_framework_when_lookup_label_succeeds() -> N
             *,
             publication_context,
             ontostore,
-            strategy,
         ):
             calls.append("assign")
             return False
@@ -1495,7 +1487,6 @@ def test_harmonize_single_target_calls_assign_onto_framework_once() -> None:
             *,
             publication_context,
             ontostore,
-            strategy,
         ):
             calls.append(target)
 
@@ -1517,7 +1508,6 @@ def test_harmonize_without_targets_does_not_call_assign_onto_framework() -> None
             *,
             publication_context,
             ontostore,
-            strategy,
         ):
             calls.append(target)
 
@@ -1536,7 +1526,6 @@ def test_harmonize_assign_onto_framework_receives_ontostore_override() -> None:
             *,
             publication_context,
             ontostore,
-            strategy,
         ):
             calls.append(ontostore)
 
