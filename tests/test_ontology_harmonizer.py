@@ -770,6 +770,15 @@ def test_get_propagates_parse_errors_for_invalid_download(
     assert store.ontology_frameworks["CL"]["json_path"] == tmp_path / "jsons" / "cl.json"
 
 
+def test_ontostore_harmonize_key_normalizes_simple_text() -> None:
+    assert OntoStore.harmonize_key("  Oral   Buccal mucosa, ") == "oral_buccal_mucosa"
+    assert OntoStore.harmonize_key("UBERON:0002048") == "uberon:0002048"
+    assert (
+        OntoStore.harmonize_key("HTTP://PURL.OBOLIBRARY.ORG/OBO/UBERON_0002048")
+        == "http://purl.obolibrary.org/obo/uberon_0002048"
+    )
+
+
 def test_lookup_matches_label_index(tmp_path: Path) -> None:
     term = {
         "iri": "http://purl.obolibrary.org/obo/UBERON_0002048",
@@ -784,7 +793,7 @@ def test_lookup_matches_label_index(tmp_path: Path) -> None:
         storage_dir=tmp_path,
     )
 
-    assert store.lookup("lung", "uberon") == [{**term, "ontology_id": "uberon"}]
+    assert store.lookup(" Lung, ", "uberon") == [{**term, "ontology_id": "uberon"}]
 
 
 def test_lookup_matches_id_accession_and_iri_indexes(tmp_path: Path) -> None:
@@ -802,10 +811,10 @@ def test_lookup_matches_id_accession_and_iri_indexes(tmp_path: Path) -> None:
         tmp_path,
         "lookup",
         {
-            "id": {"CUSTOM:1": id_term},
-            "accession": {"UBERON:0002048": accession_term},
+            "id": {"custom:1": id_term},
+            "accession": {"uberon:0002048": accession_term},
             "iri": {
-                "http://purl.obolibrary.org/obo/UBERON_0002048": accession_term
+                "http://purl.obolibrary.org/obo/uberon_0002048": accession_term
             },
         },
     )
@@ -842,7 +851,81 @@ def test_lookup_returns_false_when_label_is_absent(tmp_path: Path) -> None:
     assert store.lookup("lung", "empty") is False
 
 
+def test_lookup_normalizes_existing_raw_json_index_keys(tmp_path: Path) -> None:
+    term = {
+        "iri": "http://purl.obolibrary.org/obo/UBERON_0002048",
+        "accession": "UBERON:0002048",
+        "title": "Oral Buccal Mucosa",
+    }
+    json_path = ontology_json_file(
+        tmp_path,
+        "uberon",
+        {"label": {"Oral Buccal Mucosa": [term]}},
+    )
+    store = OntoStore(
+        ontology_frameworks={
+            "uberon": {"path": tmp_path / "missing.owl", "json_path": json_path}
+        },
+        storage_dir=tmp_path,
+    )
+
+    assert store.lookup(" oral   buccal mucosa ", "uberon") == [
+        {**term, "ontology_id": "uberon"}
+    ]
+
+
 def test_lookup_label_matches_available_store_framework(
+    tmp_path: Path,
+) -> None:
+    term = {
+        "iri": "http://purl.obolibrary.org/obo/UBERON_0002048",
+        "accession": "UBERON:0002048",
+        "title": "lung",
+    }
+    json_path = ontology_json_file(
+        tmp_path,
+        "uberon",
+        {"label": {"oral_buccal_mucosa": [term]}},
+    )
+    store = OntoStore(
+        ontology_frameworks={
+            "uberon": {"path": tmp_path / "missing.owl", "json_path": json_path}
+        },
+        storage_dir=tmp_path,
+    )
+    target = {
+        "id": "target-0",
+        "pre_hz_field": " Tissue Type ",
+        "pre_hz_label": " Oral   Buccal mucosa, ",
+        "occurrences": [
+            {
+                "pre_hz_field": " Tissue Type ",
+                "pre_hz_label": " Oral   Buccal mucosa, ",
+                "hz_field": " Tissue Type ",
+                "hz_label": " Oral   Buccal mucosa, ",
+            }
+        ],
+    }
+
+    result = OntologyHarmonizer().lookup_label(
+        target,
+        publication_context=None,
+        ontostore=store,
+        strategy="identity",
+    )
+
+    expected_lookup = [{**term, "ontology_id": "uberon"}]
+    assert result == expected_lookup
+    assert target["ontology_id"] == "uberon"
+    assert target["ontology_lookup"] == expected_lookup
+    assert target["ontology_match"] is True
+    assert target["hz_field"] == "tissue_type"
+    assert target["hz_label"] == "oral_buccal_mucosa"
+    assert target["occurrences"][0]["hz_field"] == "tissue_type"
+    assert target["occurrences"][0]["hz_label"] == "oral_buccal_mucosa"
+
+
+def test_lookup_label_uses_existing_hz_label_after_harmonizing_it(
     tmp_path: Path,
 ) -> None:
     term = {
@@ -857,7 +940,12 @@ def test_lookup_label_matches_available_store_framework(
         },
         storage_dir=tmp_path,
     )
-    target = {"id": "target-0", "pre_hz_label": "lung"}
+    target = {
+        "id": "target-0",
+        "pre_hz_field": "tissue",
+        "pre_hz_label": "does not match",
+        "hz_label": " Lung, ",
+    }
 
     result = OntologyHarmonizer().lookup_label(
         target,
@@ -866,11 +954,9 @@ def test_lookup_label_matches_available_store_framework(
         strategy="identity",
     )
 
-    expected_lookup = [{**term, "ontology_id": "uberon"}]
-    assert result == expected_lookup
-    assert target["ontology_id"] == "uberon"
-    assert target["ontology_lookup"] == expected_lookup
-    assert target["ontology_match"] is True
+    assert result == [{**term, "ontology_id": "uberon"}]
+    assert target["hz_field"] == "tissue"
+    assert target["hz_label"] == "lung"
 
 
 def test_lookup_label_respects_target_framework_subset(

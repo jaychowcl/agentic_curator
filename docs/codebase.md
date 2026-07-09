@@ -145,8 +145,13 @@ raises `ValueError`. Supported strategies are `identity` and `noop`; `noop` is
 normalized to `identity`. A per-call `ontostore` override must be an `OntoStore`.
 `harmonize(...)` calls `lookup_label(...)` once for each normalized target. On a
 match, `lookup_label(...)` mutates the target with `ontology_match=True`,
-`ontology_id`, and `ontology_lookup` from `OntoStore.lookup(...)`. When
-`lookup_label(...)` returns `False`, `harmonize(...)` calls
+`ontology_id`, and `ontology_lookup` from `OntoStore.lookup(...)`. Before
+lookup, the harmonizer normalizes working `hz_field` and `hz_label` values from
+existing `hz_*` fields or from `pre_hz_field` and `pre_hz_label`: lowercase,
+trim, strip edge punctuation, and collapse whitespace to underscores. The same
+normalization is applied to occurrence-level `hz_field` and `hz_label` values
+when a target has `occurrences`. When `lookup_label(...)` returns `False`,
+`harmonize(...)` calls
 `assign_onto_framework(...)` as the fallback assignment step; the current
 fallback marks `ontology_match=False` and removes stale ontology fields.
 
@@ -207,10 +212,13 @@ When JSON is missing for a URL-backed framework, it parses the configured
 URL-backed frameworks redownload the `.owl` before reparsing, and path-backed
 frameworks reparse the configured local `owl_path` without network I/O.
 `OntoStore.lookup(label, ontology_id)` calls `get(ontology_id)`, loads the JSON
-from the configured `json_path`, and searches `terms["label"]`, `terms["id"]`,
+from the configured `json_path`, normalizes the query with
+`harmonize_key(...)`, and searches `terms["label"]`, `terms["id"]`,
 `terms["accession"]`, and `terms["iri"]` in that order. It returns a matched
 metadata dict, or a list for label matches, with `ontology_id` added to each
-term dict. It returns `False` when no index contains the label.
+term dict. Existing cached JSON with raw keys remains usable because lookup
+normalizes stored index keys when a direct normalized-key lookup misses. It
+returns `False` when no index contains the normalized label.
 `OntoStore.download(name)` downloads only URL-backed frameworks with
 `requests.get(url, timeout=30)`, calls `raise_for_status()`, and returns the
 configured `owl_path`. Path-backed frameworks validate and return the configured
@@ -241,7 +249,7 @@ RDF/XML. `parse(ontology_id=None)` returns:
     },
     "terms": {
         "accession": {
-            "CHEBI:100": {
+            "chebi:100": {
                 "iri": "http://purl.obolibrary.org/obo/CHEBI_100",
                 "accession": "CHEBI:100",
                 "title": "...",
@@ -256,8 +264,9 @@ RDF/XML. `parse(ontology_id=None)` returns:
                 "properties": {},
             }
         },
-        "iri": {"http://purl.obolibrary.org/obo/CHEBI_100": "..."},
-        "label": {"term label": ["..."]},
+        "id": {"chebi:100": "..."},
+        "iri": {"http://purl.obolibrary.org/obo/chebi_100": "..."},
+        "label": {"term_label": ["..."]},
     },
 }
 ```
@@ -268,10 +277,10 @@ from `obo:IAO_0000115`, accessions from `oboInOwl:id` with an OBO IRI fallback,
 parents from URI-valued `rdfs:subClassOf`, synonyms and xrefs from common
 `oboInOwl` predicates, deprecation from `owl:deprecated`, and replacements from
 `obo:IAO_0100001`. The `terms` object indexes the same normalized term records
-by accession, IRI, and label. Label values are lists because labels are not
-guaranteed unique. Terms without accessions or labels are omitted from those
-specific indexes but remain available by IRI. Unmapped literal annotations are
-preserved in `properties` by predicate IRI.
+by harmonized accession, ID, IRI, and label keys. Label values are lists because
+labels are not guaranteed unique. Terms without accessions or labels are
+omitted from those specific indexes but remain available by IRI. Unmapped
+literal annotations are preserved in `properties` by predicate IRI.
 `write_json(output_path, ontology_id=None)` writes deterministic pretty JSON and
 returns the output path. HTML-like files, such as a bad `.owl` download that
 starts with `<!DOCTYPE html>` or `<html`, and RDFLib parse failures raise
@@ -584,6 +593,7 @@ class OntologyHarmonizer:
             target=target,
         )
         for target in targets:
+            self._harmonize_target(target, effective_ontostore)
             lookup = self.lookup_label(
                 target,
                 publication_context=publication_context,
@@ -611,7 +621,8 @@ class OntologyHarmonizer:
         ontostore,
         strategy,
     ):
-        label = target.get("pre_hz_label")
+        self._harmonize_target(target, ontostore)
+        label = target.get("hz_label")
         if label is None:
             return False
 
@@ -643,6 +654,11 @@ class OntologyHarmonizer:
             for ontology_id, framework in ontostore.ontology_frameworks.items()
             if framework is path-backed and has an existing local owl_path or json_path
         ]
+
+    def _harmonize_target(target, ontostore):
+        target["hz_field"] = ontostore.harmonize_key(target hz_field or pre_hz_field)
+        target["hz_label"] = ontostore.harmonize_key(target hz_label or pre_hz_label)
+        normalize each occurrence hz_field and hz_label the same way
 
     def _mark_ontology_miss(target):
         remove stale ontology_id and ontology_lookup
@@ -871,11 +887,15 @@ def lookup(label, ontology_id):
     json_path = self.get(ontology_id)
     ontology = json.loads(json_path.read_text(encoding="utf-8"))
     terms = ontology.get("terms", {})
+    lookup_label = self.harmonize_key(label)
     for index_name in ("label", "id", "accession", "iri"):
         index = terms.get(index_name, {})
-        if index is dict and label in index:
+        if index is dict and lookup_label in index:
             return matched metadata with ontology_id added to each term dict
     return False
+
+def harmonize_key(value):
+    return lowercase, trimmed string with edge punctuation stripped and spaces collapsed to "_"
 
 def download(name):
     target = self._target_path(name)
@@ -961,7 +981,8 @@ Internal behavior:
 - `_extract_ontology_metadata(graph)`: reads the `owl:Ontology` subject and
   common title, description, version, version IRI, and license predicates.
 - `_extract_terms(graph)`: sorts URI-backed `owl:Class` subjects, normalizes
-  each term, and returns `accession`, `iri`, and `label` lookup dictionaries.
+  each term, and returns harmonized-key `accession`, `id`, `iri`, and `label`
+  lookup dictionaries.
 - `_unmapped_literal_properties(...)`: preserves ontology-specific literal
   annotations that are not part of the normalized fields.
 

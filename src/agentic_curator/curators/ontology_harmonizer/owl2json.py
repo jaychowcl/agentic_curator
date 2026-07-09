@@ -9,6 +9,8 @@ from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS
 from rdflib.term import BNode, Identifier
 
+from agentic_curator.curators.ontology_harmonizer.normalization import harmonize_key
+
 
 DC = Namespace("http://purl.org/dc/elements/1.1/")
 DCTERMS = Namespace("http://purl.org/dc/terms/")
@@ -108,17 +110,20 @@ class Owl2json:
         )
         terms = [self._extract_term(graph, subject) for subject in subjects]
         by_accession = {
-            term["accession"]: term for term in terms if term["accession"] is not None
+            harmonize_key(term["accession"]): term
+            for term in terms
+            if term["accession"] is not None
         }
-        by_iri = {term["iri"]: term for term in terms}
+        by_iri = {harmonize_key(term["iri"]): term for term in terms}
         by_label: dict[str, list[dict[str, Any]]] = {}
         for term in terms:
             if term["title"] is None:
                 continue
-            by_label.setdefault(term["title"], []).append(term)
+            by_label.setdefault(harmonize_key(term["title"]), []).append(term)
 
         return {
             "accession": by_accession,
+            "id": by_accession,
             "iri": by_iri,
             "label": by_label,
         }

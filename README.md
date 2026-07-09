@@ -334,9 +334,13 @@ of targets, a single target dictionary via `target=`, or a single dictionary in
 `harmonization_targets`. Passing both `target` and `harmonization_targets`
 raises `ValueError`. Supported strategies are `identity` and `noop`; `noop` is
 normalized to `identity`. Before returning, `harmonize(...)` calls
-`lookup_label(...)` once for each normalized target. If lookup succeeds, the
-target receives `ontology_match=True`, `ontology_id`, and `ontology_lookup`. If
-lookup fails, `harmonize(...)` calls the fallback
+`lookup_label(...)` once for each normalized target. The harmonizer first
+normalizes working `hz_field` and `hz_label` values from existing `hz_*` values
+or from `pre_hz_field` and `pre_hz_label`: lowercase, trim, strip edge
+punctuation, and collapse spaces to underscores. Occurrence-level `hz_field` and
+`hz_label` values are normalized the same way. If lookup succeeds, the target
+receives `ontology_match=True`, `ontology_id`, and `ontology_lookup`. If lookup
+fails, `harmonize(...)` calls the fallback
 `assign_onto_framework(...)`, which currently marks the target unmatched. It
 returns:
 
@@ -403,10 +407,11 @@ URL-backed `.owl` is missing, `get()` downloads it first. Use
 `get(name, force=True)` to redownload URL-backed ontologies and overwrite the
 parsed JSON, or to reparse path-backed ontologies without network I/O.
 
-`lookup(label, ontology_id)` calls `get(ontology_id)`, searches the parsed
-`label`, `id`, `accession`, and `iri` term indexes, and returns matched term
-metadata with `ontology_id` added to each returned term dictionary. Label
-matches can return a list because labels are not guaranteed unique.
+`lookup(label, ontology_id)` calls `get(ontology_id)`, normalizes the supplied
+label with the same simple harmonization rules, searches the parsed `label`,
+`id`, `accession`, and `iri` term indexes, and returns matched term metadata
+with `ontology_id` added to each returned term dictionary. Label matches can
+return a list because labels are not guaranteed unique.
 
 ### Code flow
 
@@ -589,6 +594,7 @@ class OntologyHarmonizer:
         targets = normalize_target_inputs(harmonization_targets, target)
         strategy = normalize_strategy(strategy)
         for target in targets:
+            normalize target hz_field and hz_label with ontostore.harmonize_key(...)
             lookup = self.lookup_label(
                 target,
                 publication_context=publication_context,
@@ -610,6 +616,7 @@ class OntologyHarmonizer:
         }
 
     def lookup_label(target, publication_context, ontostore, strategy):
+        normalize target hz_field and hz_label with ontostore.harmonize_key(...)
         search candidate ontology frameworks through ontostore.lookup(...)
         if match:
             set target ontology fields and return lookup metadata

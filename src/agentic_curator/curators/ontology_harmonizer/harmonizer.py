@@ -39,6 +39,7 @@ class OntologyHarmonizer:
             target=target,
         )
         for normalized_target in normalized_targets:
+            self._harmonize_target(normalized_target, effective_ontostore)
             lookup = self.lookup_label(
                 normalized_target,
                 publication_context=publication_context,
@@ -131,7 +132,8 @@ class OntologyHarmonizer:
     ) -> Any:
         del publication_context, strategy
 
-        label = target.get("pre_hz_label")
+        self._harmonize_target(target, ontostore)
+        label = target.get("hz_label")
         if label is None:
             return False
 
@@ -190,6 +192,33 @@ class OntologyHarmonizer:
         if isinstance(ontology_ids, (list, tuple, set)):
             return [str(ontology_id) for ontology_id in ontology_ids]
         return []
+
+    def _harmonize_target(
+        self,
+        target: dict[str, Any],
+        ontostore: OntoStore,
+    ) -> None:
+        self._harmonize_target_fields(target, ontostore)
+        occurrences = target.get("occurrences")
+        if not isinstance(occurrences, list):
+            return
+
+        for occurrence in occurrences:
+            if isinstance(occurrence, dict):
+                self._harmonize_target_fields(occurrence, ontostore)
+
+    def _harmonize_target_fields(
+        self,
+        target: dict[str, Any],
+        ontostore: OntoStore,
+    ) -> None:
+        field = target.get("hz_field", target.get("pre_hz_field"))
+        if field is not None:
+            target["hz_field"] = ontostore.harmonize_key(field)
+
+        label = target.get("hz_label", target.get("pre_hz_label"))
+        if label is not None:
+            target["hz_label"] = ontostore.harmonize_key(label)
 
     def _framework_has_local_file(self, framework: dict[str, Any]) -> bool:
         if "url" in framework:

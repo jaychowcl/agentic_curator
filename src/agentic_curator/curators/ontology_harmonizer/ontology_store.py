@@ -7,6 +7,9 @@ from urllib.parse import urlparse
 
 import requests
 
+from agentic_curator.curators.ontology_harmonizer.normalization import (
+    harmonize_key as normalize_key,
+)
 from agentic_curator.curators.ontology_harmonizer.owl2json import Owl2json
 
 
@@ -252,12 +255,23 @@ class OntoStore:
         if not isinstance(terms, dict):
             return False
 
+        lookup_label = self.harmonize_key(label)
         for index_name in ("label", "id", "accession", "iri"):
             index = terms.get(index_name, {})
-            if isinstance(index, dict) and label in index:
-                return self._metadata_with_ontology_id(index[label], ontology_id)
+            if not isinstance(index, dict):
+                continue
+            matched_metadata = self._lookup_index(index, lookup_label)
+            if matched_metadata:
+                return self._metadata_with_ontology_id(
+                    matched_metadata,
+                    ontology_id,
+                )
 
         return False
+
+    @staticmethod
+    def harmonize_key(value: Any) -> str:
+        return normalize_key(value)
 
     def _ensure_json_ontology_id(self, json_path: Path, ontology_id: str) -> Path:
         payload = json.loads(json_path.read_text(encoding="utf-8"))
@@ -284,6 +298,16 @@ class OntoStore:
         if isinstance(metadata, dict):
             return {**metadata, "ontology_id": ontology_id}
         return metadata
+
+    def _lookup_index(self, index: dict[str, Any], lookup_label: str) -> Any:
+        if lookup_label in index:
+            return index[lookup_label]
+
+        for key, value in index.items():
+            if self.harmonize_key(key) == lookup_label:
+                return value
+
+        return False
 
     def download(self, name: str) -> Path:
         target = self._target_path(name)
