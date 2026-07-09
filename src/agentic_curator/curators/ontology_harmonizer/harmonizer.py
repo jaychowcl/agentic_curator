@@ -104,12 +104,15 @@ class OntologyHarmonizer:
                         publication_context=publication_context,
                         ontostore=effective_ontostore,
                     )
-                self.harmonize_field(
-                    normalized_target,
-                    publication_context=publication_context,
-                    ontostore=effective_ontostore,
-                    llm=llm,
-                )
+
+            self.harmonize_field(
+                normalized_target,
+                publication_context=publication_context,
+                ontostore=effective_ontostore,
+                llm=llm,
+            )
+
+            if not lookup:
                 if normalized_strategy in self.STRATEGY_HANDLERS:
                     LOGGER.info(
                         "Routing target %s to %s strategy handler.",

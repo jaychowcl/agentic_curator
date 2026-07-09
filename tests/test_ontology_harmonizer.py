@@ -2069,14 +2069,61 @@ def test_harmonize_skips_assign_onto_framework_when_lookup_label_succeeds() -> N
             return False
 
         def harmonize_field(self, target, *, publication_context, ontostore, llm=True):
+            calls.append(("field", publication_context, llm))
             return False
 
     target = {"id": "target-0", "pre_hz_label": "lung"}
 
-    result = RecordingHarmonizer().harmonize(target=target)
+    result = RecordingHarmonizer().harmonize(
+        publication_context="context",
+        target=target,
+    )
 
-    assert calls == ["lookup"]
+    assert calls == ["lookup", ("field", "context", True)]
     assert result["harmonization_targets"] == [target]
+    assert target["ontology_match"] is True
+
+
+def test_harmonize_successful_lookup_passes_llm_false_to_field_harmonization() -> None:
+    calls = []
+
+    class RecordingHarmonizer(OntologyHarmonizer):
+        def lookup_label(
+            self,
+            target,
+            *,
+            publication_context,
+            ontostore,
+            strategy,
+            lookup_llm_judge=False,
+            lookup_llm_threshold=2,
+        ):
+            target["ontology_match"] = True
+            return {"title": "lung"}
+
+        def assign_onto_framework(
+            self,
+            target,
+            *,
+            publication_context,
+            ontostore,
+        ):
+            calls.append("assign")
+            return False
+
+        def harmonize_field(self, target, *, publication_context, ontostore, llm=True):
+            calls.append(("field", llm))
+            return False
+
+        def harmonize_label(self, target, *, publication_context, ontostore, strategy):
+            calls.append("strategy")
+            return False
+
+    target = {"id": "target-0", "pre_hz_label": "lung"}
+
+    RecordingHarmonizer().harmonize(target=target, llm=False)
+
+    assert calls == [("field", False)]
     assert target["ontology_match"] is True
 
 
