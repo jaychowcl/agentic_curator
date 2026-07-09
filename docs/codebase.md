@@ -225,12 +225,17 @@ context and returns `decision`, `confidence`, and `reason`; the judgement is
 stored at `ontology_lookup_judgement`. When `lookup_label(...)` returns
 `False`, `harmonize(...)` marks the target unmatched and, when `llm=True`, calls
 `assign_onto_framework(...)` as the fallback assignment step. The fallback
-prompts the LLM with the target, publication context, and sanitized candidate
-ontology framework metadata. Framework prompt metadata includes only `id`,
-`title`, `description`, and `version`; download URLs and configured file paths
-remain internal to `OntoStore`. It parses JSON with `decision`, `confidence`,
-and `reason`, stores it at `ontology_framework_assignment`, and sets
-`ontology_id` when `decision` is a configured framework ID.
+prompts the LLM with sanitized target context, publication context, and
+sanitized candidate ontology framework metadata. Framework prompt metadata
+includes only `id`, `title`, `description`, and `version`; download URLs and
+configured file paths remain internal to `OntoStore`. Ontology LLM prompts do
+not serialize the full mutable target. They keep identity, source,
+pre-harmonized and harmonized field/label values, relevant ontology constraints
+or IDs, and compact occurrence path/value coordinates. They omit prior lookup
+metadata, strategy results, match flags, and previous field or framework
+assignments. `assign_onto_framework(...)` parses JSON with `decision`,
+`confidence`, and `reason`, stores it at `ontology_framework_assignment`, and
+sets `ontology_id` when `decision` is a configured framework ID.
 `harmonize(...)` then calls `harmonize_field(...)` for every target, whether
 the first ontology lookup matched or missed. Field harmonization uses
 `OntoStore.lookup_fields(...)` and falls back to LLM-backed
@@ -993,6 +998,9 @@ When the first lookup missed, strategy handling may update the label and
 `_lookup_harmonized_label()` tries to enrich the strategy-harmonized label from
 `OntoStore`, preferring the current `target["ontology_id"]` and falling back to
 configured candidate ontology IDs only when earlier IDs do not produce hits.
+Ontology prompt builders use purpose-specific sanitized target context instead
+of serializing the whole mutable target, so lookup hits, strategy results,
+match flags, and previous assignments do not leak into later LLM calls.
 
 ```python
 def _extract_harmonization_targets(metadata, start_paths=None):

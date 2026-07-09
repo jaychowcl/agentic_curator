@@ -1343,6 +1343,82 @@ def test_lookup_label_llm_judge_selects_best_hit_by_id(
     assert '"id": "UBERON:2"' in fake_llm.calls[0]["prompt"]
 
 
+def test_lookup_judge_prompt_prunes_derived_target_context(
+    tmp_path: Path,
+) -> None:
+    first_hit = {
+        "id": "UBERON:1",
+        "iri": "https://example.org/UBERON_1",
+        "accession": "UBERON:1",
+        "title": "first lung",
+    }
+    second_hit = {
+        "id": "UBERON:2",
+        "iri": "https://example.org/UBERON_2",
+        "accession": "UBERON:2",
+        "title": "second lung",
+    }
+    response = {
+        "decision": "UBERON:2",
+        "confidence": "high",
+        "reason": "The second hit best matches the target.",
+    }
+    json_path = ontology_json_file(
+        tmp_path,
+        "uberon",
+        {"label": {"lung": [first_hit, second_hit]}},
+    )
+    store = OntoStore(
+        ontology_frameworks={
+            "uberon": {"path": tmp_path / "missing.owl", "json_path": json_path}
+        },
+        storage_dir=tmp_path,
+    )
+    fake_llm = FakeLLM(response=response)
+    target = {
+        "id": "target-0",
+        "source": "metadata",
+        "pre_hz_field": "tissue",
+        "pre_hz_label": "lung",
+        "hz_field": "tissue",
+        "hz_label": "lung",
+        "ontology_ids": ["uberon"],
+        "ontology_lookup": {"title": "polluting lookup"},
+        "ontology_lookup_hits": [{"title": "polluting hit"}],
+        "ontology_lookup_judgement": {"decision": "polluting decision"},
+        "ontology_match": True,
+        "ontology_strategy_result": {"reason": "polluting strategy"},
+        "ontology_framework_assignment": {"reason": "polluting framework"},
+        "field_lookup": {"field": "polluting field lookup"},
+        "field_assignment": {"reason": "polluting field assignment"},
+    }
+
+    OntologyHarmonizer(llm=fake_llm).lookup_label(
+        target,
+        publication_context="sample is oral buccal tissue",
+        ontostore=store,
+        strategy="websearch",
+        lookup_llm_judge=True,
+    )
+
+    prompt = fake_llm.calls[0]["prompt"]
+    assert '"pre_hz_field": "tissue"' in prompt
+    assert '"pre_hz_label": "lung"' in prompt
+    assert '"hz_field": "tissue"' in prompt
+    assert '"hz_label": "lung"' in prompt
+    assert '"ontology_ids": [' in prompt
+    assert '"id": "UBERON:2"' in prompt
+    assert '"ontology_lookup"' not in prompt
+    assert '"ontology_lookup_hits"' not in prompt
+    assert '"ontology_lookup_judgement"' not in prompt
+    assert '"ontology_match"' not in prompt
+    assert '"ontology_strategy_result"' not in prompt
+    assert '"ontology_framework_assignment"' not in prompt
+    assert '"field_lookup"' not in prompt
+    assert '"field_assignment"' not in prompt
+    assert "polluting" not in prompt
+
+
 def test_lookup_label_llm_judge_rejects_unknown_decision(
     tmp_path: Path,
 ) -> None:
@@ -1530,6 +1606,83 @@ def test_assign_onto_framework_uses_llm_framework_decision(tmp_path: Path) -> No
     assert '"Disease Ontology"' not in fake_llm.calls[0]["prompt"]
 
 
+def test_assign_onto_framework_prompt_prunes_derived_target_context(
+    tmp_path: Path,
+) -> None:
+    fake_llm = FakeLLM(
+        response={
+            "decision": "anatomy",
+            "confidence": "high",
+            "reason": "The target is anatomical.",
+        }
+    )
+    store = OntoStore(
+        ontology_frameworks={
+            "anatomy": {
+                "title": "Anatomy Ontology",
+                "url": "https://example.org/anatomy.owl",
+                "description": "Anatomical entities.",
+            }
+        },
+        storage_dir=tmp_path,
+    )
+    target = {
+        "id": "target-0",
+        "source": "metadata",
+        "pre_hz_field": "tissue",
+        "pre_hz_label": "lung",
+        "hz_field": "tissue",
+        "hz_label": "lung",
+        "ontology_ids": ["anatomy"],
+        "ontology_lookup": {"title": "polluting lookup"},
+        "ontology_lookup_hits": [{"title": "polluting hit"}],
+        "ontology_lookup_judgement": {"decision": "polluting decision"},
+        "ontology_match": True,
+        "ontology_strategy_result": {"reason": "polluting strategy"},
+        "ontology_framework_assignment": {"reason": "polluting framework"},
+        "field_lookup": {"field": "polluting field lookup"},
+        "field_assignment": {"reason": "polluting field assignment"},
+        "occurrences": [
+            {
+                "pre_hz_field_path": "/sample/characteristics/0/tag",
+                "pre_hz_label_path": "/sample/characteristics/0/value",
+                "parent_path": "/sample/characteristics/0",
+                "pre_hz_field": "tissue",
+                "pre_hz_label": "lung",
+                "hz_field": "tissue",
+                "hz_label": "lung",
+                "ontology_lookup": {"title": "nested polluting lookup"},
+                "field_assignment": {"reason": "nested polluting field"},
+            }
+        ],
+    }
+
+    OntologyHarmonizer(llm=fake_llm).assign_onto_framework(
+        target,
+        publication_context="sample context",
+        ontostore=store,
+    )
+
+    prompt = fake_llm.calls[0]["prompt"]
+    assert '"pre_hz_field": "tissue"' in prompt
+    assert '"pre_hz_label": "lung"' in prompt
+    assert '"hz_field": "tissue"' in prompt
+    assert '"hz_label": "lung"' in prompt
+    assert '"ontology_ids": [' in prompt
+    assert '"occurrences": {' in prompt
+    assert '"count": 1' in prompt
+    assert '"pre_hz_field_path": "/sample/characteristics/0/tag"' in prompt
+    assert '"ontology_lookup"' not in prompt
+    assert '"ontology_lookup_hits"' not in prompt
+    assert '"ontology_lookup_judgement"' not in prompt
+    assert '"ontology_match"' not in prompt
+    assert '"ontology_strategy_result"' not in prompt
+    assert '"ontology_framework_assignment"' not in prompt
+    assert '"field_lookup"' not in prompt
+    assert '"field_assignment"' not in prompt
+    assert "polluting" not in prompt
+
+
 def test_assign_onto_framework_stores_false_decision_without_ontology_id() -> None:
     response = {
         "decision": "false",
@@ -1660,6 +1813,62 @@ def test_assign_field_generates_json_response_and_adds_new_field(
     ]
     assert '"id": "target-0"' in fake_llm.calls[0]["prompt"]
     assert '"tissue"' in fake_llm.calls[0]["prompt"]
+
+
+def test_assign_field_prompt_prunes_lookup_and_strategy_context(
+    tmp_path: Path,
+) -> None:
+    response = {
+        "decision": "tissue",
+        "confidence": "high",
+        "reason": "The field already maps to tissue.",
+        "new_field": False,
+    }
+    fake_llm = FakeLLM(response=response)
+    store = OntoStore(
+        fields={"tissue": {"label": "Tissue"}},
+        storage_dir=tmp_path,
+    )
+    target = {
+        "id": "target-0",
+        "source": "metadata",
+        "pre_hz_field": "sample source",
+        "pre_hz_label": "lung",
+        "hz_field": "sample_source",
+        "hz_label": "lung",
+        "ontology_id": "uberon",
+        "ontology_lookup": {"title": "polluting lookup"},
+        "ontology_lookup_hits": [{"title": "polluting hit"}],
+        "ontology_lookup_judgement": {"decision": "polluting decision"},
+        "ontology_match": True,
+        "ontology_strategy_result": {"reason": "polluting strategy"},
+        "ontology_framework_assignment": {"reason": "polluting framework"},
+        "field_lookup": {"field": "polluting field lookup"},
+        "field_assignment": {"reason": "polluting field assignment"},
+    }
+
+    OntologyHarmonizer(llm=fake_llm).assign_field(
+        target,
+        publication_context="sample metadata context",
+        ontostore=store,
+    )
+
+    prompt = fake_llm.calls[0]["prompt"]
+    assert '"pre_hz_field": "sample source"' in prompt
+    assert '"pre_hz_label": "lung"' in prompt
+    assert '"hz_field": "sample_source"' in prompt
+    assert '"hz_label": "lung"' in prompt
+    assert '"ontology_id": "uberon"' in prompt
+    assert '"tissue"' in prompt
+    assert '"ontology_lookup"' not in prompt
+    assert '"ontology_lookup_hits"' not in prompt
+    assert '"ontology_lookup_judgement"' not in prompt
+    assert '"ontology_match"' not in prompt
+    assert '"ontology_strategy_result"' not in prompt
+    assert '"ontology_framework_assignment"' not in prompt
+    assert '"field_lookup"' not in prompt
+    assert '"field_assignment"' not in prompt
+    assert "polluting" not in prompt
 
 
 def test_assign_field_response_schema_requires_assignment_fields() -> None:

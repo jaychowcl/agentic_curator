@@ -36,6 +36,29 @@ class OntologyHarmonizer:
     """Curator for harmonizing publication metadata against ontologies."""
 
     DEFAULT_TARGET_PATHS = HarmonizationTargetExtractor.DEFAULT_TARGET_PATHS
+    TARGET_PROMPT_CONTEXT_KEYS = (
+        "id",
+        "source",
+        "pre_hz_field",
+        "pre_hz_label",
+        "hz_field",
+        "hz_label",
+        "ontology_ids",
+        "ontology_frameworks",
+    )
+    ONTOLOGY_ID_TARGET_PROMPT_CONTEXT_KEYS = (
+        *TARGET_PROMPT_CONTEXT_KEYS,
+        "ontology_id",
+    )
+    OCCURRENCE_PROMPT_CONTEXT_KEYS = (
+        "pre_hz_field_path",
+        "pre_hz_label_path",
+        "parent_path",
+        "pre_hz_field",
+        "pre_hz_label",
+        "hz_field",
+        "hz_label",
+    )
     STRATEGY_ALIASES = {
         "rag": "rag",
         "websearch": "websearch",
@@ -765,7 +788,9 @@ class OntologyHarmonizer:
             self._prompt_text(publication_context),
             "",
             "Harmonization Target:",
-            self._prompt_text(target),
+            self._prompt_text(
+                self._assignment_target_prompt_context(target)
+            ),
             "",
             "Ontology Framework Config:",
             self._prompt_text(ontology_frameworks),
@@ -788,7 +813,7 @@ class OntologyHarmonizer:
             self._prompt_text(publication_context),
             "",
             "Harmonization Target:",
-            self._prompt_text(target),
+            self._prompt_text(self._field_target_prompt_context(target)),
             "",
             "Fields:",
             self._prompt_text(fields),
@@ -811,12 +836,76 @@ class OntologyHarmonizer:
             self._prompt_text(publication_context),
             "",
             "Harmonization Target:",
-            self._prompt_text(target),
+            self._prompt_text(self._lookup_target_prompt_context(target)),
             "",
             "Lookup Hits:",
             self._prompt_text(hits),
         ]
         return "\n".join(prompt_parts).lstrip("\n")
+
+    def _assignment_target_prompt_context(
+        self,
+        target: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._target_prompt_context(
+            target,
+            keys=self.TARGET_PROMPT_CONTEXT_KEYS,
+        )
+
+    def _field_target_prompt_context(
+        self,
+        target: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._target_prompt_context(
+            target,
+            keys=self.ONTOLOGY_ID_TARGET_PROMPT_CONTEXT_KEYS,
+        )
+
+    def _lookup_target_prompt_context(
+        self,
+        target: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._target_prompt_context(
+            target,
+            keys=self.ONTOLOGY_ID_TARGET_PROMPT_CONTEXT_KEYS,
+        )
+
+    def _target_prompt_context(
+        self,
+        target: dict[str, Any],
+        *,
+        keys: tuple[str, ...],
+    ) -> dict[str, Any]:
+        context = {
+            key: target[key]
+            for key in keys
+            if key in target
+        }
+        occurrences = self._occurrences_prompt_context(target.get("occurrences"))
+        if occurrences is not None:
+            context["occurrences"] = occurrences
+        return context
+
+    def _occurrences_prompt_context(self, occurrences: Any) -> dict[str, Any] | None:
+        if not isinstance(occurrences, list):
+            return None
+
+        items = []
+        for occurrence in occurrences:
+            if not isinstance(occurrence, dict):
+                continue
+            item = {
+                key: occurrence[key]
+                for key in self.OCCURRENCE_PROMPT_CONTEXT_KEYS
+                if key in occurrence
+            }
+            if item:
+                items.append(item)
+
+        return {
+            "count": len(occurrences),
+            "items": items,
+        }
 
     def _assign_onto_framework_response_schema(self) -> dict[str, Any]:
         return {
