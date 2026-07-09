@@ -97,6 +97,9 @@ ASSIGN_ONTO_FRAMEWORK_PROMPT = files("agentic_curator").joinpath(
 ASSIGN_FIELD_PROMPT = files("agentic_curator").joinpath(
     "curators/ontology_harmonizer/prompts/assign_field.md"
 ).read_text(encoding="utf-8").strip()
+JUDGE_LOOKUP_PROMPT = files("agentic_curator").joinpath(
+    "curators/ontology_harmonizer/prompts/judge_lookup.md"
+).read_text(encoding="utf-8").strip()
 
 
 class FakeResponse:
@@ -917,21 +920,25 @@ def test_lookup_matches_id_accession_and_iri_indexes(tmp_path: Path) -> None:
         storage_dir=tmp_path,
     )
 
-    assert store.lookup("CUSTOM:1", "lookup") == {
-        **id_term,
-        "ontology_id": "lookup",
-    }
-    assert store.lookup("UBERON:0002048", "lookup") == {
-        **accession_term,
-        "ontology_id": "lookup",
-    }
+    assert store.lookup("CUSTOM:1", "lookup") == [
+        {
+            **id_term,
+            "ontology_id": "lookup",
+        }
+    ]
+    assert store.lookup("UBERON:0002048", "lookup") == [
+        {
+            **accession_term,
+            "ontology_id": "lookup",
+        }
+    ]
     assert (
         store.lookup("http://purl.obolibrary.org/obo/UBERON_0002048", "lookup")
-        == {**accession_term, "ontology_id": "lookup"}
+        == [{**accession_term, "ontology_id": "lookup"}]
     )
 
 
-def test_lookup_returns_false_when_label_is_absent(tmp_path: Path) -> None:
+def test_lookup_returns_empty_list_when_label_is_absent(tmp_path: Path) -> None:
     json_path = ontology_json_file(tmp_path, "empty", {"label": {}})
     store = OntoStore(
         ontology_frameworks={
@@ -940,7 +947,52 @@ def test_lookup_returns_false_when_label_is_absent(tmp_path: Path) -> None:
         storage_dir=tmp_path,
     )
 
-    assert store.lookup("lung", "empty") is False
+    assert store.lookup("lung", "empty") == []
+
+
+def test_lookup_returns_all_hits_across_indexes_with_deduplication(
+    tmp_path: Path,
+) -> None:
+    label_term = {
+        "id": "label-hit",
+        "iri": "https://example.org/label-hit",
+        "accession": "LOOKUP:1",
+        "title": "label hit",
+    }
+    duplicate_term = {
+        "id": "duplicate-hit",
+        "iri": "https://example.org/duplicate-hit",
+        "accession": "LOOKUP:2",
+        "title": "duplicate hit",
+    }
+    id_term = {
+        "id": "id-hit",
+        "iri": "https://example.org/id-hit",
+        "accession": "LOOKUP:3",
+        "title": "id hit",
+    }
+    json_path = ontology_json_file(
+        tmp_path,
+        "lookup",
+        {
+            "label": {"lung": [label_term, duplicate_term]},
+            "id": {"lung": duplicate_term},
+            "accession": {"lung": id_term},
+            "iri": {"lung": label_term},
+        },
+    )
+    store = OntoStore(
+        ontology_frameworks={
+            "lookup": {"path": tmp_path / "missing.owl", "json_path": json_path}
+        },
+        storage_dir=tmp_path,
+    )
+
+    assert store.lookup("lung", "lookup") == [
+        {**label_term, "ontology_id": "lookup"},
+        {**duplicate_term, "ontology_id": "lookup"},
+        {**id_term, "ontology_id": "lookup"},
+    ]
 
 
 def test_lookup_normalizes_existing_raw_json_index_keys(tmp_path: Path) -> None:
@@ -1006,10 +1058,11 @@ def test_lookup_label_matches_available_store_framework(
         strategy="identity",
     )
 
-    expected_lookup = [{**term, "ontology_id": "uberon"}]
+    expected_lookup = {**term, "ontology_id": "uberon"}
     assert result == expected_lookup
     assert target["ontology_id"] == "uberon"
     assert target["ontology_lookup"] == expected_lookup
+    assert target["ontology_lookup_hits"] == [expected_lookup]
     assert target["ontology_match"] is True
     assert target["hz_field"] == "tissue_type"
     assert target["hz_label"] == "oral_buccal_mucosa"
@@ -1046,9 +1099,238 @@ def test_lookup_label_uses_existing_hz_label_after_harmonizing_it(
         strategy="identity",
     )
 
-    assert result == [{**term, "ontology_id": "uberon"}]
+    expected_lookup = {**term, "ontology_id": "uberon"}
+    assert result == expected_lookup
+    assert target["ontology_lookup"] == expected_lookup
+    assert target["ontology_lookup_hits"] == [expected_lookup]
     assert target["hz_field"] == "tissue"
     assert target["hz_label"] == "lung"
+
+
+def test_lookup_label_selects_first_hit_without_llm_judge_by_default(
+    tmp_path: Path,
+) -> None:
+    first_hit = {
+        "id": "UBERON:1",
+        "iri": "https://example.org/UBERON_1",
+        "accession": "UBERON:1",
+        "title": "first lung",
+    }
+    second_hit = {
+        "id": "UBERON:2",
+        "iri": "https://example.org/UBERON_2",
+        "accession": "UBERON:2",
+        "title": "second lung",
+    }
+    json_path = ontology_json_file(
+        tmp_path,
+        "uberon",
+        {"label": {"lung": [first_hit, second_hit]}},
+    )
+    store = OntoStore(
+        ontology_frameworks={
+            "uberon": {"path": tmp_path / "missing.owl", "json_path": json_path}
+        },
+        storage_dir=tmp_path,
+    )
+    fake_llm = FakeLLM()
+    target = {"id": "target-0", "pre_hz_label": "lung"}
+
+    result = OntologyHarmonizer(llm=fake_llm).lookup_label(
+        target,
+        publication_context="lung sample context",
+        ontostore=store,
+        strategy="identity",
+    )
+
+    expected_hits = [
+        {**first_hit, "ontology_id": "uberon"},
+        {**second_hit, "ontology_id": "uberon"},
+    ]
+    assert result == expected_hits[0]
+    assert target["ontology_lookup"] == expected_hits[0]
+    assert target["ontology_lookup_hits"] == expected_hits
+    assert "ontology_lookup_judgement" not in target
+    assert fake_llm.calls == []
+
+
+def test_lookup_label_llm_judge_is_not_called_below_threshold(
+    tmp_path: Path,
+) -> None:
+    hit = {
+        "id": "UBERON:1",
+        "iri": "https://example.org/UBERON_1",
+        "accession": "UBERON:1",
+        "title": "lung",
+    }
+    json_path = ontology_json_file(tmp_path, "uberon", {"label": {"lung": [hit]}})
+    store = OntoStore(
+        ontology_frameworks={
+            "uberon": {"path": tmp_path / "missing.owl", "json_path": json_path}
+        },
+        storage_dir=tmp_path,
+    )
+    fake_llm = FakeLLM(response={"decision": "UBERON:1"})
+    target = {"id": "target-0", "pre_hz_label": "lung"}
+
+    result = OntologyHarmonizer(llm=fake_llm).lookup_label(
+        target,
+        publication_context="context",
+        ontostore=store,
+        strategy="identity",
+        lookup_llm_judge=True,
+    )
+
+    expected_hit = {**hit, "ontology_id": "uberon"}
+    assert result == expected_hit
+    assert target["ontology_lookup"] == expected_hit
+    assert target["ontology_lookup_hits"] == [expected_hit]
+    assert "ontology_lookup_judgement" not in target
+    assert fake_llm.calls == []
+
+
+def test_lookup_label_llm_judge_selects_best_hit_by_id(
+    tmp_path: Path,
+) -> None:
+    first_hit = {
+        "id": "UBERON:1",
+        "iri": "https://example.org/UBERON_1",
+        "accession": "UBERON:1",
+        "title": "generic lung",
+    }
+    second_hit = {
+        "id": "UBERON:2",
+        "iri": "https://example.org/UBERON_2",
+        "accession": "UBERON:2",
+        "title": "oral buccal mucosa",
+    }
+    response = {
+        "decision": "UBERON:2",
+        "confidence": "high",
+        "reason": "Publication context describes oral buccal tissue.",
+    }
+    json_path = ontology_json_file(
+        tmp_path,
+        "uberon",
+        {"label": {"lung": [first_hit, second_hit]}},
+    )
+    store = OntoStore(
+        ontology_frameworks={
+            "uberon": {"path": tmp_path / "missing.owl", "json_path": json_path}
+        },
+        storage_dir=tmp_path,
+    )
+    fake_llm = FakeLLM(response=json.dumps(response))
+    target = {
+        "id": "target-0",
+        "pre_hz_field": "tissue",
+        "pre_hz_label": "lung",
+    }
+
+    result = OntologyHarmonizer(llm=fake_llm).lookup_label(
+        target,
+        publication_context="sample is oral buccal tissue",
+        ontostore=store,
+        strategy="identity",
+        lookup_llm_judge=True,
+    )
+
+    expected_hits = [
+        {**first_hit, "ontology_id": "uberon"},
+        {**second_hit, "ontology_id": "uberon"},
+    ]
+    assert result == expected_hits[1]
+    assert target["ontology_lookup"] == expected_hits[1]
+    assert target["ontology_lookup_hits"] == expected_hits
+    assert target["ontology_lookup_judgement"] == response
+    assert len(fake_llm.calls) == 1
+    assert fake_llm.calls[0]["config"] == {
+        "response_mime_type": "application/json",
+        "response_schema": OntologyHarmonizer()._lookup_judge_response_schema(),
+    }
+    assert fake_llm.calls[0]["prompt"].startswith(JUDGE_LOOKUP_PROMPT)
+    assert "Publication Context:\nsample is oral buccal tissue" in fake_llm.calls[0][
+        "prompt"
+    ]
+    assert '"id": "target-0"' in fake_llm.calls[0]["prompt"]
+    assert '"id": "UBERON:2"' in fake_llm.calls[0]["prompt"]
+
+
+def test_lookup_label_llm_judge_rejects_unknown_decision(
+    tmp_path: Path,
+) -> None:
+    hits = [
+        {
+            "id": "UBERON:1",
+            "iri": "https://example.org/UBERON_1",
+            "accession": "UBERON:1",
+            "title": "first lung",
+        },
+        {
+            "id": "UBERON:2",
+            "iri": "https://example.org/UBERON_2",
+            "accession": "UBERON:2",
+            "title": "second lung",
+        },
+    ]
+    json_path = ontology_json_file(tmp_path, "uberon", {"label": {"lung": hits}})
+    store = OntoStore(
+        ontology_frameworks={
+            "uberon": {"path": tmp_path / "missing.owl", "json_path": json_path}
+        },
+        storage_dir=tmp_path,
+    )
+    response = {
+        "decision": "UBERON:missing",
+        "confidence": "low",
+        "reason": "bad decision",
+    }
+
+    with pytest.raises(ValueError, match="known lookup hit id"):
+        OntologyHarmonizer(llm=FakeLLM(response=response)).lookup_label(
+            {"id": "target-0", "pre_hz_label": "lung"},
+            publication_context=None,
+            ontostore=store,
+            strategy="identity",
+            lookup_llm_judge=True,
+        )
+
+
+def test_lookup_judge_response_schema_requires_decision_fields() -> None:
+    assert OntologyHarmonizer()._lookup_judge_response_schema() == {
+        "type": "OBJECT",
+        "properties": {
+            "decision": {"type": "STRING"},
+            "confidence": {"type": "STRING"},
+            "reason": {"type": "STRING"},
+        },
+        "required": ["decision", "confidence", "reason"],
+    }
+
+
+def test_lookup_label_llm_judge_raises_value_error_for_invalid_json_response(
+    tmp_path: Path,
+) -> None:
+    hits = [
+        {"id": "UBERON:1", "title": "first lung"},
+        {"id": "UBERON:2", "title": "second lung"},
+    ]
+    json_path = ontology_json_file(tmp_path, "uberon", {"label": {"lung": hits}})
+    store = OntoStore(
+        ontology_frameworks={
+            "uberon": {"path": tmp_path / "missing.owl", "json_path": json_path}
+        },
+        storage_dir=tmp_path,
+    )
+
+    with pytest.raises(ValueError, match="valid JSON"):
+        OntologyHarmonizer(llm=FakeLLM(response="not json")).lookup_label(
+            {"id": "target-0", "pre_hz_label": "lung"},
+            publication_context=None,
+            ontostore=store,
+            strategy="identity",
+            lookup_llm_judge=True,
+        )
 
 
 def test_lookup_label_respects_target_framework_subset(
@@ -1342,7 +1624,29 @@ def test_harmonize_assigns_ontology_metadata_from_store(tmp_path: Path) -> None:
     target = result["harmonization_targets"][0]
     assert target["ontology_match"] is True
     assert target["ontology_id"] == "uberon"
-    assert target["ontology_lookup"] == [{**term, "ontology_id": "uberon"}]
+    assert target["ontology_lookup"] == {**term, "ontology_id": "uberon"}
+    assert target["ontology_lookup_hits"] == [{**term, "ontology_id": "uberon"}]
+
+
+def test_harmonize_llm_false_skips_framework_and_field_assignment() -> None:
+    fake_llm = FakeLLM()
+    target = {
+        "id": "target-0",
+        "pre_hz_field": "unmapped field",
+        "pre_hz_label": "unmapped label",
+    }
+
+    result = OntologyHarmonizer(llm=fake_llm).harmonize(
+        publication_context="context",
+        target=target,
+        llm=False,
+    )
+
+    assert result["harmonization_targets"] == [target]
+    assert target["ontology_match"] is False
+    assert "ontology_framework_assignment" not in target
+    assert "field_assignment" not in target
+    assert fake_llm.calls == []
 
 
 def miniml_metadata() -> dict:
@@ -1579,7 +1883,7 @@ def test_harmonize_calls_assign_onto_framework_for_each_target() -> None:
                 }
             )
 
-        def harmonize_field(self, target, *, publication_context, ontostore):
+        def harmonize_field(self, target, *, publication_context, ontostore, llm=True):
             return False
 
     store = OntoStore()
@@ -1620,6 +1924,8 @@ def test_harmonize_calls_lookup_label_before_assign_onto_framework() -> None:
             publication_context,
             ontostore,
             strategy,
+            lookup_llm_judge=False,
+            lookup_llm_threshold=2,
         ):
             calls.append(("lookup", target["id"], publication_context, strategy))
             return False
@@ -1634,7 +1940,7 @@ def test_harmonize_calls_lookup_label_before_assign_onto_framework() -> None:
             calls.append(("assign", target["id"], publication_context))
             return False
 
-        def harmonize_field(self, target, *, publication_context, ontostore):
+        def harmonize_field(self, target, *, publication_context, ontostore, llm=True):
             return False
 
     target = {"id": "target-0", "pre_hz_label": "lung"}
@@ -1662,6 +1968,8 @@ def test_harmonize_skips_assign_onto_framework_when_lookup_label_succeeds() -> N
             publication_context,
             ontostore,
             strategy,
+            lookup_llm_judge=False,
+            lookup_llm_threshold=2,
         ):
             calls.append("lookup")
             target["ontology_match"] = True
@@ -1677,7 +1985,7 @@ def test_harmonize_skips_assign_onto_framework_when_lookup_label_succeeds() -> N
             calls.append("assign")
             return False
 
-        def harmonize_field(self, target, *, publication_context, ontostore):
+        def harmonize_field(self, target, *, publication_context, ontostore, llm=True):
             return False
 
     target = {"id": "target-0", "pre_hz_label": "lung"}
@@ -1702,7 +2010,7 @@ def test_harmonize_single_target_calls_assign_onto_framework_once() -> None:
         ):
             calls.append(target)
 
-        def harmonize_field(self, target, *, publication_context, ontostore):
+        def harmonize_field(self, target, *, publication_context, ontostore, llm=True):
             return False
 
     target = {"id": "target-0", "pre_hz_field": "tissue", "pre_hz_label": "lung"}
@@ -1726,7 +2034,7 @@ def test_harmonize_without_targets_does_not_call_assign_onto_framework() -> None
         ):
             calls.append(target)
 
-        def harmonize_field(self, target, *, publication_context, ontostore):
+        def harmonize_field(self, target, *, publication_context, ontostore, llm=True):
             return False
 
     RecordingHarmonizer().harmonize()
@@ -1747,7 +2055,7 @@ def test_harmonize_assign_onto_framework_receives_ontostore_override() -> None:
         ):
             calls.append(ontostore)
 
-        def harmonize_field(self, target, *, publication_context, ontostore):
+        def harmonize_field(self, target, *, publication_context, ontostore, llm=True):
             return False
 
     constructor_store = OntoStore()
@@ -1772,6 +2080,8 @@ def test_harmonize_calls_field_harmonization_before_strategy_handler() -> None:
             publication_context,
             ontostore,
             strategy,
+            lookup_llm_judge=False,
+            lookup_llm_threshold=2,
         ):
             calls.append("lookup")
             return False
@@ -1786,7 +2096,7 @@ def test_harmonize_calls_field_harmonization_before_strategy_handler() -> None:
             calls.append("assign_framework")
             return {"decision": "unsure", "confidence": "low", "reason": "none"}
 
-        def harmonize_field(self, target, *, publication_context, ontostore):
+        def harmonize_field(self, target, *, publication_context, ontostore, llm=True):
             calls.append("harmonize_field")
             return {"field": "tissue"}
 
@@ -1797,6 +2107,8 @@ def test_harmonize_calls_field_harmonization_before_strategy_handler() -> None:
             publication_context,
             ontostore,
             strategy,
+            lookup_llm_judge=False,
+            lookup_llm_threshold=2,
         ):
             calls.append(("strategy", strategy))
             return {"strategy": strategy}
@@ -1904,6 +2216,8 @@ def test_harmonize_skips_strategy_handler_when_lookup_label_succeeds() -> None:
             publication_context,
             ontostore,
             strategy,
+            lookup_llm_judge=False,
+            lookup_llm_threshold=2,
         ):
             target["ontology_match"] = True
             return {"title": "lung"}
@@ -2171,6 +2485,9 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
             strategy="identity",
             ontostore=None,
             target_paths=None,
+            lookup_llm_judge=False,
+            lookup_llm_threshold=2,
+            llm=True,
         ):
             calls.append(
                 {
@@ -2180,6 +2497,9 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
                     "strategy": strategy,
                     "ontostore": ontostore,
                     "target_paths": target_paths,
+                    "lookup_llm_judge": lookup_llm_judge,
+                    "lookup_llm_threshold": lookup_llm_threshold,
+                    "llm": llm,
                 }
             )
             return {"delegated": True}
@@ -2214,6 +2534,9 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
             "strategy": "noop",
             "ontostore": store,
             "target_paths": ["/sample"],
+            "lookup_llm_judge": False,
+            "lookup_llm_threshold": 2,
+            "llm": True,
         }
     ]
 

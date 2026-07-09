@@ -259,26 +259,24 @@ class OntoStore:
         json_path.parent.mkdir(parents=True, exist_ok=True)
         return Owl2json(owl_path).write_json(json_path, ontology_id=name)
 
-    def lookup(self, label: str, ontology_id: str) -> Any:
+    def lookup(self, label: str, ontology_id: str) -> list[dict[str, Any]]:
         json_path = self.get(ontology_id)
         ontology = json.loads(json_path.read_text(encoding="utf-8"))
         terms = ontology.get("terms", {})
         if not isinstance(terms, dict):
-            return False
+            return []
 
         lookup_label = self.harmonize_key(label)
+        hits: list[dict[str, Any]] = []
         for index_name in ("label", "id", "accession", "iri"):
             index = terms.get(index_name, {})
             if not isinstance(index, dict):
                 continue
-            matched_metadata = self._lookup_index(index, lookup_label)
-            if matched_metadata:
-                return self._metadata_with_ontology_id(
-                    matched_metadata,
-                    ontology_id,
-                )
+            hits.extend(self._lookup_index(index, lookup_label))
 
-        return False
+        return self._dedupe_lookup_hits(
+            self._metadata_with_ontology_id(hits, ontology_id)
+        )
 
     def lookup_fields(self, field: Any) -> Any:
         lookup_field = self.harmonize_key(field)
@@ -328,15 +326,40 @@ class OntoStore:
             return {**metadata, "ontology_id": ontology_id}
         return metadata
 
-    def _lookup_index(self, index: dict[str, Any], lookup_label: str) -> Any:
+    def _lookup_index(self, index: dict[str, Any], lookup_label: str) -> list[Any]:
         if lookup_label in index:
-            return index[lookup_label]
+            return self._lookup_value_hits(index[lookup_label])
 
         for key, value in index.items():
             if self.harmonize_key(key) == lookup_label:
-                return value
+                return self._lookup_value_hits(value)
 
-        return False
+        return []
+
+    def _lookup_value_hits(self, value: Any) -> list[Any]:
+        if isinstance(value, list):
+            return value
+        return [value]
+
+    def _dedupe_lookup_hits(self, hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        deduped: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for hit in hits:
+            if not isinstance(hit, dict):
+                continue
+            key = self._lookup_hit_key(hit)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(hit)
+        return deduped
+
+    def _lookup_hit_key(self, hit: dict[str, Any]) -> str:
+        for field in ("id", "accession", "iri"):
+            value = hit.get(field)
+            if value is not None:
+                return f"{field}:{self.harmonize_key(value)}"
+        return json.dumps(hit, sort_keys=True, default=str)
 
     def download(self, name: str) -> Path:
         target = self._target_path(name)

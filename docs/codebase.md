@@ -115,10 +115,11 @@ Public methods:
 
 - `assign_field(target, *, publication_context, ontostore) -> dict`
 - `assign_onto_framework(target, *, publication_context, ontostore) -> dict`
-- `harmonize_miniml_json(publication_context=None, miniml_json=None, ontostore=None, target_paths=None, strategy="identity") -> dict`
-- `harmonize(publication_context=None, harmonization_targets=None, target=None, strategy="identity", ontostore=None, target_paths=None) -> dict`
+- `harmonize_miniml_json(publication_context=None, miniml_json=None, ontostore=None, target_paths=None, strategy="identity", lookup_llm_judge=False, lookup_llm_threshold=2, llm=True) -> dict`
+- `harmonize(publication_context=None, harmonization_targets=None, target=None, strategy="identity", ontostore=None, target_paths=None, lookup_llm_judge=False, lookup_llm_threshold=2, llm=True) -> dict`
 - `harmonize_field(target, *, publication_context, ontostore) -> Any`
 - `harmonize_label(target, *, publication_context, ontostore, strategy) -> dict`
+- `judge_lookup(target, *, publication_context, hits) -> dict`
 - `lookup_label(target, *, publication_context, ontostore, strategy) -> Any`
 
 `harmonize_miniml_json(...)` extracts targets from MINiML-style JSON with
@@ -149,23 +150,27 @@ raises `ValueError`. Supported strategies are `identity`, `websearch`, and
 override must be an `OntoStore`.
 `harmonize(...)` calls `lookup_label(...)` once for each normalized target. On a
 match, `lookup_label(...)` mutates the target with `ontology_match=True`,
-`ontology_id`, and `ontology_lookup` from `OntoStore.lookup(...)`. Before
-lookup, the harmonizer normalizes working `hz_field` and `hz_label` values from
-existing `hz_*` fields or from `pre_hz_field` and `pre_hz_label`: lowercase,
-trim, strip edge punctuation, and collapse whitespace to underscores. The same
-normalization is applied to occurrence-level `hz_field` and `hz_label` values
-when a target has `occurrences`. When `lookup_label(...)` returns `False`,
+`ontology_id`, selected `ontology_lookup`, and all `ontology_lookup_hits`.
+Before lookup, the harmonizer normalizes working `hz_field` and `hz_label`
+values from existing `hz_*` fields or from `pre_hz_field` and `pre_hz_label`:
+lowercase, trim, strip edge punctuation, and collapse whitespace to underscores.
+The same normalization is applied to occurrence-level values when a target has
+`occurrences`. By default lookup selects the first hit without an LLM. When
+`lookup_llm_judge=True` and at least `lookup_llm_threshold` hits exist
+(default `2`), the LLM receives the hits, publication context, and target
+context and returns `decision`, `confidence`, and `reason`; the judgement is
+stored at `ontology_lookup_judgement`. When `lookup_label(...)` returns
+`False`, `harmonize(...)` marks the target unmatched and, when `llm=True`, calls
+`assign_onto_framework(...)` as the fallback assignment step. The fallback
+prompts the LLM with the target, publication context, and sanitized candidate
+ontology framework metadata. Framework prompt metadata includes only `id`,
+`title`, `description`, and `version`; download URLs and configured file paths
+remain internal to `OntoStore`. It parses JSON with `decision`, `confidence`,
+and `reason`, stores it at `ontology_framework_assignment`, and sets
+`ontology_id` when `decision` is a configured framework ID. After assignment,
 `harmonize(...)` calls
-`assign_onto_framework(...)` as the fallback assignment step. The fallback marks
-`ontology_match=False`, removes stale `ontology_lookup`, prompts the LLM with
-the target, publication context, and sanitized candidate ontology framework
-metadata. Framework prompt metadata includes only `id`, `title`, `description`,
-and `version`; download URLs and configured file paths remain internal to
-`OntoStore`. It parses JSON with `decision`, `confidence`, and `reason`, stores
-it at `ontology_framework_assignment`, and sets `ontology_id` when `decision` is
-a configured framework ID. After assignment, `harmonize(...)` calls
 `harmonize_field(...)`, which uses `OntoStore.lookup_fields(...)` and falls back
-to LLM-backed `assign_field(...)`. Then `harmonize(...)` calls
+to LLM-backed `assign_field(...)` only when `llm=True`. Then `harmonize(...)` calls
 `harmonize_label(...)` only for `websearch` and `rag`; those placeholder
 handlers store `ontology_strategy_result` with `strategy`,
 `status="placeholder"`, and `reason`. The default `identity` strategy does not
@@ -238,11 +243,12 @@ frameworks reparse the configured local `owl_path` without network I/O.
 `OntoStore.lookup(label, ontology_id)` calls `get(ontology_id)`, loads the JSON
 from the configured `json_path`, normalizes the query with
 `harmonize_key(...)`, and searches `terms["label"]`, `terms["id"]`,
-`terms["accession"]`, and `terms["iri"]` in that order. It returns a matched
-metadata dict, or a list for label matches, with `ontology_id` added to each
-term dict. Existing cached JSON with raw keys remains usable because lookup
-normalizes stored index keys when a direct normalized-key lookup misses. It
-returns `False` when no index contains the normalized label.
+`terms["accession"]`, and `terms["iri"]` in that order. It returns a list of all
+matched term dicts with `ontology_id` added, flattening list-valued index
+entries and deduping hits while preserving search order. Existing cached JSON
+with raw keys remains usable because lookup normalizes stored index keys when a
+direct normalized-key lookup misses. It returns `[]` when no index contains the
+normalized label.
 `OntoStore.download(name)` downloads only URL-backed frameworks with
 `requests.get(url, timeout=30)`, calls `raise_for_status()`, and returns the
 configured `owl_path`. Path-backed frameworks validate and return the configured
@@ -616,6 +622,9 @@ class OntologyHarmonizer:
         strategy="identity",
         ontostore=None,
         target_paths=None,
+        lookup_llm_judge=False,
+        lookup_llm_threshold=2,
+        llm=True,
     ):
         effective_ontostore = self._effective_ontostore(ontostore)
         strategy = self._normalize_strategy(strategy)
@@ -630,17 +639,22 @@ class OntologyHarmonizer:
                 publication_context=publication_context,
                 ontostore=effective_ontostore,
                 strategy=strategy,
+                lookup_llm_judge=lookup_llm_judge,
+                lookup_llm_threshold=lookup_llm_threshold,
             )
             if not lookup:
-                self.assign_onto_framework(
-                    target,
-                    publication_context=publication_context,
-                    ontostore=effective_ontostore,
-                )
+                self._mark_ontology_miss(target)
+                if llm:
+                    self.assign_onto_framework(
+                        target,
+                        publication_context=publication_context,
+                        ontostore=effective_ontostore,
+                    )
                 self.harmonize_field(
                     target,
                     publication_context=publication_context,
                     ontostore=effective_ontostore,
+                    llm=llm,
                 )
                 if strategy in self.STRATEGY_HANDLERS:
                     self.harmonize_label(
@@ -662,19 +676,28 @@ class OntologyHarmonizer:
         publication_context,
         ontostore,
         strategy,
+        lookup_llm_judge=False,
+        lookup_llm_threshold=2,
     ):
         self._harmonize_target(target, ontostore)
         label = target.get("hz_label")
         if label is None:
             return False
 
+        hits = []
         for ontology_id in self._candidate_ontology_ids(target, ontostore):
-            lookup = ontostore.lookup(str(label), ontology_id)
-            if lookup:
-                target["ontology_id"] = ontology_id
-                target["ontology_lookup"] = lookup
-                target["ontology_match"] = True
-                return lookup
+            hits.extend(ontostore.lookup(str(label), ontology_id))
+        if hits:
+            selected = hits[0]
+            if lookup_llm_judge and len(hits) >= lookup_llm_threshold:
+                judgement = self.judge_lookup(target, publication_context, hits)
+                selected = hit whose id equals judgement["decision"]
+                target["ontology_lookup_judgement"] = judgement
+            target["ontology_id"] = selected["ontology_id"]
+            target["ontology_lookup"] = selected
+            target["ontology_lookup_hits"] = hits
+            target["ontology_match"] = True
+            return selected
 
         return False
 
@@ -711,12 +734,15 @@ class OntologyHarmonizer:
         *,
         publication_context,
         ontostore,
+        llm=True,
     ):
         lookup = ontostore.lookup_fields(target["hz_field"])
         if lookup:
             target["hz_field"] = lookup["field"]
             target["field_lookup"] = lookup
             return lookup
+        if not llm:
+            return False
         return self.assign_field(
             target,
             publication_context=publication_context,
@@ -819,9 +845,9 @@ class OntologyHarmonizer:
 local frameworks, so no external API call is made. If a target explicitly
 selects a URL-backed framework whose configured JSON/OWL files are missing,
 lookup may reach `requests.get(...)` through `OntoStore.download(...)`.
-`assign_onto_framework()` is called only when `lookup_label()` returns `False`;
-it calls the LLM with the packaged `assign_onto_framework.md` prompt and returns
-the parsed assignment JSON.
+When `lookup_label()` returns `False`, `harmonize(...)` marks the target
+unmatched. With `llm=True`, it calls `assign_onto_framework()` with the packaged
+`assign_onto_framework.md` prompt and returns the parsed assignment JSON.
 
 ```python
 def _extract_harmonization_targets(metadata, start_paths=None):
@@ -1007,11 +1033,12 @@ def lookup(label, ontology_id):
     ontology = json.loads(json_path.read_text(encoding="utf-8"))
     terms = ontology.get("terms", {})
     lookup_label = self.harmonize_key(label)
+    hits = []
     for index_name in ("label", "id", "accession", "iri"):
         index = terms.get(index_name, {})
         if index is dict and lookup_label in index:
-            return matched metadata with ontology_id added to each term dict
-    return False
+            hits.extend(matched metadata values)
+    return deduped hits with ontology_id added to each term dict
 
 def harmonize_key(value):
     return lowercase, trimmed string with edge punctuation stripped and spaces collapsed to "_"
@@ -1356,13 +1383,15 @@ thematic reviewer prompts live under
   manual CLI runs. It is packaged but not loaded automatically by
   `ThematicReviewer`.
 
-The ontology harmonizer prompt file is:
+The ontology harmonizer prompt files are:
 
 - `assign_onto_framework.md` instructs the model to choose a configured
   ontology framework ID, `"false"`, or `"unsure"` and return `decision`,
   `confidence`, and `reason`.
 - `assign_field.md` instructs the model to choose or create a normalized field
   key and return `decision`, `confidence`, `reason`, and `new_field`.
+- `judge_lookup.md` instructs the model to choose the best lookup hit ID and
+  return `decision`, `confidence`, and `reason`.
 
 <a id="llm-wrapper"></a>
 ## LLM Wrapper

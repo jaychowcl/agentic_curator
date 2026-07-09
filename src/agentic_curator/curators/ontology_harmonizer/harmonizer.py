@@ -53,6 +53,9 @@ class OntologyHarmonizer:
         strategy: str = "identity",
         ontostore: OntoStore | None = None,
         target_paths: list[StartPathSpec] | None = None,
+        lookup_llm_judge: bool = False,
+        lookup_llm_threshold: int = 2,
+        llm: bool = True,
     ) -> dict[str, Any]:
         effective_ontostore = self._effective_ontostore(ontostore)
         normalized_strategy = self._normalize_strategy(strategy)
@@ -67,17 +70,22 @@ class OntologyHarmonizer:
                 publication_context=publication_context,
                 ontostore=effective_ontostore,
                 strategy=normalized_strategy,
+                lookup_llm_judge=lookup_llm_judge,
+                lookup_llm_threshold=lookup_llm_threshold,
             )
             if not lookup:
-                self.assign_onto_framework(
-                    normalized_target,
-                    publication_context=publication_context,
-                    ontostore=effective_ontostore,
-                )
+                self._mark_ontology_miss(normalized_target)
+                if llm:
+                    self.assign_onto_framework(
+                        normalized_target,
+                        publication_context=publication_context,
+                        ontostore=effective_ontostore,
+                    )
                 self.harmonize_field(
                     normalized_target,
                     publication_context=publication_context,
                     ontostore=effective_ontostore,
+                    llm=llm,
                 )
                 if normalized_strategy in self.STRATEGY_HANDLERS:
                     self.harmonize_label(
@@ -101,6 +109,9 @@ class OntologyHarmonizer:
         ontostore: OntoStore | None = None,
         target_paths: list[StartPathSpec] | None = None,
         strategy: str = "identity",
+        lookup_llm_judge: bool = False,
+        lookup_llm_threshold: int = 2,
+        llm: bool = True,
     ) -> dict[str, Any]:
         should_dedupe_targets = target_paths is None
         effective_target_paths = target_paths
@@ -123,6 +134,9 @@ class OntologyHarmonizer:
             strategy=strategy,
             ontostore=ontostore,
             target_paths=effective_target_paths,
+            lookup_llm_judge=lookup_llm_judge,
+            lookup_llm_threshold=lookup_llm_threshold,
+            llm=llm,
         )
 
     def _normalize_targets(
@@ -162,23 +176,85 @@ class OntologyHarmonizer:
         publication_context: str | None,
         ontostore: OntoStore,
         strategy: str,
+        lookup_llm_judge: bool = False,
+        lookup_llm_threshold: int = 2,
     ) -> Any:
-        del publication_context, strategy
+        del strategy
 
         self._harmonize_target(target, ontostore)
         label = target.get("hz_label")
         if label is None:
             return False
 
+        hits: list[dict[str, Any]] = []
         for ontology_id in self._candidate_ontology_ids(target, ontostore):
-            lookup = ontostore.lookup(str(label), ontology_id)
-            if lookup:
-                target["ontology_id"] = ontology_id
-                target["ontology_lookup"] = lookup
-                target["ontology_match"] = True
-                return lookup
+            hits.extend(ontostore.lookup(str(label), ontology_id))
 
-        return False
+        if not hits:
+            return False
+
+        lookup = self._select_lookup_hit(
+            target=target,
+            publication_context=publication_context,
+            hits=hits,
+            lookup_llm_judge=lookup_llm_judge,
+            lookup_llm_threshold=lookup_llm_threshold,
+        )
+        target["ontology_id"] = lookup["ontology_id"]
+        target["ontology_lookup"] = lookup
+        target["ontology_lookup_hits"] = hits
+        target["ontology_match"] = True
+        return lookup
+
+    def _select_lookup_hit(
+        self,
+        *,
+        target: dict[str, Any],
+        publication_context: str | None,
+        hits: list[dict[str, Any]],
+        lookup_llm_judge: bool,
+        lookup_llm_threshold: int,
+    ) -> dict[str, Any]:
+        if not lookup_llm_judge or len(hits) < lookup_llm_threshold:
+            return hits[0]
+
+        judgement = self.judge_lookup(
+            target,
+            publication_context=publication_context,
+            hits=hits,
+        )
+        target["ontology_lookup_judgement"] = judgement
+        decision = str(judgement["decision"])
+        for hit in hits:
+            if str(hit.get("id")) == decision:
+                return hit
+
+        raise ValueError(
+            "LLM lookup judgement decision must match a known lookup hit id."
+        )
+
+    def judge_lookup(
+        self,
+        target: dict[str, Any],
+        *,
+        publication_context: str | None,
+        hits: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        prompt = self._judge_lookup_prompt(
+            target=target,
+            publication_context=publication_context,
+            hits=hits,
+        )
+        response = self._llm().generate_response(
+            prompt,
+            config={
+                "response_mime_type": "application/json",
+                "response_schema": self._lookup_judge_response_schema(),
+            },
+        )
+        judgement = parse_json_response(response)
+        self._validate_lookup_judge_response(judgement)
+        return judgement
 
     def assign_onto_framework(
         self,
@@ -217,6 +293,7 @@ class OntologyHarmonizer:
         *,
         publication_context: str | None,
         ontostore: OntoStore,
+        llm: bool = True,
     ) -> Any:
         self._harmonize_target(target, ontostore)
         field = target.get("hz_field")
@@ -229,11 +306,13 @@ class OntologyHarmonizer:
             target["field_lookup"] = lookup
             return lookup
 
-        return self.assign_field(
-            target,
-            publication_context=publication_context,
-            ontostore=ontostore,
-        )
+        if llm:
+            return self.assign_field(
+                target,
+                publication_context=publication_context,
+                ontostore=ontostore,
+            )
+        return False
 
     def assign_field(
         self,
@@ -439,6 +518,29 @@ class OntologyHarmonizer:
         ]
         return "\n".join(prompt_parts).lstrip("\n")
 
+    def _judge_lookup_prompt(
+        self,
+        *,
+        target: dict[str, Any],
+        publication_context: str | None,
+        hits: list[dict[str, Any]],
+    ) -> str:
+        initial_prompt = files(PROMPT_PACKAGE).joinpath(
+            "prompts/judge_lookup.md"
+        ).read_text(encoding="utf-8").strip()
+        prompt_parts = [
+            initial_prompt,
+            "Publication Context:",
+            self._prompt_text(publication_context),
+            "",
+            "Harmonization Target:",
+            self._prompt_text(target),
+            "",
+            "Lookup Hits:",
+            self._prompt_text(hits),
+        ]
+        return "\n".join(prompt_parts).lstrip("\n")
+
     def _assign_onto_framework_response_schema(self) -> dict[str, Any]:
         return {
             "type": "OBJECT",
@@ -462,6 +564,17 @@ class OntologyHarmonizer:
             "required": ["decision", "confidence", "reason", "new_field"],
         }
 
+    def _lookup_judge_response_schema(self) -> dict[str, Any]:
+        return {
+            "type": "OBJECT",
+            "properties": {
+                "decision": {"type": "STRING"},
+                "confidence": {"type": "STRING"},
+                "reason": {"type": "STRING"},
+            },
+            "required": ["decision", "confidence", "reason"],
+        }
+
     def _validate_assignment_response(self, assignment: Any) -> None:
         if not isinstance(assignment, dict):
             raise ValueError("LLM assignment response must be a JSON object.")
@@ -481,6 +594,17 @@ class OntologyHarmonizer:
             raise ValueError(
                 "LLM field assignment response must include decision, confidence, "
                 "reason, and new_field."
+            )
+
+    def _validate_lookup_judge_response(self, judgement: Any) -> None:
+        if not isinstance(judgement, dict):
+            raise ValueError("LLM lookup judgement response must be a JSON object.")
+
+        required_fields = {"decision", "confidence", "reason"}
+        if not required_fields.issubset(judgement):
+            raise ValueError(
+                "LLM lookup judgement response must include decision, confidence, "
+                "and reason."
             )
 
     def _prompt_text(
@@ -514,5 +638,7 @@ class OntologyHarmonizer:
     def _mark_ontology_miss(target: dict[str, Any]) -> bool:
         target.pop("ontology_id", None)
         target.pop("ontology_lookup", None)
+        target.pop("ontology_lookup_hits", None)
+        target.pop("ontology_lookup_judgement", None)
         target["ontology_match"] = False
         return False
