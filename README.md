@@ -363,10 +363,11 @@ configured framework ID. After assignment, `harmonize(...)`
 routes the target field through `harmonize_field(...)`: first by dictionary lookup
 against `ontostore.fields`, then by LLM field assignment when no field matches
 and `llm=True`.
-It routes only `websearch` and `rag` targets to placeholder strategy handlers,
-which store `ontology_strategy_result` with the strategy,
-`status="placeholder"`, and a reason. The default `identity` strategy does not
-call a handler. It returns:
+It routes only `websearch` and `rag` targets to strategy handlers. `websearch`
+uses OLS4 restricted to the assigned `ontology_id`, then falls back to
+unrestricted OLS plus an injected web search client. Strategy results always
+include `strategy`, `status`, `decision`, `confidence`, and `reason`; the
+default `identity` strategy does not call a handler. It returns:
 
 ```python
 {
@@ -746,6 +747,22 @@ class OntologyHarmonizer:
             publication_context=publication_context,
             ontostore=ontostore,
         )
+
+    class WebsearchStrategyHandler:
+        restricted = OLS search(label, ontology=target["ontology_id"], rows=25)
+        if restricted:
+            validate framework metadata from OLS ontology endpoint
+            update ontostore framework config
+            set target ontology lookup fields
+            return matched strategy result with decision, confidence, and reason
+
+        unrestricted = OLS search(label, rows=25)
+        web_hits = search_client.search(f"{hz_field}: {hz_label} ontology", max_results=25)
+        if unrestricted and complete framework metadata is available:
+            update ontostore framework config
+            set target ontology lookup fields
+            return matched strategy result
+        return not_harmonized strategy result
 ```
 
 Target extraction is handled by

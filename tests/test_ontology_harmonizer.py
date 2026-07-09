@@ -155,6 +155,36 @@ class FakeLLM:
         return self.response
 
 
+class FakeOlsClient:
+    def __init__(self, *, search_results=None, ontology_metadata=None) -> None:
+        self.search_results = list(search_results or [])
+        self.ontology_metadata = dict(ontology_metadata or {})
+        self.search_calls = []
+        self.ontology_calls = []
+
+    def search(self, label, *, ontology_id=None, rows=25):
+        self.search_calls.append(
+            {"label": label, "ontology_id": ontology_id, "rows": rows}
+        )
+        if self.search_results:
+            return self.search_results.pop(0)
+        return []
+
+    def ontology(self, ontology_id):
+        self.ontology_calls.append(ontology_id)
+        return self.ontology_metadata.get(ontology_id, {})
+
+
+class FakeSearchClient:
+    def __init__(self, results=None) -> None:
+        self.results = list(results or [])
+        self.calls = []
+
+    def search(self, query, *, max_results=25):
+        self.calls.append({"query": query, "max_results": max_results})
+        return self.results
+
+
 def ontology_bytes(*, title: str = "Cell Ontology", label: str = "cell") -> bytes:
     return f"""<?xml version="1.0"?>
 <rdf:RDF xmlns="http://purl.obolibrary.org/obo/cl.owl#"
@@ -2174,24 +2204,241 @@ def test_harmonize_routes_failed_lookup_to_strategy_handler() -> None:
     }
 
 
-def test_harmonize_placeholder_strategy_handlers_mutate_target() -> None:
-    for strategy, reason in [
-        ("websearch", "Websearch ontology harmonization is not implemented yet."),
-        ("rag", "RAG ontology harmonization is not implemented yet."),
-    ]:
-        target = {"id": f"target-{strategy}", "pre_hz_label": "lung"}
+def test_websearch_strategy_uses_restricted_ols_hit_without_fallbacks() -> None:
+    term = {
+        "iri": "http://purl.obolibrary.org/obo/UBERON_0002048",
+        "ontology_name": "uberon",
+        "short_form": "UBERON_0002048",
+        "obo_id": "UBERON:0002048",
+        "label": "lung",
+        "description": ["Respiration organ."],
+    }
+    ols_client = FakeOlsClient(
+        search_results=[[term]],
+        ontology_metadata={
+            "uberon": {
+                "config": {
+                    "id": "uberon",
+                    "title": "Uber-anatomy ontology",
+                    "description": "An anatomy ontology.",
+                    "version": "2026-06-19",
+                    "versionIri": "https://example.org/uberon.owl",
+                    "fileLocation": "https://fallback.example.org/uberon.owl",
+                }
+            }
+        },
+    )
+    search_client = FakeSearchClient(results=[{"title": "unused"}])
+    store = OntoStore(
+        ontology_frameworks={"uberon": {"url": "https://example.org/old.owl"}}
+    )
+    target = {
+        "id": "target-0",
+        "hz_field": "tissue",
+        "hz_label": "lung",
+        "ontology_id": "uberon",
+    }
 
-        result = OntologyHarmonizer(llm=FakeLLM()).harmonize(
-            target=target,
-            strategy=strategy,
-        )
+    result = WebsearchStrategyHandler(
+        ols_client=ols_client,
+        search_client=search_client,
+    ).handle(
+        target,
+        publication_context="lung sample",
+        ontostore=store,
+    )
 
-        assert result["strategy"] == strategy
-        assert target["ontology_strategy_result"] == {
-            "strategy": strategy,
-            "status": "placeholder",
-            "reason": reason,
-        }
+    expected_lookup = {
+        "iri": "http://purl.obolibrary.org/obo/UBERON_0002048",
+        "id": "UBERON_0002048",
+        "accession": "UBERON:0002048",
+        "title": "lung",
+        "description": ["Respiration organ."],
+        "ontology_id": "uberon",
+        "ontology_prefix": None,
+        "type": None,
+    }
+    assert result == {
+        "strategy": "websearch",
+        "status": "matched",
+        "decision": "UBERON_0002048",
+        "confidence": "medium",
+        "reason": "Restricted OLS search returned a usable ontology hit.",
+        "ols_hits": [expected_lookup],
+        "web_hits": [],
+        "ontology_framework_config": {
+            "id": "uberon",
+            "title": "Uber-anatomy ontology",
+            "description": "An anatomy ontology.",
+            "version": "2026-06-19",
+            "url": "https://example.org/uberon.owl",
+        },
+    }
+    assert target["ontology_strategy_result"] == result
+    assert target["ontology_lookup"] == expected_lookup
+    assert target["ontology_lookup_hits"] == [expected_lookup]
+    assert target["ontology_match"] is True
+    assert target["ontology_id"] == "uberon"
+    assert ols_client.search_calls == [
+        {"label": "lung", "ontology_id": "uberon", "rows": 25}
+    ]
+    assert search_client.calls == []
+    assert store.ontology_frameworks["uberon"]["title"] == "Uber-anatomy ontology"
+    assert store.ontology_frameworks["uberon"]["version"] == "2026-06-19"
+    assert store.ontology_frameworks["uberon"]["url"] == "https://example.org/uberon.owl"
+
+
+def test_websearch_strategy_falls_back_to_unrestricted_ols_and_web_search() -> None:
+    term = {
+        "iri": "http://purl.obolibrary.org/obo/CL_0000000",
+        "ontology_name": "cl",
+        "ontology_prefix": "CL",
+        "short_form": "CL_0000000",
+        "obo_id": "CL:0000000",
+        "label": "cell",
+        "description": ["A cell."],
+        "type": "class",
+    }
+    ols_client = FakeOlsClient(
+        search_results=[[], [term]],
+        ontology_metadata={
+            "cl": {
+                "config": {
+                    "id": "cl",
+                    "title": "Cell Ontology",
+                    "description": "An ontology of cell types.",
+                    "version": None,
+                    "versionIri": "http://purl.obolibrary.org/obo/cl/releases/2026-06-08/cl.owl",
+                    "fileLocation": "http://purl.obolibrary.org/obo/cl.owl",
+                }
+            }
+        },
+    )
+    search_client = FakeSearchClient(results=[{"title": "Cell Ontology page"}])
+    store = OntoStore(
+        ontology_frameworks={"uberon": {"url": "https://example.org/old.owl"}}
+    )
+    target = {
+        "id": "target-0",
+        "hz_field": "cell type",
+        "hz_label": "cell",
+        "ontology_id": "uberon",
+    }
+
+    result = WebsearchStrategyHandler(
+        ols_client=ols_client,
+        search_client=search_client,
+    ).handle(
+        target,
+        publication_context=None,
+        ontostore=store,
+    )
+
+    assert result["status"] == "matched"
+    assert result["decision"] == "CL_0000000"
+    assert result["confidence"] == "medium"
+    assert result["web_hits"] == [{"title": "Cell Ontology page"}]
+    assert target["ontology_id"] == "cl"
+    assert target["ontology_lookup"]["accession"] == "CL:0000000"
+    assert ols_client.search_calls == [
+        {"label": "cell", "ontology_id": "uberon", "rows": 25},
+        {"label": "cell", "ontology_id": None, "rows": 25},
+    ]
+    assert search_client.calls == [
+        {"query": "cell type: cell ontology", "max_results": 25}
+    ]
+    assert store.ontology_frameworks["cl"]["title"] == "Cell Ontology"
+    assert store.ontology_frameworks["cl"]["version"] == "2026-06-08"
+    assert store.ontology_frameworks["cl"]["url"] == (
+        "http://purl.obolibrary.org/obo/cl/releases/2026-06-08/cl.owl"
+    )
+
+
+def test_websearch_strategy_does_not_harmonize_without_complete_framework_config() -> None:
+    term = {
+        "iri": "http://purl.obolibrary.org/obo/UBERON_0002048",
+        "ontology_name": "uberon",
+        "short_form": "UBERON_0002048",
+        "obo_id": "UBERON:0002048",
+        "label": "lung",
+    }
+    ols_client = FakeOlsClient(
+        search_results=[[term]],
+        ontology_metadata={
+            "uberon": {
+                "config": {
+                    "id": "uberon",
+                    "title": "Uber-anatomy ontology",
+                    "description": "",
+                    "version": None,
+                    "versionIri": "",
+                    "fileLocation": "",
+                }
+            }
+        },
+    )
+    store = OntoStore(
+        ontology_frameworks={"uberon": {"url": "https://example.org/old.owl"}}
+    )
+    before = dict(store.ontology_frameworks["uberon"])
+    target = {"id": "target-0", "hz_label": "lung", "ontology_id": "uberon"}
+
+    result = WebsearchStrategyHandler(ols_client=ols_client).handle(
+        target,
+        publication_context=None,
+        ontostore=store,
+    )
+
+    assert result["strategy"] == "websearch"
+    assert result["status"] == "not_harmonized"
+    assert result["decision"] == "false"
+    assert result["confidence"] == "none"
+    assert "complete ontology framework metadata" in result["reason"]
+    assert result["ols_hits"][0]["id"] == "UBERON_0002048"
+    assert result["web_hits"] == []
+    assert "ontology_framework_config" not in result
+    assert target["ontology_strategy_result"] == result
+    assert target["ontology_match"] is False
+    assert "ontology_lookup" not in target
+    assert store.ontology_frameworks["uberon"] == before
+
+
+def test_websearch_strategy_returns_not_harmonized_without_assigned_framework() -> None:
+    target = {"id": "target-0", "hz_label": "lung"}
+    result = WebsearchStrategyHandler().handle(
+        target,
+        publication_context=None,
+        ontostore=OntoStore(),
+    )
+
+    assert result == {
+        "strategy": "websearch",
+        "status": "not_harmonized",
+        "decision": "false",
+        "confidence": "none",
+        "reason": "No assigned ontology framework is available for websearch.",
+        "ols_hits": [],
+        "web_hits": [],
+    }
+    assert target["ontology_strategy_result"] == result
+
+
+def test_rag_placeholder_strategy_handler_mutates_target() -> None:
+    target = {"id": "target-rag", "pre_hz_label": "lung"}
+
+    result = OntologyHarmonizer(llm=FakeLLM()).harmonize(
+        target=target,
+        strategy="rag",
+    )
+
+    assert result["strategy"] == "rag"
+    assert target["ontology_strategy_result"] == {
+        "strategy": "rag",
+        "status": "placeholder",
+        "decision": "false",
+        "confidence": "none",
+        "reason": "RAG ontology harmonization is not implemented yet.",
+    }
 
 
 def test_harmonize_identity_assignment_does_not_route_to_strategy_handler() -> None:

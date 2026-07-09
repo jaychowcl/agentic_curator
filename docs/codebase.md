@@ -171,10 +171,11 @@ and `reason`, stores it at `ontology_framework_assignment`, and sets
 `harmonize(...)` calls
 `harmonize_field(...)`, which uses `OntoStore.lookup_fields(...)` and falls back
 to LLM-backed `assign_field(...)` only when `llm=True`. Then `harmonize(...)` calls
-`harmonize_label(...)` only for `websearch` and `rag`; those placeholder
-handlers store `ontology_strategy_result` with `strategy`,
-`status="placeholder"`, and `reason`. The default `identity` strategy does not
-call a handler.
+`harmonize_label(...)` only for `websearch` and `rag`. The websearch handler
+uses OLS4 restricted to the assigned `ontology_id`, then falls back to
+unrestricted OLS plus an injected web search client. Strategy results always
+include `strategy`, `status`, `decision`, `confidence`, and `reason`. The
+default `identity` strategy does not call a handler.
 
 `OntologyHarmonizer(ontostore=None, llm=None)` creates a default `OntoStore`
 when no store is supplied and lazily creates `LLM()` only when framework
@@ -788,6 +789,22 @@ class OntologyHarmonizer:
             publication_context=publication_context,
             ontostore=ontostore,
         )
+
+    class WebsearchStrategyHandler:
+        restricted_hits = OLS search(label, ontology=target["ontology_id"], rows=25)
+        if restricted_hits:
+            require OLS ontology metadata has id, title, description, version, url
+            ontostore.configure_framework(...)
+            set target ontology lookup fields
+            return matched strategy result with decision, confidence, reason
+
+        unrestricted_hits = OLS search(label, rows=25)
+        web_hits = search_client.search(f"{hz_field}: {hz_label} ontology", max_results=25)
+        if unrestricted_hits and complete framework metadata is available:
+            ontostore.configure_framework(...)
+            set target ontology lookup fields
+            return matched strategy result
+        return not_harmonized strategy result
 
     def _candidate_ontology_ids(target, ontostore):
         configured_ids = target.get("ontology_frameworks", target.get("ontology_ids"))

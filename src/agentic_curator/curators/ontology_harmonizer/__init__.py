@@ -8,6 +8,8 @@ from agentic_curator.curators.ontology_harmonizer.owl2json import (
     Owl2jsonParseError,
 )
 from agentic_curator.curators.ontology_harmonizer.strategy_handlers import (
+    NullSearchClient,
+    OlsClient,
     RagStrategyHandler,
     WebsearchStrategyHandler,
 )
@@ -18,6 +20,8 @@ __all__ = [
     "OntoStore",
     "Owl2json",
     "Owl2jsonParseError",
+    "NullSearchClient",
+    "OlsClient",
     "RagStrategyHandler",
     "WebsearchStrategyHandler",
 ]
