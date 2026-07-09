@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from agentic_curator.curators.ontology_harmonizer.harmonization_target_extractor import (
@@ -120,8 +121,22 @@ class OntologyHarmonizer:
         publication_context: str | None,
         ontostore: OntoStore,
         strategy: str,
-    ) -> None:
-        pass
+    ) -> Any:
+        del publication_context, strategy
+
+        label = target.get("pre_hz_label")
+        if label is None:
+            return self._mark_ontology_miss(target)
+
+        for ontology_id in self._candidate_ontology_ids(target, ontostore):
+            lookup = ontostore.lookup(str(label), ontology_id)
+            if lookup:
+                target["ontology_id"] = ontology_id
+                target["ontology_lookup"] = lookup
+                target["ontology_match"] = True
+                return lookup
+
+        return self._mark_ontology_miss(target)
 
     def _effective_ontostore(self, ontostore: OntoStore | None = None) -> OntoStore:
         effective_ontostore = self.ontostore if ontostore is None else ontostore
@@ -135,3 +150,47 @@ class OntologyHarmonizer:
         start_paths: list[StartPathSpec] | None = None,
     ) -> list[dict[str, Any]]:
         return self.target_extractor.extract(metadata, start_paths=start_paths)
+
+    def _candidate_ontology_ids(
+        self,
+        target: dict[str, Any],
+        ontostore: OntoStore,
+    ) -> list[str]:
+        configured_ids = target.get("ontology_frameworks", target.get("ontology_ids"))
+        if configured_ids is not None:
+            return self._normalize_ontology_ids(configured_ids)
+
+        return [
+            ontology_id
+            for ontology_id, framework in ontostore.ontology_frameworks.items()
+            if self._framework_has_local_file(framework)
+        ]
+
+    def _normalize_ontology_ids(self, ontology_ids: Any) -> list[str]:
+        if isinstance(ontology_ids, str):
+            return [ontology_ids]
+        if isinstance(ontology_ids, (list, tuple, set)):
+            return [str(ontology_id) for ontology_id in ontology_ids]
+        return []
+
+    def _framework_has_local_file(self, framework: dict[str, Any]) -> bool:
+        if "url" in framework:
+            return False
+        return self._configured_path_exists(
+            framework.get("json_path")
+        ) or self._configured_path_exists(framework.get("owl_path"))
+
+    @staticmethod
+    def _configured_path_exists(value: Any) -> bool:
+        if isinstance(value, Path):
+            return value.exists()
+        if isinstance(value, str) and value:
+            return Path(value).exists()
+        return False
+
+    @staticmethod
+    def _mark_ontology_miss(target: dict[str, Any]) -> bool:
+        target.pop("ontology_id", None)
+        target.pop("ontology_lookup", None)
+        target["ontology_match"] = False
+        return False

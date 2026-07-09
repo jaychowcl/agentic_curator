@@ -1,4 +1,5 @@
 import inspect
+import json
 from pathlib import Path
 
 import pytest
@@ -115,6 +116,21 @@ def ontology_bytes(*, title: str = "Cell Ontology", label: str = "cell") -> byte
     </owl:Class>
 </rdf:RDF>
 """.encode("utf-8")
+
+
+def ontology_json_file(tmp_path: Path, name: str, terms: dict) -> Path:
+    path = tmp_path / f"{name}.json"
+    path.write_text(
+        json.dumps(
+            {
+                "ontology": {"title": f"{name} ontology"},
+                "terms": terms,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
 
 
 def test_ontology_harmonizer_can_be_imported_from_subpackage() -> None:
@@ -724,6 +740,171 @@ def test_get_propagates_parse_errors_for_invalid_download(
     assert store.ontology_frameworks["CL"]["json_path"] == tmp_path / "jsons" / "cl.json"
 
 
+def test_lookup_matches_label_index(tmp_path: Path) -> None:
+    term = {
+        "iri": "http://purl.obolibrary.org/obo/UBERON_0002048",
+        "accession": "UBERON:0002048",
+        "title": "lung",
+    }
+    json_path = ontology_json_file(tmp_path, "uberon", {"label": {"lung": [term]}})
+    store = OntoStore(
+        ontology_frameworks={
+            "uberon": {"path": tmp_path / "missing.owl", "json_path": json_path}
+        },
+        storage_dir=tmp_path,
+    )
+
+    assert store.lookup("lung", "uberon") == [term]
+
+
+def test_lookup_matches_id_accession_and_iri_indexes(tmp_path: Path) -> None:
+    accession_term = {
+        "iri": "http://purl.obolibrary.org/obo/UBERON_0002048",
+        "accession": "UBERON:0002048",
+        "title": "lung",
+    }
+    id_term = {
+        "iri": "https://example.org/custom-id",
+        "accession": None,
+        "title": "custom id term",
+    }
+    json_path = ontology_json_file(
+        tmp_path,
+        "lookup",
+        {
+            "id": {"CUSTOM:1": id_term},
+            "accession": {"UBERON:0002048": accession_term},
+            "iri": {
+                "http://purl.obolibrary.org/obo/UBERON_0002048": accession_term
+            },
+        },
+    )
+    store = OntoStore(
+        ontology_frameworks={
+            "lookup": {"path": tmp_path / "missing.owl", "json_path": json_path}
+        },
+        storage_dir=tmp_path,
+    )
+
+    assert store.lookup("CUSTOM:1", "lookup") == id_term
+    assert store.lookup("UBERON:0002048", "lookup") == accession_term
+    assert (
+        store.lookup("http://purl.obolibrary.org/obo/UBERON_0002048", "lookup")
+        == accession_term
+    )
+
+
+def test_lookup_returns_false_when_label_is_absent(tmp_path: Path) -> None:
+    json_path = ontology_json_file(tmp_path, "empty", {"label": {}})
+    store = OntoStore(
+        ontology_frameworks={
+            "empty": {"path": tmp_path / "missing.owl", "json_path": json_path}
+        },
+        storage_dir=tmp_path,
+    )
+
+    assert store.lookup("lung", "empty") is False
+
+
+def test_assign_onto_framework_matches_available_store_framework(
+    tmp_path: Path,
+) -> None:
+    term = {
+        "iri": "http://purl.obolibrary.org/obo/UBERON_0002048",
+        "accession": "UBERON:0002048",
+        "title": "lung",
+    }
+    json_path = ontology_json_file(tmp_path, "uberon", {"label": {"lung": [term]}})
+    store = OntoStore(
+        ontology_frameworks={
+            "uberon": {"path": tmp_path / "missing.owl", "json_path": json_path}
+        },
+        storage_dir=tmp_path,
+    )
+    target = {"id": "target-0", "pre_hz_label": "lung"}
+
+    result = OntologyHarmonizer().assign_onto_framework(
+        target,
+        publication_context=None,
+        ontostore=store,
+        strategy="identity",
+    )
+
+    assert result == [term]
+    assert target["ontology_id"] == "uberon"
+    assert target["ontology_lookup"] == [term]
+    assert target["ontology_match"] is True
+
+
+def test_assign_onto_framework_respects_target_framework_subset(
+    tmp_path: Path,
+) -> None:
+    term = {
+        "iri": "http://purl.obolibrary.org/obo/UBERON_0002048",
+        "accession": "UBERON:0002048",
+        "title": "lung",
+    }
+    empty_json = ontology_json_file(tmp_path, "empty", {"label": {}})
+    uberon_json = ontology_json_file(
+        tmp_path, "uberon", {"label": {"lung": [term]}}
+    )
+    store = OntoStore(
+        ontology_frameworks={
+            "empty": {"path": tmp_path / "missing-empty.owl", "json_path": empty_json},
+            "uberon": {
+                "path": tmp_path / "missing-uberon.owl",
+                "json_path": uberon_json,
+            },
+        },
+        storage_dir=tmp_path,
+    )
+    target = {
+        "id": "target-0",
+        "pre_hz_label": "lung",
+        "ontology_frameworks": ["empty"],
+    }
+
+    result = OntologyHarmonizer().assign_onto_framework(
+        target,
+        publication_context=None,
+        ontostore=store,
+        strategy="identity",
+    )
+
+    assert result is False
+    assert target["ontology_match"] is False
+    assert "ontology_id" not in target
+    assert "ontology_lookup" not in target
+
+
+def test_harmonize_assigns_ontology_metadata_from_store(tmp_path: Path) -> None:
+    term = {
+        "iri": "http://purl.obolibrary.org/obo/UBERON_0002048",
+        "accession": "UBERON:0002048",
+        "title": "lung",
+    }
+    json_path = ontology_json_file(tmp_path, "uberon", {"label": {"lung": [term]}})
+    store = OntoStore(
+        ontology_frameworks={
+            "uberon": {"path": tmp_path / "missing.owl", "json_path": json_path}
+        },
+        storage_dir=tmp_path,
+    )
+
+    result = OntologyHarmonizer(ontostore=store).harmonize(
+        target={
+            "id": "target-0",
+            "pre_hz_label": "lung",
+            "ontology_ids": ["uberon"],
+        }
+    )
+
+    target = result["harmonization_targets"][0]
+    assert target["ontology_match"] is True
+    assert target["ontology_id"] == "uberon"
+    assert target["ontology_lookup"] == [term]
+
+
 def miniml_metadata() -> dict:
     return {
         "sample": [
@@ -1236,6 +1417,7 @@ def test_harmonize_miniml_json_accepts_explicit_target_paths() -> None:
                 "parent_path": "/sample",
                 "hz_field": "tissue",
                 "hz_label": "lung",
+                "ontology_match": False,
             }
         ],
         "strategy": "identity",

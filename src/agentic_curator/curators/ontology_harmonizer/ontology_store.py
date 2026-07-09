@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -243,6 +244,20 @@ class OntoStore:
 
         json_path.parent.mkdir(parents=True, exist_ok=True)
         return Owl2json(owl_path).write_json(json_path)
+
+    def lookup(self, label: str, ontology_id: str) -> Any:
+        json_path = self.get(ontology_id)
+        ontology = json.loads(json_path.read_text(encoding="utf-8"))
+        terms = ontology.get("terms", {})
+        if not isinstance(terms, dict):
+            return False
+
+        for index_name in ("label", "id", "accession", "iri"):
+            index = terms.get(index_name, {})
+            if isinstance(index, dict) and label in index:
+                return index[label]
+
+        return False
 
     def download(self, name: str) -> Path:
         target = self._target_path(name)

@@ -113,7 +113,7 @@ integration yet.
 
 Public methods:
 
-- `assign_onto_framework(target, *, publication_context, ontostore, strategy) -> None`
+- `assign_onto_framework(target, *, publication_context, ontostore, strategy) -> Any`
 - `harmonize_miniml_json(publication_context=None, miniml_json=None, ontostore=None, target_paths=None, strategy="identity") -> dict`
 - `harmonize(publication_context=None, harmonization_targets=None, target=None, strategy="identity", ontostore=None, target_paths=None) -> dict`
 
@@ -125,7 +125,7 @@ meaningful sample metadata (`source`, `molecule`, `organism`, and
 `pre_hz_field:pre_hz_label` while preserving every source path in
 `occurrences`. Supplying `target_paths` keeps explicit path extraction behavior.
 
-The lower-level `harmonize(...)` currently returns only a target wrapper:
+The lower-level `harmonize(...)` returns a target wrapper:
 
 ```python
 {
@@ -143,21 +143,26 @@ a single target dictionary. Passing both `target` and `harmonization_targets`
 raises `ValueError`. Supported strategies are `identity` and `noop`; `noop` is
 normalized to `identity`. A per-call `ontostore` override must be an `OntoStore`.
 `harmonize(...)` calls `assign_onto_framework(...)` once for each normalized
-target before returning. The hook is intentionally empty and does not mutate
-targets yet.
+target before returning. Assignment mutates each target with
+`ontology_match=False` on a miss. On a match, the target receives
+`ontology_match=True`, `ontology_id`, and `ontology_lookup` from
+`OntoStore.lookup(...)`.
 
 `OntologyHarmonizer(ontostore=None)` creates a default `OntoStore` when no store
 is supplied. Custom ontology framework dictionaries should be passed to
 `OntoStore(ontology_frameworks=...)`, then injected into the harmonizer. A
-per-call `ontostore` can override the constructor value for future harmonization
-behavior. The effective store is validated and passed into the empty assignment
-hook but not used for matching yet.
+per-call `ontostore` can override the constructor value for harmonization. The
+effective store is validated before assignment. Targets may constrain lookup by
+setting `ontology_frameworks` or `ontology_ids` to a string or sequence of
+framework IDs. Without an explicit constraint, assignment searches only
+path-backed frameworks with existing local OWL or JSON files, avoiding implicit
+downloads of every built-in URL-backed framework.
 
 `OntoStore`, `Owl2json`, and `Owl2jsonParseError` are exported from
 `agentic_curator.curators.ontology_harmonizer`. `OntoStore` stores ontology
-framework URL config, downloads named frameworks, and is reserved for future
-parsing and serving methods. `Owl2json` parses RDF/XML `.owl` files into a
-term-centric JSON dictionary.
+framework config, downloads named frameworks, parses OWL into JSON, and looks up
+terms. `Owl2json` parses RDF/XML `.owl` files into a term-centric JSON
+dictionary.
 
 Framework config uses a nested dictionary:
 
@@ -198,6 +203,11 @@ framework, it parses the configured `owl_path` if present or downloads the
 `.owl` there first. With `force=True`, URL-backed frameworks redownload the
 `.owl` before reparsing, and path-backed frameworks reparse the configured local
 `owl_path` without network I/O.
+`OntoStore.lookup(label, ontology_id)` calls `get(ontology_id)`, loads the JSON
+from the configured `json_path`, and searches `terms["label"]`, `terms["id"]`,
+`terms["accession"]`, and `terms["iri"]` in that order. It returns the matched
+metadata value from the index, which may be a list for label matches, or `False`
+when no index contains the label.
 `OntoStore.download(name)` downloads only URL-backed frameworks with
 `requests.get(url, timeout=30)`, calls `raise_for_status()`, and returns the
 configured `owl_path`. Path-backed frameworks validate and return the configured
@@ -412,8 +422,9 @@ The current code does not parse model JSON responses, configure logging, or wrap
 provider exceptions. Those responsibilities stay with callers.
 
 `OntologyHarmonizer.harmonize(...)` is separate from this LLM flow. It normalizes
-single-target input, validates the selected strategy, returns a target wrapper
-directly, and does not call `LLM`, provider adapters, or prompt files.
+single-target input, validates the selected strategy, assigns ontology metadata
+through `OntoStore.lookup(...)`, returns a target wrapper directly, and does not
+call `LLM`, provider adapters, or prompt files.
 
 <a id="method-orchestrator-pseudocode"></a>
 ## Method Orchestrator Pseudocode
@@ -541,8 +552,9 @@ def _prompt_text(value):
 
 ### `OntologyHarmonizer`
 
-Role: metadata harmonization curator scaffold. It delegates structured edit
-target discovery to `HarmonizationTargetExtractor` for future harmonization.
+Role: metadata harmonization curator. It delegates structured edit target
+discovery to `HarmonizationTargetExtractor` and ontology JSON lookup to an
+injected `OntoStore`.
 
 ```python
 class OntologyHarmonizer:
@@ -587,7 +599,34 @@ class OntologyHarmonizer:
         ontostore,
         strategy,
     ):
-        pass
+        label = target.get("pre_hz_label")
+        if label is None:
+            return self._mark_ontology_miss(target)
+
+        for ontology_id in self._candidate_ontology_ids(target, ontostore):
+            lookup = ontostore.lookup(str(label), ontology_id)
+            if lookup:
+                target["ontology_id"] = ontology_id
+                target["ontology_lookup"] = lookup
+                target["ontology_match"] = True
+                return lookup
+
+        return self._mark_ontology_miss(target)
+
+    def _candidate_ontology_ids(target, ontostore):
+        configured_ids = target.get("ontology_frameworks", target.get("ontology_ids"))
+        if configured_ids is not None:
+            return self._normalize_ontology_ids(configured_ids)
+        return [
+            ontology_id
+            for ontology_id, framework in ontostore.ontology_frameworks.items()
+            if framework is path-backed and has an existing local owl_path or json_path
+        ]
+
+    def _mark_ontology_miss(target):
+        remove stale ontology_id and ontology_lookup
+        target["ontology_match"] = False
+        return False
 
     def harmonize_miniml_json(
         publication_context=None,
@@ -620,8 +659,11 @@ class OntologyHarmonizer:
         )
 ```
 
-No external API calls are made by `harmonize()` or `assign_onto_framework()` in
-the current implementation.
+`assign_onto_framework()` calls `OntoStore.lookup(...)`, which calls
+`OntoStore.get(...)`. For unconstrained targets it only considers path-backed
+local frameworks, so no external API call is made. If a target explicitly
+selects a URL-backed framework whose configured JSON/OWL files are missing,
+lookup may reach `requests.get(...)` through `OntoStore.download(...)`.
 
 ```python
 def _extract_harmonization_targets(metadata, start_paths=None):
@@ -801,6 +843,16 @@ def get(name, force=False):
 
     json_path.parent.mkdir(parents=True, exist_ok=True)
     return Owl2json(owl_path).write_json(json_path)
+
+def lookup(label, ontology_id):
+    json_path = self.get(ontology_id)
+    ontology = json.loads(json_path.read_text(encoding="utf-8"))
+    terms = ontology.get("terms", {})
+    for index_name in ("label", "id", "accession", "iri"):
+        index = terms.get(index_name, {})
+        if index is dict and label in index:
+            return index[label]
+    return False
 
 def download(name):
     target = self._target_path(name)
@@ -1269,8 +1321,9 @@ Test coverage includes:
 
 - reviewer instantiation, public exports, missing legacy module, prompt
   construction, schema construction, and two-call ordering
-- ontology harmonizer imports, root exports, metadata-only return behavior, and
-  `OntoStore` defaults/overrides
+- ontology harmonizer imports, root exports, target wrapper behavior,
+  `assign_onto_framework()` lookup mutation, and `OntoStore`
+  defaults/overrides/download/get/lookup behavior
 - Owl2json imports, ontology metadata extraction, normalized term JSON,
   accession fallback, deprecated/replaced terms, HTML rejection, and JSON file
   writing
