@@ -92,6 +92,33 @@ def test_llm_generate_response_delegates_to_platform() -> None:
     ]
 
 
+def test_llm_generate_response_with_metadata_delegates_to_platform() -> None:
+    client = FakeClient()
+    llm = LLM(client=client)
+
+    response = llm.generate_response_with_metadata(
+        "search this",
+        model="gemini-test",
+        tools=[{"type": "google_search"}],
+    )
+
+    assert response["text"] == "ok"
+    assert response["provider"] == "gemini_enterprise"
+    assert response["raw_response"] == {"response": "ok", "request": client.models.calls[0]}
+    assert client.models.calls == [
+        {
+            "model": "gemini-test",
+            "contents": "search this",
+            "config": {
+                "temperature": 0.2,
+                "max_output_tokens": 8192,
+                "candidate_count": 1,
+            },
+            "tools": [{"type": "google_search"}],
+        }
+    ]
+
+
 def test_model_adapter_parses_text_attribute() -> None:
     response = SimpleNamespace(text="generated text")
 
@@ -202,6 +229,69 @@ def test_gemini_enterprise_generate_response_uses_injected_client() -> None:
     ]
 
 
+def test_gemini_enterprise_generate_response_with_metadata_extracts_citations() -> None:
+    response = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {
+                            "text": "Lung maps to UBERON:0002048.",
+                            "annotations": [
+                                {
+                                    "type": "url_citation",
+                                    "url": "https://example.org/lung",
+                                    "title": "Lung ontology entry",
+                                    "start_index": 0,
+                                    "end_index": 4,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            }
+        ],
+        "steps": [
+            {"type": "google_search_call", "arguments": {"queries": ["lung ontology"]}},
+            {"type": "google_search_result", "result": [{"search_suggestions": "<div />"}]},
+        ],
+    }
+
+    class MetadataModels(FakeModels):
+        def generate_content(self, **request):
+            self.calls.append(request)
+            return response
+
+    client = FakeClient()
+    client.models = MetadataModels()
+    platform = GeminiEnterprisePlatform(client=client)
+
+    result = platform.generate_response_with_metadata(
+        "find ontology evidence",
+        tools=[{"type": "google_search"}],
+    )
+
+    assert result == {
+        "text": "Lung maps to UBERON:0002048.",
+        "raw_response": response,
+        "citations": [
+            {
+                "type": "url_citation",
+                "url": "https://example.org/lung",
+                "title": "Lung ontology entry",
+                "start_index": 0,
+                "end_index": 4,
+            }
+        ],
+        "tool_calls": [
+            {"type": "google_search_call", "arguments": {"queries": ["lung ontology"]}},
+            {"type": "google_search_result", "result": [{"search_suggestions": "<div />"}]},
+        ],
+        "provider": "gemini_enterprise",
+    }
+    assert client.models.calls[0]["tools"] == [{"type": "google_search"}]
+
+
 def test_claude_vertex_generate_response_uses_injected_client() -> None:
     client = FakeClaudeClient()
     platform = ClaudeVertexPlatform(
@@ -226,6 +316,24 @@ def test_claude_vertex_generate_response_uses_injected_client() -> None:
             "temperature": 0.4,
             "tools": ["tool-b"],
         }
+    ]
+
+
+def test_claude_vertex_generate_response_with_metadata_preserves_text_contract() -> None:
+    client = FakeClaudeClient()
+    platform = ClaudeVertexPlatform(client=client)
+
+    result = platform.generate_response_with_metadata(
+        "extract evidence",
+        tools=[{"type": "web_search_20260209", "name": "web_search"}],
+    )
+
+    assert result["text"] == "ok"
+    assert result["provider"] == "claude_vertex"
+    assert result["citations"] == []
+    assert result["tool_calls"] == []
+    assert client.messages.calls[0]["tools"] == [
+        {"type": "web_search_20260209", "name": "web_search"}
     ]
 
 

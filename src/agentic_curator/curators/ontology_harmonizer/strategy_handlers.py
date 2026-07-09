@@ -6,6 +6,7 @@ from typing import Any
 import requests
 
 from agentic_curator.curators.ontology_harmonizer.ontology_store import OntoStore
+from agentic_curator.wrappers import LLM
 
 
 class PlaceholderStrategyHandler:
@@ -82,6 +83,77 @@ class NullSearchClient:
         return []
 
 
+class GeminiGroundedSearchClient:
+    """Google Search grounding client backed by the LLM facade."""
+
+    GOOGLE_SEARCH_TOOL = {"type": "google_search"}
+
+    def __init__(
+        self,
+        *,
+        llm: Any | None = None,
+        model: str | None = None,
+        request_budget: int | None = 100,
+    ) -> None:
+        self.llm = LLM() if llm is None else llm
+        self.model = model
+        self.request_budget = request_budget
+        self.requests_made = 0
+        self.last_response: dict[str, Any] | None = None
+        self.last_error: str | None = None
+
+    def search(self, query: str, *, max_results: int = 25) -> list[dict[str, Any]]:
+        if self.request_budget is not None and self.requests_made >= self.request_budget:
+            self.last_error = "Google search request budget exhausted."
+            return []
+
+        self.requests_made += 1
+        self.last_error = None
+        prompt = self._prompt(query)
+        try:
+            response = self.llm.generate_response_with_metadata(
+                prompt,
+                model=self.model,
+                tools=[self.GOOGLE_SEARCH_TOOL],
+            )
+        except Exception as exc:
+            self.last_response = None
+            self.last_error = str(exc)
+            return []
+
+        self.last_response = response
+        return self._hits(response)[:max_results]
+
+    def _prompt(self, query: str) -> str:
+        return (
+            "Search the web for ontology evidence related to this query:\n"
+            f"{query}\n\n"
+            "Return concise evidence for ontology term candidates, including "
+            "term labels, IDs, IRIs, and ontology framework names when found."
+        )
+
+    def _hits(self, response: dict[str, Any]) -> list[dict[str, Any]]:
+        text = str(response.get("text", ""))
+        provider = str(response.get("provider", "gemini_enterprise"))
+        hits = []
+        for citation in response.get("citations", []):
+            if not isinstance(citation, dict):
+                continue
+            link = citation.get("url")
+            if not link:
+                continue
+            hits.append(
+                {
+                    "title": citation.get("title") or link,
+                    "link": link,
+                    "snippet": text,
+                    "source": "gemini_google_search",
+                    "provider": provider,
+                }
+            )
+        return hits
+
+
 class WebsearchStrategyHandler:
     strategy = "websearch"
     max_results = 25
@@ -104,8 +176,6 @@ class WebsearchStrategyHandler:
         publication_context: str | None,
         ontostore: OntoStore,
     ) -> dict[str, Any]:
-        del publication_context
-
         ontology_id = target.get("ontology_id")
         if not ontology_id:
             return self._not_harmonized(
@@ -149,6 +219,7 @@ class WebsearchStrategyHandler:
             self._web_query(target),
             max_results=self.max_results,
         )[: self.max_results]
+        web_search_error = getattr(self.search_client, "last_error", None)
         if unrestricted_hits:
             return self._accept_first_hit(
                 target,
@@ -156,6 +227,7 @@ class WebsearchStrategyHandler:
                 hits=unrestricted_hits,
                 web_hits=web_hits,
                 reason="Unrestricted OLS search returned a usable ontology hit.",
+                web_search_error=web_search_error,
             )
 
         return self._not_harmonized(
@@ -163,6 +235,7 @@ class WebsearchStrategyHandler:
             reason="No usable OLS ontology hit was found.",
             ols_hits=[],
             web_hits=web_hits,
+            web_search_error=web_search_error,
         )
 
     def _accept_first_hit(
@@ -173,6 +246,7 @@ class WebsearchStrategyHandler:
         hits: list[dict[str, Any]],
         web_hits: list[dict[str, Any]],
         reason: str,
+        web_search_error: str | None = None,
     ) -> dict[str, Any]:
         hit = hits[0]
         ontology_id = hit["ontology_id"]
@@ -186,6 +260,7 @@ class WebsearchStrategyHandler:
                 ),
                 ols_hits=hits,
                 web_hits=web_hits,
+                web_search_error=web_search_error,
             )
 
         ontostore.configure_framework(
@@ -206,6 +281,8 @@ class WebsearchStrategyHandler:
             "web_hits": web_hits,
             "ontology_framework_config": framework_config,
         }
+        if web_search_error:
+            result["web_search_error"] = web_search_error
         target["ontology_id"] = ontology_id
         target["ontology_lookup"] = hit
         target["ontology_lookup_hits"] = hits
@@ -220,6 +297,7 @@ class WebsearchStrategyHandler:
         reason: str,
         ols_hits: list[dict[str, Any]],
         web_hits: list[dict[str, Any]],
+        web_search_error: str | None = None,
     ) -> dict[str, Any]:
         result = {
             "strategy": self.strategy,
@@ -230,6 +308,8 @@ class WebsearchStrategyHandler:
             "ols_hits": ols_hits,
             "web_hits": web_hits,
         }
+        if web_search_error:
+            result["web_search_error"] = web_search_error
         target["ontology_match"] = False
         target.pop("ontology_lookup", None)
         target.pop("ontology_lookup_hits", None)

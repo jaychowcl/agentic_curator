@@ -47,6 +47,24 @@ class ClaudeVertexPlatform:
         tools: list[Any] | None = None,
         **extra_options: Any,
     ) -> str:
+        response = self.generate_response_with_metadata(
+            prompt,
+            model=model,
+            config=config,
+            tools=tools,
+            **extra_options,
+        )
+        return str(response["text"])
+
+    def generate_response_with_metadata(
+        self,
+        prompt: str,
+        *,
+        model: str | None = None,
+        config: dict[str, Any] | None = None,
+        tools: list[Any] | None = None,
+        **extra_options: Any,
+    ) -> dict[str, Any]:
         effective_model = model or self.model
         request = {
             "model": effective_model,
@@ -59,7 +77,13 @@ class ClaudeVertexPlatform:
             request["tools"] = generation_tools
 
         raw_response = self._client().messages.create(**request)
-        return ClaudeModelAdapter().parse_response(raw_response)
+        return {
+            "text": ClaudeModelAdapter().parse_response(raw_response),
+            "raw_response": raw_response,
+            "citations": [],
+            "tool_calls": [],
+            "provider": "claude_vertex",
+        }
 
     def _client(self) -> Any:
         if self.client is None:

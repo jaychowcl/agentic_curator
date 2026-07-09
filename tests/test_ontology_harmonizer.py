@@ -10,6 +10,7 @@ from agentic_curator import OntologyHarmonizer as RootOntologyHarmonizer
 from agentic_curator.curators.ontology_harmonizer import ontology_store
 from agentic_curator.curators import OntologyHarmonizer
 from agentic_curator.curators.ontology_harmonizer import (
+    GeminiGroundedSearchClient,
     HarmonizationTargetExtractor,
     OntoStore,
     OntologyHarmonizer as SubpackageOntologyHarmonizer,
@@ -185,6 +186,52 @@ class FakeSearchClient:
         return self.results
 
 
+class FakeGroundedLLM:
+    def __init__(self, response=None, error: Exception | None = None) -> None:
+        self.calls = []
+        self.response = response or {
+            "text": "Lung maps to UBERON:0002048.",
+            "citations": [
+                {
+                    "url": "https://example.org/lung",
+                    "title": "Lung ontology entry",
+                    "start_index": 0,
+                    "end_index": 4,
+                }
+            ],
+            "tool_calls": [
+                {
+                    "type": "google_search_call",
+                    "arguments": {"queries": ["lung ontology"]},
+                }
+            ],
+            "provider": "gemini_enterprise",
+        }
+        self.error = error
+
+    def generate_response_with_metadata(
+        self,
+        prompt,
+        *,
+        model=None,
+        config=None,
+        tools=None,
+        **extra_options,
+    ):
+        self.calls.append(
+            {
+                "prompt": prompt,
+                "model": model,
+                "config": config,
+                "tools": tools,
+                "extra_options": extra_options,
+            }
+        )
+        if self.error is not None:
+            raise self.error
+        return self.response
+
+
 def ontology_bytes(*, title: str = "Cell Ontology", label: str = "cell") -> bytes:
     return f"""<?xml version="1.0"?>
 <rdf:RDF xmlns="http://purl.obolibrary.org/obo/cl.owl#"
@@ -234,6 +281,7 @@ def test_ontostore_can_be_imported_from_subpackage() -> None:
 
 def test_strategy_handlers_can_be_imported_from_subpackage() -> None:
     assert WebsearchStrategyHandler.__name__ == "WebsearchStrategyHandler"
+    assert GeminiGroundedSearchClient.__name__ == "GeminiGroundedSearchClient"
     assert RagStrategyHandler.__name__ == "RagStrategyHandler"
 
 
@@ -2202,6 +2250,84 @@ def test_harmonize_routes_failed_lookup_to_strategy_handler() -> None:
         "status": "recorded",
         "reason": "recorded strategy call",
     }
+
+
+def test_gemini_grounded_search_client_returns_citation_hits() -> None:
+    llm = FakeGroundedLLM()
+    client = GeminiGroundedSearchClient(llm=llm)
+
+    hits = client.search("tissue: lung ontology", max_results=25)
+
+    assert hits == [
+        {
+            "title": "Lung ontology entry",
+            "link": "https://example.org/lung",
+            "snippet": "Lung maps to UBERON:0002048.",
+            "source": "gemini_google_search",
+            "provider": "gemini_enterprise",
+        }
+    ]
+    assert client.last_response["text"] == "Lung maps to UBERON:0002048."
+    assert client.last_error is None
+    assert llm.calls == [
+        {
+            "prompt": (
+                "Search the web for ontology evidence related to this query:\n"
+                "tissue: lung ontology\n\n"
+                "Return concise evidence for ontology term candidates, including "
+                "term labels, IDs, IRIs, and ontology framework names when found."
+            ),
+            "model": None,
+            "config": None,
+            "tools": [{"type": "google_search"}],
+            "extra_options": {},
+        }
+    ]
+
+
+def test_gemini_grounded_search_client_respects_request_budget() -> None:
+    llm = FakeGroundedLLM()
+    client = GeminiGroundedSearchClient(llm=llm, request_budget=1)
+
+    assert client.search("first query")
+    assert client.search("second query") == []
+    assert client.last_error == "Google search request budget exhausted."
+    assert len(llm.calls) == 1
+
+
+def test_gemini_grounded_search_client_records_rate_limit_error() -> None:
+    llm = FakeGroundedLLM(error=RuntimeError("429 RESOURCE_EXHAUSTED"))
+    client = GeminiGroundedSearchClient(llm=llm)
+
+    assert client.search("tissue: lung ontology") == []
+    assert client.last_error == "429 RESOURCE_EXHAUSTED"
+
+
+def test_websearch_strategy_includes_web_search_error_on_fallback() -> None:
+    search_client = GeminiGroundedSearchClient(
+        llm=FakeGroundedLLM(error=RuntimeError("429 RESOURCE_EXHAUSTED"))
+    )
+    ols_client = FakeOlsClient(search_results=[[], []])
+    target = {
+        "id": "target-0",
+        "hz_field": "tissue",
+        "hz_label": "lung",
+        "ontology_id": "uberon",
+    }
+
+    result = WebsearchStrategyHandler(
+        ols_client=ols_client,
+        search_client=search_client,
+    ).handle(
+        target,
+        publication_context=None,
+        ontostore=OntoStore(),
+    )
+
+    assert result["status"] == "not_harmonized"
+    assert result["web_hits"] == []
+    assert result["web_search_error"] == "429 RESOURCE_EXHAUSTED"
+    assert target["ontology_strategy_result"] == result
 
 
 def test_websearch_strategy_uses_restricted_ols_hit_without_fallbacks() -> None:

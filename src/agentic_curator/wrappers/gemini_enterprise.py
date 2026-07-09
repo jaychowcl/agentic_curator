@@ -134,6 +134,24 @@ class GeminiEnterprisePlatform:
         tools: list[Any] | None = None,
         **extra_options: Any,
     ) -> str:
+        response = self.generate_response_with_metadata(
+            prompt,
+            model=model,
+            config=config,
+            tools=tools,
+            **extra_options,
+        )
+        return str(response["text"])
+
+    def generate_response_with_metadata(
+        self,
+        prompt: str,
+        *,
+        model: str | None = None,
+        config: dict[str, Any] | None = None,
+        tools: list[Any] | None = None,
+        **extra_options: Any,
+    ) -> dict[str, Any]:
         effective_model = model or self.model
         generation_config = self._clean_options(self._generation_config(config))
         generation_tools = self.tools_template if tools is None else tools
@@ -148,7 +166,14 @@ class GeminiEnterprisePlatform:
 
         client = self._client()
         raw_response = client.models.generate_content(**request)
-        return self._model_adapter(effective_model).parse_response(raw_response)
+        text = self._model_adapter(effective_model).parse_response(raw_response)
+        return {
+            "text": text,
+            "raw_response": raw_response,
+            "citations": self._citations(raw_response),
+            "tool_calls": self._tool_calls(raw_response),
+            "provider": "gemini_enterprise",
+        }
 
     def _client(self) -> Any:
         if self.client is None:
@@ -186,6 +211,72 @@ class GeminiEnterprisePlatform:
             return ClaudeModelAdapter()
 
         return GeminiModelAdapter()
+
+    @classmethod
+    def _citations(cls, response: Any) -> list[dict[str, Any]]:
+        citations = []
+        for part in cls._content_parts(response):
+            annotations = BaseModelAdapter._field(part, "annotations")
+            if not annotations:
+                continue
+            for annotation in annotations:
+                normalized = cls._normalize_mapping(annotation)
+                if normalized:
+                    citations.append(normalized)
+        return citations
+
+    @classmethod
+    def _tool_calls(cls, response: Any) -> list[dict[str, Any]]:
+        steps = BaseModelAdapter._field(response, "steps")
+        if not steps:
+            return []
+        return [
+            normalized
+            for step in steps
+            if (normalized := cls._normalize_mapping(step)) is not None
+        ]
+
+    @classmethod
+    def _content_parts(cls, response: Any) -> list[Any]:
+        candidates = BaseModelAdapter._field(response, "candidates")
+        if not candidates:
+            return []
+        parts = []
+        for candidate in candidates:
+            content = BaseModelAdapter._field(candidate, "content")
+            candidate_parts = BaseModelAdapter._field(content, "parts")
+            if candidate_parts:
+                parts.extend(candidate_parts)
+        return parts
+
+    @classmethod
+    def _normalize_mapping(cls, value: Any) -> dict[str, Any] | None:
+        if isinstance(value, dict):
+            return {
+                key: cls._normalize_value(item)
+                for key, item in value.items()
+            }
+        if hasattr(value, "__dict__"):
+            return {
+                key: cls._normalize_value(item)
+                for key, item in vars(value).items()
+                if not key.startswith("_")
+            }
+        return None
+
+    @classmethod
+    def _normalize_value(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: cls._normalize_value(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [cls._normalize_value(item) for item in value]
+        if hasattr(value, "__dict__"):
+            normalized = cls._normalize_mapping(value)
+            return {} if normalized is None else normalized
+        return value
 
     @staticmethod
     def _create_client(

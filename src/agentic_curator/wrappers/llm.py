@@ -23,8 +23,26 @@ class LLM:
         tools: list[Any] | None = None,
         **extra_options: Any,
     ) -> str:
+        response = self.generate_response_with_metadata(
+            prompt,
+            model=model,
+            config=config,
+            tools=tools,
+            **extra_options,
+        )
+        return str(response["text"])
+
+    def generate_response_with_metadata(
+        self,
+        prompt: str,
+        *,
+        model: str | None = None,
+        config: dict[str, Any] | None = None,
+        tools: list[Any] | None = None,
+        **extra_options: Any,
+    ) -> dict[str, Any]:
         platform = self._platform_for_model(model)
-        return platform.generate_response(
+        return platform.generate_response_with_metadata(
             prompt,
             model=model,
             config=config,

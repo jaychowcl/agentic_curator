@@ -89,6 +89,11 @@ from agentic_curator.curators import OntologyHarmonizer, ThematicReviewer
 supported. The old flat module import `agentic_curator.thematic_reviewer` is
 intentionally absent after the curator subpackage refactor.
 
+`agentic_curator.curators.ontology_harmonizer` exports ontology-specific helper
+classes including `OntoStore`, `Owl2json`, `OlsClient`,
+`NullSearchClient`, `GeminiGroundedSearchClient`, `WebsearchStrategyHandler`,
+and `RagStrategyHandler`.
+
 `ThematicReviewer(llm=None)` accepts an optional LLM-like object. If no object is
 provided, the reviewer lazily creates `agentic_curator.wrappers.LLM()` on the
 first generation call.
@@ -173,9 +178,17 @@ and `reason`, stores it at `ontology_framework_assignment`, and sets
 to LLM-backed `assign_field(...)` only when `llm=True`. Then `harmonize(...)` calls
 `harmonize_label(...)` only for `websearch` and `rag`. The websearch handler
 uses OLS4 restricted to the assigned `ontology_id`, then falls back to
-unrestricted OLS plus an injected web search client. Strategy results always
-include `strategy`, `status`, `decision`, `confidence`, and `reason`. The
-default `identity` strategy does not call a handler.
+unrestricted OLS plus an injected web search client. `NullSearchClient` is the
+default and performs no network work. `GeminiGroundedSearchClient` is an
+opt-in Google Search grounding client backed by the LLM facade; it calls
+`generate_response_with_metadata(..., tools=[{"type": "google_search"}])`,
+normalizes returned citation annotations into `web_hits`, stores the grounded
+response at `last_response`, and records quota or provider failures at
+`last_error`. Its per-process `request_budget` defaults to `100` to avoid
+unbounded requests against Gemini project-level RPM/TPM/RPD quotas. Strategy
+results always include `strategy`, `status`, `decision`, `confidence`, and
+`reason`, and include `web_search_error` when the search client reports one.
+The default `identity` strategy does not call a handler.
 
 `OntologyHarmonizer(ontostore=None, llm=None)` creates a default `OntoStore`
 when no store is supplied and lazily creates `LLM()` only when framework
@@ -800,11 +813,22 @@ class OntologyHarmonizer:
 
         unrestricted_hits = OLS search(label, rows=25)
         web_hits = search_client.search(f"{hz_field}: {hz_label} ontology", max_results=25)
+        web_search_error = search_client.last_error if available
         if unrestricted_hits and complete framework metadata is available:
             ontostore.configure_framework(...)
             set target ontology lookup fields
-            return matched strategy result
-        return not_harmonized strategy result
+            return matched strategy result, including web_search_error when present
+        return not_harmonized strategy result, including web_search_error when present
+
+    class GeminiGroundedSearchClient:
+        if request_budget is exhausted:
+            set last_error and return []
+        response = llm.generate_response_with_metadata(
+            prompt_for_ontology_evidence(query),
+            tools=[{"type": "google_search"}],
+        )
+        last_response = response
+        return citation annotations as web_hits
 
     def _candidate_ontology_ids(target, ontostore):
         configured_ids = target.get("ontology_frameworks", target.get("ontology_ids"))
@@ -1420,6 +1444,10 @@ from agentic_curator.wrappers import LLM
 
 llm = LLM()
 text = llm.generate_response("prompt")
+metadata = llm.generate_response_with_metadata(
+    "prompt",
+    tools=[{"type": "google_search"}],
+)
 ```
 
 Defaults:
@@ -1431,6 +1459,9 @@ Defaults:
 `LLM(platform="gemini_enterprise", **platform_options)` creates a Gemini
 platform by default. `LLM(platform="claude_vertex", **platform_options)` creates
 a Claude Vertex platform. Unknown platform names raise `ValueError`.
+`generate_response(...)` remains the text-only compatibility API.
+`generate_response_with_metadata(...)` returns a provider-normalized dictionary
+with `text`, `raw_response`, `citations`, `tool_calls`, and `provider`.
 
 If a call-level `model` starts with `claude-` and the default platform is not
 already `claude_vertex`, `LLM` lazily routes that call to a Claude Vertex
@@ -1472,7 +1503,10 @@ Template tools are used unless call-level `tools` are supplied.
 Gemini responses prefer the first candidate content part text, then fall back to
 `text`, `response`, and finally `str(response)`. If a Gemini platform is asked
 to use a `claude-` model directly, it selects the Claude response adapter for
-parsing.
+parsing. `generate_response_with_metadata(...)` wraps the same text with the raw
+response, citation annotations from candidate content parts, response `steps`
+such as `google_search_call` and `google_search_result`, and provider
+`gemini_enterprise`.
 
 <a id="claude-vertex-platform"></a>
 ## Claude Vertex Platform
@@ -1543,15 +1577,17 @@ Test coverage includes:
 - reviewer instantiation, public exports, missing legacy module, prompt
   construction, schema construction, and two-call ordering
 - ontology harmonizer imports, root exports, target wrapper behavior,
-  `lookup_label()` lookup mutation, fallback assignment, and `OntoStore`
-  defaults/overrides/download/get/lookup behavior
+  `lookup_label()` lookup mutation, fallback assignment, Gemini grounded
+  search client citation/error handling, websearch strategy fallback behavior,
+  and `OntoStore` defaults/overrides/download/get/lookup behavior
 - Owl2json imports, ontology metadata extraction, normalized term JSON,
   accession fallback, deprecated/replaced terms, HTML rejection, and JSON file
   writing
 - CLI direct inputs, UTF-8 file inputs, file precedence, stdout output, and
   `--out` writing
-- provider facade selection, Claude model routing, request construction, config
-  merging, schema normalization, tool overrides, and lazy import errors
+- provider facade selection, metadata responses, Claude model routing, request
+  construction, config merging, schema normalization, tool overrides, and lazy
+  import errors
 - response adapter behavior for dicts, namespaces, candidate parts, Claude
   content blocks, and fallback string conversion
 
