@@ -284,14 +284,21 @@ unless `--out` is used.
 
 ### Ontology Guide
 
-`OntologyHarmonizer(ontology_frameworks=None)` accepts either an ontology
-framework dictionary or an `OntoStore`. If omitted, it creates a default
-`OntoStore`.
+`OntologyHarmonizer(ontostore=None)` accepts an optional `OntoStore`. If
+omitted, it creates a default store. Custom ontology framework dictionaries
+should be passed to `OntoStore(...)`, then injected into the harmonizer.
 
 ```python
 from agentic_curator import OntologyHarmonizer
+from agentic_curator.curators.ontology_harmonizer import OntoStore
 
-harmonizer = OntologyHarmonizer()
+harmonizer = OntologyHarmonizer(
+    ontostore=OntoStore(
+        ontology_frameworks={
+            "custom": {"url": "https://example.org/custom.owl"},
+        }
+    )
+)
 result = harmonizer.harmonize_miniml_json(
     publication_context="Full publication text",
     miniml_json={
@@ -326,7 +333,9 @@ strategy="identity", ontostore=None, target_paths=None)` accepts either a list
 of targets, a single target dictionary via `target=`, or a single dictionary in
 `harmonization_targets`. Passing both `target` and `harmonization_targets`
 raises `ValueError`. Supported strategies are `identity` and `noop`; `noop` is
-normalized to `identity`. It currently returns:
+normalized to `identity`. Before returning, `harmonize(...)` calls the public
+empty hook `assign_onto_framework(...)` once for each normalized target. It
+currently returns:
 
 ```python
 {
@@ -549,20 +558,31 @@ class OntologyHarmonizer:
         ontostore=None,
         target_paths=None,
     ):
-        effective_store = ontostore or self.ontology_frameworks
+        effective_store = ontostore or self.ontostore
         targets = normalize_target_inputs(harmonization_targets, target)
         strategy = normalize_strategy(strategy)
+        for target in targets:
+            self.assign_onto_framework(
+                target,
+                publication_context=publication_context,
+                ontostore=effective_store,
+                strategy=strategy,
+            )
         return {
             "publication_context": publication_context,
             "harmonization_targets": targets,
             "strategy": strategy,
             "target_paths": target_paths,
         }
+
+    def assign_onto_framework(target, publication_context, ontostore, strategy):
+        pass
 ```
 
 Target extraction is handled by
 `ontology_harmonizer.harmonization_target_extractor.HarmonizationTargetExtractor`;
-the harmonizer keeps a private delegation wrapper for future harmonization work:
+the harmonizer keeps a public empty framework-assignment hook and a private
+target-extraction delegation wrapper for future harmonization work:
 
 ```python
 class HarmonizationTargetExtractor:

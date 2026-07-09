@@ -9,9 +9,6 @@ from agentic_curator.curators.ontology_harmonizer.harmonization_target_extractor
 from agentic_curator.curators.ontology_harmonizer.ontology_store import OntoStore
 
 
-OntologyFrameworks = dict[str, Any] | OntoStore
-
-
 class OntologyHarmonizer:
     """Curator for harmonizing publication metadata against ontologies."""
 
@@ -21,10 +18,8 @@ class OntologyHarmonizer:
         "noop": "identity",
     }
 
-    def __init__(self, ontology_frameworks: OntologyFrameworks | None = None) -> None:
-        self.ontology_frameworks = (
-            OntoStore() if ontology_frameworks is None else ontology_frameworks
-        )
+    def __init__(self, ontostore: OntoStore | None = None) -> None:
+        self.ontostore = OntoStore() if ontostore is None else ontostore
         self.target_extractor = HarmonizationTargetExtractor()
 
     def harmonize(
@@ -37,15 +32,22 @@ class OntologyHarmonizer:
         target_paths: list[StartPathSpec] | None = None,
     ) -> dict[str, Any]:
         effective_ontostore = self._effective_ontostore(ontostore)
-        _ = effective_ontostore
         normalized_strategy = self._normalize_strategy(strategy)
+        normalized_targets = self._normalize_targets(
+            harmonization_targets=harmonization_targets,
+            target=target,
+        )
+        for normalized_target in normalized_targets:
+            self.assign_onto_framework(
+                normalized_target,
+                publication_context=publication_context,
+                ontostore=effective_ontostore,
+                strategy=normalized_strategy,
+            )
 
         return {
             "publication_context": publication_context,
-            "harmonization_targets": self._normalize_targets(
-                harmonization_targets=harmonization_targets,
-                target=target,
-            ),
+            "harmonization_targets": normalized_targets,
             "strategy": normalized_strategy,
             "target_paths": target_paths,
         }
@@ -111,10 +113,18 @@ class OntologyHarmonizer:
             )
         return normalized
 
+    def assign_onto_framework(
+        self,
+        target: dict[str, Any],
+        *,
+        publication_context: str | None,
+        ontostore: OntoStore,
+        strategy: str,
+    ) -> None:
+        pass
+
     def _effective_ontostore(self, ontostore: OntoStore | None = None) -> OntoStore:
-        effective_ontostore = (
-            self.ontology_frameworks if ontostore is None else ontostore
-        )
+        effective_ontostore = self.ontostore if ontostore is None else ontostore
         if not isinstance(effective_ontostore, OntoStore):
             raise TypeError("ontostore must be an OntoStore.")
         return effective_ontostore

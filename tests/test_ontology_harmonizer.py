@@ -649,23 +649,32 @@ def test_harmonize_defaults_to_empty_targets() -> None:
 
 
 def test_harmonizer_creates_default_ontostore() -> None:
-    assert isinstance(OntologyHarmonizer().ontology_frameworks, OntoStore)
+    assert isinstance(OntologyHarmonizer().ontostore, OntoStore)
 
 
 def test_harmonizer_accepts_ontostore_in_constructor() -> None:
     store = OntoStore()
 
-    harmonizer = OntologyHarmonizer(ontology_frameworks=store)
+    harmonizer = OntologyHarmonizer(ontostore=store)
 
-    assert harmonizer.ontology_frameworks is store
+    assert harmonizer.ontostore is store
 
 
-def test_harmonizer_accepts_dict_ontology_frameworks_in_constructor() -> None:
-    ontology_frameworks = {"anatomy": "UBERON"}
+def test_harmonizer_rejects_ontology_frameworks_constructor_arg() -> None:
+    with pytest.raises(TypeError):
+        OntologyHarmonizer(ontology_frameworks={"anatomy": "UBERON"})
 
-    harmonizer = OntologyHarmonizer(ontology_frameworks=ontology_frameworks)
 
-    assert harmonizer.ontology_frameworks is ontology_frameworks
+def test_harmonizer_accepts_custom_frameworks_through_ontostore() -> None:
+    store = OntoStore(
+        ontology_frameworks={"anatomy": {"url": "https://example.org/anatomy.owl"}}
+    )
+
+    harmonizer = OntologyHarmonizer(ontostore=store)
+
+    assert harmonizer.ontostore.ontology_frameworks["anatomy"] == {
+        "url": "https://example.org/anatomy.owl"
+    }
 
 
 def test_harmonize_accepts_ontostore_override() -> None:
@@ -684,6 +693,122 @@ def test_harmonize_accepts_ontostore_override() -> None:
     }
 
 
+def test_harmonize_calls_assign_onto_framework_for_each_target() -> None:
+    calls = []
+
+    class RecordingHarmonizer(OntologyHarmonizer):
+        def assign_onto_framework(
+            self,
+            target,
+            *,
+            publication_context,
+            ontostore,
+            strategy,
+        ):
+            calls.append(
+                {
+                    "target": target,
+                    "publication_context": publication_context,
+                    "ontostore": ontostore,
+                    "strategy": strategy,
+                }
+            )
+
+    store = OntoStore()
+    targets = [
+        {"id": "target-0", "pre_hz_field": "tissue", "pre_hz_label": "lung"},
+        {"id": "target-1", "pre_hz_field": "organism", "pre_hz_label": "human"},
+    ]
+
+    result = RecordingHarmonizer(ontostore=store).harmonize(
+        publication_context="context",
+        harmonization_targets=targets,
+        strategy="noop",
+    )
+
+    assert result["harmonization_targets"] == targets
+    assert calls == [
+        {
+            "target": targets[0],
+            "publication_context": "context",
+            "ontostore": store,
+            "strategy": "identity",
+        },
+        {
+            "target": targets[1],
+            "publication_context": "context",
+            "ontostore": store,
+            "strategy": "identity",
+        },
+    ]
+
+
+def test_harmonize_single_target_calls_assign_onto_framework_once() -> None:
+    calls = []
+
+    class RecordingHarmonizer(OntologyHarmonizer):
+        def assign_onto_framework(
+            self,
+            target,
+            *,
+            publication_context,
+            ontostore,
+            strategy,
+        ):
+            calls.append(target)
+
+    target = {"id": "target-0", "pre_hz_field": "tissue", "pre_hz_label": "lung"}
+
+    result = RecordingHarmonizer().harmonize(target=target)
+
+    assert result["harmonization_targets"] == [target]
+    assert calls == [target]
+
+
+def test_harmonize_without_targets_does_not_call_assign_onto_framework() -> None:
+    calls = []
+
+    class RecordingHarmonizer(OntologyHarmonizer):
+        def assign_onto_framework(
+            self,
+            target,
+            *,
+            publication_context,
+            ontostore,
+            strategy,
+        ):
+            calls.append(target)
+
+    RecordingHarmonizer().harmonize()
+
+    assert calls == []
+
+
+def test_harmonize_assign_onto_framework_receives_ontostore_override() -> None:
+    calls = []
+
+    class RecordingHarmonizer(OntologyHarmonizer):
+        def assign_onto_framework(
+            self,
+            target,
+            *,
+            publication_context,
+            ontostore,
+            strategy,
+        ):
+            calls.append(ontostore)
+
+    constructor_store = OntoStore()
+    override_store = OntoStore()
+
+    RecordingHarmonizer(ontostore=constructor_store).harmonize(
+        target={"id": "target-0"},
+        ontostore=override_store,
+    )
+
+    assert calls == [override_store]
+
+
 def test_harmonize_rejects_dict_ontostore_override() -> None:
     with pytest.raises(TypeError, match="OntoStore"):
         OntologyHarmonizer().harmonize(
@@ -694,7 +819,7 @@ def test_harmonize_rejects_dict_ontostore_override() -> None:
 
 def test_harmonize_rejects_constructor_non_ontostore_without_override() -> None:
     with pytest.raises(TypeError, match="OntoStore"):
-        OntologyHarmonizer(ontology_frameworks={"anatomy": "UBERON"}).harmonize()
+        OntologyHarmonizer(ontostore={"anatomy": "UBERON"}).harmonize()
 
 
 def test_target_extractor_builds_miniml_sample_target_paths() -> None:

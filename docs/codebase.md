@@ -113,6 +113,7 @@ integration yet.
 
 Public methods:
 
+- `assign_onto_framework(target, *, publication_context, ontostore, strategy) -> None`
 - `harmonize_miniml_json(publication_context=None, miniml_json=None, ontostore=None, target_paths=None, strategy="identity") -> dict`
 - `harmonize(publication_context=None, harmonization_targets=None, target=None, strategy="identity", ontostore=None, target_paths=None) -> dict`
 
@@ -141,11 +142,16 @@ target dictionaries, a single target dictionary, or `None`, and `target` may be
 a single target dictionary. Passing both `target` and `harmonization_targets`
 raises `ValueError`. Supported strategies are `identity` and `noop`; `noop` is
 normalized to `identity`. A per-call `ontostore` override must be an `OntoStore`.
+`harmonize(...)` calls `assign_onto_framework(...)` once for each normalized
+target before returning. The hook is intentionally empty and does not mutate
+targets yet.
 
-`OntologyHarmonizer(ontology_frameworks=None)` creates a default `OntoStore`
-when no framework object is supplied. A per-call `ontostore` can override the
-constructor value for future harmonization behavior. The effective store is
-validated but not used for matching yet.
+`OntologyHarmonizer(ontostore=None)` creates a default `OntoStore` when no store
+is supplied. Custom ontology framework dictionaries should be passed to
+`OntoStore(ontology_frameworks=...)`, then injected into the harmonizer. A
+per-call `ontostore` can override the constructor value for future harmonization
+behavior. The effective store is validated and passed into the empty assignment
+hook but not used for matching yet.
 
 `OntoStore`, `Owl2json`, and `Owl2jsonParseError` are exported from
 `agentic_curator.curators.ontology_harmonizer`. `OntoStore` stores ontology
@@ -538,11 +544,8 @@ target discovery to `HarmonizationTargetExtractor` for future harmonization.
 class OntologyHarmonizer:
     DEFAULT_TARGET_PATHS = HarmonizationTargetExtractor.DEFAULT_TARGET_PATHS
 
-    def __init__(ontology_frameworks=None):
-        if ontology_frameworks is None:
-            self.ontology_frameworks = OntoStore()
-        else:
-            self.ontology_frameworks = ontology_frameworks
+    def __init__(ontostore=None):
+        self.ontostore = OntoStore() if ontostore is None else ontostore
         self.target_extractor = HarmonizationTargetExtractor()
 
     def harmonize(
@@ -554,18 +557,33 @@ class OntologyHarmonizer:
         target_paths=None,
     ):
         effective_ontostore = self._effective_ontostore(ontostore)
-        # effective_ontostore is validated but not used yet.
         strategy = self._normalize_strategy(strategy)
         targets = self._normalize_targets(
             harmonization_targets=harmonization_targets,
             target=target,
         )
+        for target in targets:
+            self.assign_onto_framework(
+                target,
+                publication_context=publication_context,
+                ontostore=effective_ontostore,
+                strategy=strategy,
+            )
         return {
             "publication_context": publication_context,
             "harmonization_targets": targets,
             "strategy": strategy,
             "target_paths": target_paths,
         }
+
+    def assign_onto_framework(
+        target,
+        *,
+        publication_context,
+        ontostore,
+        strategy,
+    ):
+        pass
 
     def harmonize_miniml_json(
         publication_context=None,
@@ -598,7 +616,8 @@ class OntologyHarmonizer:
         )
 ```
 
-No external API calls are made by `harmonize()` in the current implementation.
+No external API calls are made by `harmonize()` or `assign_onto_framework()` in
+the current implementation.
 
 ```python
 def _extract_harmonization_targets(metadata, start_paths=None):
