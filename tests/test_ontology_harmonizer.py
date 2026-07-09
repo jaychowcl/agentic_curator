@@ -2755,13 +2755,247 @@ def test_target_extractor_schema_excludes_old_target_keys() -> None:
     assert occurrence_path_keys.issubset(targets[0]["occurrences"][0])
 
 
+def test_apply_targets_adds_scalar_field_alternatives() -> None:
+    miniml_json = {"sample": [{"channel": [{"source": "lung"}]}]}
+    targets = [
+        {
+            "id": "target-0",
+            "hz_field": "sample_source",
+            "hz_label": "lung tissue",
+            "occurrences": [
+                {
+                    "pre_hz_field_path": "/sample/0/channel/0/source",
+                    "pre_hz_label_path": "/sample/0/channel/0/source",
+                    "parent_path": "/sample/0/channel/0",
+                }
+            ],
+        }
+    ]
+
+    result = OntologyHarmonizer().apply_targets(miniml_json, targets)
+
+    assert result is miniml_json
+    assert miniml_json["sample"][0]["channel"][0]["source"] == "lung"
+    assert miniml_json["sample"][0]["channel"][0]["source_hz_alternatives"] == [
+        {
+            "hz_field": "sample_source",
+            "hz_label": "lung tissue",
+            "target_id": "target-0",
+        }
+    ]
+
+
+def test_apply_targets_adds_tag_value_object_alternatives() -> None:
+    miniml_json = {
+        "sample": [
+            {
+                "channel": [
+                    {
+                        "characteristics": [
+                            {"tag": "disease state", "value": "Normal"}
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+    targets = [
+        {
+            "id": "target-0",
+            "hz_field": "disease_state",
+            "hz_label": "normal",
+            "occurrences": [
+                {
+                    "pre_hz_field_path": "/sample/0/channel/0/characteristics/0/tag",
+                    "pre_hz_label_path": "/sample/0/channel/0/characteristics/0/value",
+                    "parent_path": "/sample/0/channel/0/characteristics/0",
+                }
+            ],
+        }
+    ]
+
+    OntologyHarmonizer().apply_targets(miniml_json, targets)
+
+    characteristic = miniml_json["sample"][0]["channel"][0]["characteristics"][0]
+    assert characteristic["hz_field"] == "disease_state"
+    assert characteristic["hz_label"] == "normal"
+    assert characteristic["hz_alternatives"] == [
+        {
+            "hz_field": "disease_state",
+            "hz_label": "normal",
+            "target_id": "target-0",
+        }
+    ]
+
+
+def test_apply_targets_adds_container_value_object_alternatives() -> None:
+    miniml_json = {
+        "sample": [
+            {
+                "channel": [
+                    {"organism": [{"taxid": "9606", "value": "Homo sapiens"}]}
+                ]
+            }
+        ]
+    }
+    targets = [
+        {
+            "id": "target-0",
+            "hz_field": "organism",
+            "hz_label": "homo_sapiens",
+            "occurrences": [
+                {
+                    "pre_hz_field_path": "/sample/0/channel/0/organism",
+                    "pre_hz_label_path": "/sample/0/channel/0/organism/0/value",
+                    "parent_path": "/sample/0/channel/0/organism/0",
+                }
+            ],
+        }
+    ]
+
+    OntologyHarmonizer().apply_targets(miniml_json, targets)
+
+    organism = miniml_json["sample"][0]["channel"][0]["organism"][0]
+    assert organism["hz_field"] == "organism"
+    assert organism["hz_label"] == "homo_sapiens"
+    assert organism["hz_alternatives"] == [
+        {
+            "hz_field": "organism",
+            "hz_label": "homo_sapiens",
+            "target_id": "target-0",
+        }
+    ]
+
+
+def test_apply_targets_appends_colliding_scalar_alternatives_without_duplicates() -> None:
+    miniml_json = {"sample": {"tissue": "lung"}}
+    targets = [
+        {
+            "id": "target-0",
+            "hz_field": "tissue",
+            "hz_label": "lung",
+            "occurrences": [
+                {
+                    "pre_hz_field_path": "/sample/tissue",
+                    "pre_hz_label_path": "/sample/tissue",
+                    "parent_path": "/sample",
+                }
+            ],
+        },
+        {
+            "id": "target-1",
+            "hz_field": "anatomical_structure",
+            "hz_label": "lung",
+            "occurrences": [
+                {
+                    "pre_hz_field_path": "/sample/tissue",
+                    "pre_hz_label_path": "/sample/tissue",
+                    "parent_path": "/sample",
+                }
+            ],
+        },
+        {
+            "id": "target-1",
+            "hz_field": "anatomical_structure",
+            "hz_label": "lung",
+            "occurrences": [
+                {
+                    "pre_hz_field_path": "/sample/tissue",
+                    "pre_hz_label_path": "/sample/tissue",
+                    "parent_path": "/sample",
+                }
+            ],
+        },
+    ]
+
+    OntologyHarmonizer().apply_targets(miniml_json, targets)
+
+    assert miniml_json["sample"]["tissue_hz_alternatives"] == [
+        {"hz_field": "tissue", "hz_label": "lung", "target_id": "target-0"},
+        {
+            "hz_field": "anatomical_structure",
+            "hz_label": "lung",
+            "target_id": "target-1",
+        },
+    ]
+
+
+def test_apply_targets_applies_deduped_target_to_all_occurrences() -> None:
+    miniml_json = {
+        "sample": [
+            {"channel": [{"source": "lung"}]},
+            {"channel": [{"source": "lung"}]},
+        ]
+    }
+    targets = [
+        {
+            "id": "target-0",
+            "hz_field": "sample_source",
+            "hz_label": "lung",
+            "occurrences": [
+                {
+                    "pre_hz_field_path": "/sample/0/channel/0/source",
+                    "pre_hz_label_path": "/sample/0/channel/0/source",
+                    "parent_path": "/sample/0/channel/0",
+                },
+                {
+                    "pre_hz_field_path": "/sample/1/channel/0/source",
+                    "pre_hz_label_path": "/sample/1/channel/0/source",
+                    "parent_path": "/sample/1/channel/0",
+                },
+            ],
+        }
+    ]
+
+    OntologyHarmonizer().apply_targets(miniml_json, targets)
+
+    assert miniml_json["sample"][0]["channel"][0]["source_hz_alternatives"] == [
+        {"hz_field": "sample_source", "hz_label": "lung", "target_id": "target-0"}
+    ]
+    assert miniml_json["sample"][1]["channel"][0]["source_hz_alternatives"] == [
+        {"hz_field": "sample_source", "hz_label": "lung", "target_id": "target-0"}
+    ]
+
+
+def test_apply_targets_resolves_escaped_paths_and_skips_missing_paths() -> None:
+    miniml_json = {"sample/type": {"label~name": "lung"}}
+    targets = [
+        {
+            "id": "target-0",
+            "hz_field": "label_name",
+            "hz_label": "lung",
+            "occurrences": [
+                {
+                    "pre_hz_field_path": "/sample~1type/label~0name",
+                    "pre_hz_label_path": "/sample~1type/label~0name",
+                    "parent_path": "/sample~1type",
+                },
+                {
+                    "pre_hz_field_path": "/sample~1type/missing",
+                    "pre_hz_label_path": "/sample~1type/missing",
+                    "parent_path": "/sample~1type",
+                },
+            ],
+        }
+    ]
+
+    OntologyHarmonizer().apply_targets(miniml_json, targets)
+
+    assert miniml_json["sample/type"]["label~name_hz_alternatives"] == [
+        {"hz_field": "label_name", "hz_label": "lung", "target_id": "target-0"}
+    ]
+    assert "missing_hz_alternatives" not in miniml_json["sample/type"]
+
+
 def test_harmonize_miniml_json_extracts_default_targets() -> None:
+    miniml_json = miniml_metadata()
     result = OntologyHarmonizer(llm=FakeLLM()).harmonize_miniml_json(
         publication_context="Full publication context",
-        miniml_json=miniml_metadata(),
+        miniml_json=miniml_json,
     )
 
     assert result["publication_context"] == "Full publication context"
+    assert result["miniml_json"] is miniml_json
     assert result["target_paths"] == [
         {"path": "/sample/0/channel/0/source", "mode": "field_value"},
         {"path": "/sample/0/channel/0/molecule", "mode": "field_value"},
@@ -2806,11 +3040,28 @@ def test_harmonize_miniml_json_extracts_default_targets() -> None:
     assert len(by_pre_hz_field_label[("tissue", "Oral buccal mucosa")]["occurrences"]) == 2
     assert ("position", "1") not in by_pre_hz_field_label
     assert ("extract_protocol", "Long protocol text is not a target.") not in by_pre_hz_field_label
+    first_channel = miniml_json["sample"][0]["channel"][0]
+    assert first_channel["source_hz_alternatives"] == [
+        {"hz_field": "source", "hz_label": "oral_buccal_mucosa", "target_id": "target-0"}
+    ]
+    assert first_channel["molecule_hz_alternatives"] == [
+        {"hz_field": "molecule", "hz_label": "total_rna", "target_id": "target-1"}
+    ]
+    assert first_channel["organism"][0]["hz_alternatives"] == [
+        {"hz_field": "organism", "hz_label": "homo_sapiens", "target_id": "target-2"}
+    ]
+    assert first_channel["characteristics"][0]["hz_alternatives"] == [
+        {"hz_field": "disease_state", "hz_label": "normal", "target_id": "target-3"}
+    ]
+    assert first_channel["characteristics"][1]["hz_alternatives"] == [
+        {"hz_field": "tissue", "hz_label": "oral_buccal_mucosa", "target_id": "target-4"}
+    ]
 
 
 def test_harmonize_miniml_json_accepts_explicit_target_paths() -> None:
+    miniml_json = {"sample": {"tissue": "lung"}}
     result = OntologyHarmonizer(llm=FakeLLM()).harmonize_miniml_json(
-        miniml_json={"sample": {"tissue": "lung"}},
+        miniml_json=miniml_json,
         target_paths=["/sample"],
     )
 
@@ -2843,7 +3094,20 @@ def test_harmonize_miniml_json_accepts_explicit_target_paths() -> None:
             ],
         "strategy": "identity",
         "target_paths": ["/sample"],
+        "miniml_json": {
+            "sample": {
+                "tissue": "lung",
+                "tissue_hz_alternatives": [
+                    {
+                        "hz_field": "tissue",
+                        "hz_label": "lung",
+                        "target_id": "target-0",
+                    }
+                ],
+            }
+        },
     }
+    assert result["miniml_json"] is miniml_json
 
 
 def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
@@ -2875,18 +3139,50 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
                     "llm": llm,
                 }
             )
-            return {"delegated": True}
+            return {
+                "delegated": True,
+                "harmonization_targets": harmonization_targets,
+            }
 
     store = OntoStore()
+    miniml_json = {"sample": {"tissue": "lung"}}
     result = RecordingHarmonizer().harmonize_miniml_json(
         publication_context="context",
-        miniml_json={"sample": {"tissue": "lung"}},
+        miniml_json=miniml_json,
         strategy="noop",
         ontostore=store,
         target_paths=["/sample"],
     )
 
-    assert result == {"delegated": True}
+    assert result == {
+        "delegated": True,
+        "harmonization_targets": [
+            {
+                "id": "target-0",
+                "source": "metadata",
+                "pre_hz_field": "tissue",
+                "pre_hz_label": "lung",
+                "pre_hz_field_path": "/sample/tissue",
+                "pre_hz_label_path": "/sample/tissue",
+                "parent_path": "/sample",
+                "hz_field": "tissue",
+                "hz_label": "lung",
+            }
+        ],
+        "miniml_json": {
+            "sample": {
+                "tissue": "lung",
+                "tissue_hz_alternatives": [
+                    {
+                        "hz_field": "tissue",
+                        "hz_label": "lung",
+                        "target_id": "target-0",
+                    }
+                ],
+            }
+        },
+    }
+    assert result["miniml_json"] is miniml_json
     assert calls == [
         {
             "publication_context": "context",

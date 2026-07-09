@@ -118,6 +118,7 @@ and an injected or lazy `LLM` for framework assignment when lookup fails.
 
 Public methods:
 
+- `apply_targets(miniml_json, harmonization_targets) -> dict | list | None`
 - `assign_field(target, *, publication_context, ontostore) -> dict`
 - `assign_onto_framework(target, *, publication_context, ontostore) -> dict`
 - `harmonize_miniml_json(publication_context=None, miniml_json=None, ontostore=None, target_paths=None, strategy="identity", lookup_llm_judge=False, lookup_llm_threshold=2, llm=True) -> dict`
@@ -134,6 +135,9 @@ meaningful sample metadata (`source`, `molecule`, `organism`, and
 `characteristics`), and dedupes targets by exact
 `pre_hz_field:pre_hz_label` while preserving every source path in
 `occurrences`. Supplying `target_paths` keeps explicit path extraction behavior.
+After harmonization, `harmonize_miniml_json(...)` calls `apply_targets(...)`,
+mutates the supplied MINiML JSON in place, and includes that same object in the
+return wrapper under `miniml_json`.
 
 The lower-level `harmonize(...)` returns a target wrapper:
 
@@ -145,6 +149,16 @@ The lower-level `harmonize(...)` returns a target wrapper:
     "target_paths": target_paths,
 }
 ```
+
+`apply_targets(miniml_json, harmonization_targets)` applies target-level
+`hz_field` and `hz_label` to each occurrence path. Scalar `field_value` and
+`scalar` occurrences keep the original scalar and add a sibling
+`<field>_hz_alternatives` list containing `{hz_field, hz_label, target_id}`.
+Object-shaped `tag_value` and `container_value` occurrences add `hz_field`,
+`hz_label`, and `hz_alternatives` to the occurrence parent object. Multiple
+hits for the same field are appended as alternatives, exact duplicate
+alternatives are ignored, and malformed or unresolved occurrence paths are
+skipped.
 
 `publication_context` may be a string or `None`, `miniml_json` may be a
 dictionary, list, or `None`, `harmonization_targets` may be a list of extracted
@@ -389,10 +403,9 @@ After `dedupe_targets(...)`, target-level paths are moved into `occurrences`:
 `pre_hz_field_path`, `pre_hz_label_path`, and `parent_path` use JSON
 Pointer-style paths with escaped path segments (`~` becomes `~0`, `/` becomes
 `~1`). Deduped targets keep these paths only inside `occurrences`. These
-coordinates are intended to let future harmonization results edit both field
-names and label values back into structured metadata. `hz_field` and `hz_label`
-are initialized from the extracted values until actual ontology harmonization is
-implemented.
+coordinates drive `apply_targets(...)` after harmonization. `hz_field` and
+`hz_label` are initialized from the extracted values, then mutated by lookup,
+field assignment, and label strategy steps.
 
 `HarmonizationTargetExtractor.extract(metadata, start_paths=None)` can also
 receive a list of JSON Pointer start paths or path specs. When `start_paths` is
@@ -871,7 +884,7 @@ class OntologyHarmonizer:
             harmonization_targets = (
                 self.target_extractor.dedupe_targets(harmonization_targets)
             )
-        return self.harmonize(
+        result = self.harmonize(
             publication_context=publication_context,
             harmonization_targets=harmonization_targets,
             target=None,
@@ -879,6 +892,30 @@ class OntologyHarmonizer:
             ontostore=ontostore,
             target_paths=effective_target_paths,
         )
+        result["miniml_json"] = self.apply_targets(
+            miniml_json,
+            result["harmonization_targets"],
+        )
+        return result
+
+    def apply_targets(miniml_json, harmonization_targets):
+        for target in harmonization_targets:
+            for occurrence in target["occurrences"] or [target]:
+                alternative = {
+                    "hz_field": target["hz_field"],
+                    "hz_label": target["hz_label"],
+                    "target_id": target["id"],
+                }
+                parent = resolve_json_pointer(miniml_json, occurrence["parent_path"])
+                if parent is not dict:
+                    continue
+                if occurrence field path equals label path:
+                    key = unescaped final field path segment + "_hz_alternatives"
+                    append alternative to parent[key] unless already present
+                else:
+                    append alternative to parent["hz_alternatives"] unless duplicate
+                    set parent["hz_field"] and parent["hz_label"] if absent
+        return miniml_json
 ```
 
 `lookup_label()` calls `OntoStore.lookup(...)`, which calls
@@ -1577,9 +1614,10 @@ Test coverage includes:
 - reviewer instantiation, public exports, missing legacy module, prompt
   construction, schema construction, and two-call ordering
 - ontology harmonizer imports, root exports, target wrapper behavior,
-  `lookup_label()` lookup mutation, fallback assignment, Gemini grounded
-  search client citation/error handling, websearch strategy fallback behavior,
-  and `OntoStore` defaults/overrides/download/get/lookup behavior
+  `lookup_label()` lookup mutation, fallback assignment, MINiML target
+  application, Gemini grounded search client citation/error handling,
+  websearch strategy fallback behavior, and `OntoStore`
+  defaults/overrides/download/get/lookup behavior
 - Owl2json imports, ontology metadata extraction, normalized term JSON,
   accession fallback, deprecated/replaced terms, HTML rejection, and JSON file
   writing

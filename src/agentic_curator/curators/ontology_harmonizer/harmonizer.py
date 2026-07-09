@@ -127,7 +127,7 @@ class OntologyHarmonizer:
             harmonization_targets = self.target_extractor.dedupe_targets(
                 harmonization_targets
             )
-        return self.harmonize(
+        result = self.harmonize(
             publication_context=publication_context,
             harmonization_targets=harmonization_targets,
             target=None,
@@ -138,6 +138,28 @@ class OntologyHarmonizer:
             lookup_llm_threshold=lookup_llm_threshold,
             llm=llm,
         )
+        applied_targets = result.get("harmonization_targets", harmonization_targets)
+        result["miniml_json"] = self.apply_targets(miniml_json, applied_targets)
+        return result
+
+    def apply_targets(
+        self,
+        miniml_json: dict[str, Any] | list[Any] | None,
+        harmonization_targets: list[dict[str, Any]],
+    ) -> dict[str, Any] | list[Any] | None:
+        if not isinstance(miniml_json, (dict, list)) or not isinstance(
+            harmonization_targets,
+            list,
+        ):
+            return miniml_json
+
+        for target in harmonization_targets:
+            if not isinstance(target, dict):
+                continue
+            for occurrence in self._target_occurrences(target):
+                self._apply_target_occurrence(miniml_json, target, occurrence)
+
+        return miniml_json
 
     def _normalize_targets(
         self,
@@ -158,6 +180,144 @@ class OntologyHarmonizer:
             return [harmonization_targets]
 
         return harmonization_targets
+
+    def _target_occurrences(self, target: dict[str, Any]) -> list[dict[str, Any]]:
+        occurrences = target.get("occurrences")
+        if isinstance(occurrences, list):
+            return [
+                occurrence
+                for occurrence in occurrences
+                if isinstance(occurrence, dict)
+            ]
+
+        if {
+            "pre_hz_field_path",
+            "pre_hz_label_path",
+            "parent_path",
+        }.issubset(target):
+            return [target]
+
+        return []
+
+    def _apply_target_occurrence(
+        self,
+        miniml_json: dict[str, Any] | list[Any],
+        target: dict[str, Any],
+        occurrence: dict[str, Any],
+    ) -> None:
+        alternative = self._target_alternative(target, occurrence)
+        if alternative is None:
+            return
+
+        field_path = occurrence.get("pre_hz_field_path")
+        label_path = occurrence.get("pre_hz_label_path")
+        parent_path = occurrence.get("parent_path")
+        if not all(
+            isinstance(path, str)
+            for path in (field_path, label_path, parent_path)
+        ):
+            return
+
+        parent = self._resolve_json_pointer(miniml_json, parent_path)
+        if not isinstance(parent, dict):
+            return
+
+        if field_path == label_path:
+            field_name = self._field_name_from_path(field_path)
+            if field_name is None or field_name not in parent:
+                return
+            alternatives_key = f"{field_name}_hz_alternatives"
+            alternatives = self._alternatives_list(parent, alternatives_key)
+            self._append_alternative(alternatives, alternative)
+            return
+
+        alternatives = self._alternatives_list(parent, "hz_alternatives")
+        if self._append_alternative(alternatives, alternative):
+            parent.setdefault("hz_field", alternative["hz_field"])
+            parent.setdefault("hz_label", alternative["hz_label"])
+
+    def _target_alternative(
+        self,
+        target: dict[str, Any],
+        occurrence: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        hz_field = target.get("hz_field", occurrence.get("hz_field"))
+        hz_label = target.get("hz_label", occurrence.get("hz_label"))
+        target_id = target.get("id")
+        if hz_field is None or hz_label is None or target_id is None:
+            return None
+
+        return {
+            "hz_field": hz_field,
+            "hz_label": hz_label,
+            "target_id": target_id,
+        }
+
+    def _alternatives_list(
+        self,
+        parent: dict[str, Any],
+        key: str,
+    ) -> list[dict[str, Any]]:
+        alternatives = parent.get(key)
+        if isinstance(alternatives, list):
+            return alternatives
+
+        alternatives = []
+        parent[key] = alternatives
+        return alternatives
+
+    @staticmethod
+    def _append_alternative(
+        alternatives: list[dict[str, Any]],
+        alternative: dict[str, Any],
+    ) -> bool:
+        if alternative in alternatives:
+            return False
+        alternatives.append(alternative)
+        return True
+
+    @classmethod
+    def _field_name_from_path(cls, path: str) -> str | None:
+        if path == "":
+            return None
+        return cls._unescape_json_pointer_segment(path.rsplit("/", 1)[-1])
+
+    @classmethod
+    def _resolve_json_pointer(
+        cls,
+        value: dict[str, Any] | list[Any],
+        pointer: str,
+    ) -> Any:
+        if pointer == "":
+            return value
+        if not pointer.startswith("/"):
+            return None
+
+        current: Any = value
+        for raw_segment in pointer.split("/")[1:]:
+            segment = cls._unescape_json_pointer_segment(raw_segment)
+            if isinstance(current, dict):
+                if segment not in current:
+                    return None
+                current = current[segment]
+                continue
+
+            if isinstance(current, list):
+                if not segment.isdecimal():
+                    return None
+                index = int(segment)
+                if index >= len(current):
+                    return None
+                current = current[index]
+                continue
+
+            return None
+
+        return current
+
+    @staticmethod
+    def _unescape_json_pointer_segment(segment: str) -> str:
+        return segment.replace("~1", "/").replace("~0", "~")
 
     def _normalize_strategy(self, strategy: str) -> str:
         normalized = self.STRATEGY_ALIASES.get(strategy)
