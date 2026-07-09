@@ -1,5 +1,6 @@
 import inspect
 import json
+import re
 from pathlib import Path
 from importlib.resources import files
 
@@ -93,6 +94,9 @@ DEFAULT_ONTOLOGY_FRAMEWORKS = {
 ASSIGN_ONTO_FRAMEWORK_PROMPT = files("agentic_curator").joinpath(
     "curators/ontology_harmonizer/prompts/assign_onto_framework.md"
 ).read_text(encoding="utf-8").strip()
+ASSIGN_FIELD_PROMPT = files("agentic_curator").joinpath(
+    "curators/ontology_harmonizer/prompts/assign_field.md"
+).read_text(encoding="utf-8").strip()
 
 
 class FakeResponse:
@@ -106,8 +110,9 @@ class FakeResponse:
 
 
 class FakeLLM:
-    def __init__(self, response=None) -> None:
+    def __init__(self, response=None, responses=None) -> None:
         self.calls = []
+        self.response_provided = response is not None
         self.response = (
             {
                 "decision": "unsure",
@@ -117,6 +122,7 @@ class FakeLLM:
             if response is None
             else response
         )
+        self.responses = list(responses or [])
 
     def generate_response(self, prompt, *, model=None, config=None, **extra_options):
         self.calls.append(
@@ -127,6 +133,22 @@ class FakeLLM:
                 "extra_options": extra_options,
             }
         )
+        if self.responses:
+            return self.responses.pop(0)
+
+        if self.response_provided:
+            return self.response
+
+        if prompt.startswith(ASSIGN_FIELD_PROMPT):
+            field_match = re.search(r'"hz_field": "([^"]+)"', prompt)
+            decision = field_match.group(1) if field_match else "field"
+            return {
+                "decision": decision,
+                "confidence": "low",
+                "reason": "No clear field match.",
+                "new_field": True,
+            }
+
         return self.response
 
 
@@ -816,6 +838,39 @@ def test_ontostore_harmonize_key_normalizes_simple_text() -> None:
     )
 
 
+def test_ontostore_initializes_empty_fields_by_default(tmp_path: Path) -> None:
+    assert OntoStore(storage_dir=tmp_path).fields == {}
+
+
+def test_ontostore_lookup_fields_matches_key_label_and_aliases(
+    tmp_path: Path,
+) -> None:
+    store = OntoStore(
+        fields={
+            "tissue": {
+                "label": "Tissue",
+                "aliases": ["sample type", "biospecimen source"],
+                "description": "Sample tissue.",
+            }
+        },
+        storage_dir=tmp_path,
+    )
+
+    assert store.lookup_fields(" Tissue ") == {
+        "field": "tissue",
+        "label": "Tissue",
+        "aliases": ["sample type", "biospecimen source"],
+        "description": "Sample tissue.",
+    }
+    assert store.lookup_fields("sample   type") == {
+        "field": "tissue",
+        "label": "Tissue",
+        "aliases": ["sample type", "biospecimen source"],
+        "description": "Sample tissue.",
+    }
+    assert store.lookup_fields("unknown") is False
+
+
 def test_lookup_matches_label_index(tmp_path: Path) -> None:
     term = {
         "iri": "http://purl.obolibrary.org/obo/UBERON_0002048",
@@ -1144,6 +1199,113 @@ def test_assign_onto_framework_raises_value_error_for_invalid_json_response() ->
         )
 
 
+def test_harmonize_label_uses_ontostore_field_lookup(tmp_path: Path) -> None:
+    store = OntoStore(
+        fields={
+            "tissue": {
+                "label": "Tissue",
+                "aliases": ["sample source"],
+                "description": "Sample tissue.",
+            }
+        },
+        storage_dir=tmp_path,
+    )
+    target = {
+        "id": "target-0",
+        "pre_hz_field": " Sample Source ",
+        "pre_hz_label": "lung",
+    }
+
+    result = OntologyHarmonizer().harmonize_label(
+        target,
+        publication_context="context",
+        ontostore=store,
+    )
+
+    assert result == {
+        "field": "tissue",
+        "label": "Tissue",
+        "aliases": ["sample source"],
+        "description": "Sample tissue.",
+    }
+    assert target["hz_field"] == "tissue"
+    assert target["field_lookup"] == result
+    assert "field_assignment" not in target
+
+
+def test_assign_field_generates_json_response_and_adds_new_field(
+    tmp_path: Path,
+) -> None:
+    response = {
+        "decision": "development_stage",
+        "confidence": "medium",
+        "reason": "The source field describes sample development stage.",
+        "new_field": True,
+    }
+    fake_llm = FakeLLM(response=json.dumps(response))
+    store = OntoStore(
+        fields={"tissue": {"label": "Tissue"}},
+        storage_dir=tmp_path,
+    )
+    target = {
+        "id": "target-0",
+        "pre_hz_field": "developmental stage",
+        "hz_field": "developmental_stage",
+        "pre_hz_label": "adult",
+    }
+
+    result = OntologyHarmonizer(llm=fake_llm).assign_field(
+        target,
+        publication_context="sample metadata context",
+        ontostore=store,
+    )
+
+    assert result == response
+    assert target["hz_field"] == "development_stage"
+    assert target["field_assignment"] == response
+    assert store.fields["development_stage"] == {
+        "label": "development_stage",
+        "source": "llm",
+        "confidence": "medium",
+        "reason": "The source field describes sample development stage.",
+    }
+    assert len(fake_llm.calls) == 1
+    assert fake_llm.calls[0]["config"] == {
+        "response_mime_type": "application/json",
+        "response_schema": OntologyHarmonizer()._assign_field_response_schema(),
+    }
+    assert fake_llm.calls[0]["prompt"].startswith(ASSIGN_FIELD_PROMPT)
+    assert "Publication Context:\nsample metadata context" in fake_llm.calls[0][
+        "prompt"
+    ]
+    assert '"id": "target-0"' in fake_llm.calls[0]["prompt"]
+    assert '"tissue"' in fake_llm.calls[0]["prompt"]
+
+
+def test_assign_field_response_schema_requires_assignment_fields() -> None:
+    assert OntologyHarmonizer()._assign_field_response_schema() == {
+        "type": "OBJECT",
+        "properties": {
+            "decision": {"type": "STRING"},
+            "confidence": {"type": "STRING"},
+            "reason": {"type": "STRING"},
+            "new_field": {"type": "BOOLEAN"},
+        },
+        "required": ["decision", "confidence", "reason", "new_field"],
+    }
+
+
+def test_assign_field_raises_value_error_for_invalid_json_response() -> None:
+    target = {"id": "target-0", "pre_hz_field": "stage"}
+
+    with pytest.raises(ValueError, match="valid JSON"):
+        OntologyHarmonizer(llm=FakeLLM(response="not json")).assign_field(
+            target,
+            publication_context=None,
+            ontostore=OntoStore(),
+        )
+
+
 def test_harmonize_assigns_ontology_metadata_from_store(tmp_path: Path) -> None:
     term = {
         "iri": "http://purl.obolibrary.org/obo/UBERON_0002048",
@@ -1406,6 +1568,9 @@ def test_harmonize_calls_assign_onto_framework_for_each_target() -> None:
                 }
             )
 
+        def harmonize_label(self, target, *, publication_context, ontostore):
+            return False
+
     store = OntoStore()
     targets = [
         {"id": "target-0", "pre_hz_field": "tissue", "pre_hz_label": "lung"},
@@ -1458,6 +1623,9 @@ def test_harmonize_calls_lookup_label_before_assign_onto_framework() -> None:
             calls.append(("assign", target["id"], publication_context))
             return False
 
+        def harmonize_label(self, target, *, publication_context, ontostore):
+            return False
+
     target = {"id": "target-0", "pre_hz_label": "lung"}
 
     RecordingHarmonizer().harmonize(
@@ -1498,6 +1666,9 @@ def test_harmonize_skips_assign_onto_framework_when_lookup_label_succeeds() -> N
             calls.append("assign")
             return False
 
+        def harmonize_label(self, target, *, publication_context, ontostore):
+            return False
+
     target = {"id": "target-0", "pre_hz_label": "lung"}
 
     result = RecordingHarmonizer().harmonize(target=target)
@@ -1520,6 +1691,9 @@ def test_harmonize_single_target_calls_assign_onto_framework_once() -> None:
         ):
             calls.append(target)
 
+        def harmonize_label(self, target, *, publication_context, ontostore):
+            return False
+
     target = {"id": "target-0", "pre_hz_field": "tissue", "pre_hz_label": "lung"}
 
     result = RecordingHarmonizer().harmonize(target=target)
@@ -1541,6 +1715,9 @@ def test_harmonize_without_targets_does_not_call_assign_onto_framework() -> None
         ):
             calls.append(target)
 
+        def harmonize_label(self, target, *, publication_context, ontostore):
+            return False
+
     RecordingHarmonizer().harmonize()
 
     assert calls == []
@@ -1559,6 +1736,9 @@ def test_harmonize_assign_onto_framework_receives_ontostore_override() -> None:
         ):
             calls.append(ontostore)
 
+        def harmonize_label(self, target, *, publication_context, ontostore):
+            return False
+
     constructor_store = OntoStore()
     override_store = OntoStore()
 
@@ -1568,6 +1748,60 @@ def test_harmonize_assign_onto_framework_receives_ontostore_override() -> None:
     )
 
     assert calls == [override_store]
+
+
+def test_harmonize_calls_field_harmonization_before_strategy_handler() -> None:
+    calls = []
+
+    class RecordingHarmonizer(OntologyHarmonizer):
+        def lookup_label(
+            self,
+            target,
+            *,
+            publication_context,
+            ontostore,
+            strategy,
+        ):
+            calls.append("lookup")
+            return False
+
+        def assign_onto_framework(
+            self,
+            target,
+            *,
+            publication_context,
+            ontostore,
+        ):
+            calls.append("assign_framework")
+            return {"decision": "unsure", "confidence": "low", "reason": "none"}
+
+        def harmonize_label(self, target, *, publication_context, ontostore):
+            calls.append("harmonize_label")
+            return {"field": "tissue"}
+
+        def harmonize_with_strategy(
+            self,
+            target,
+            *,
+            publication_context,
+            ontostore,
+            strategy,
+        ):
+            calls.append(("strategy", strategy))
+            return {"strategy": strategy}
+
+    RecordingHarmonizer().harmonize(
+        publication_context="context",
+        target={"id": "target-0", "pre_hz_field": "tissue", "pre_hz_label": "lung"},
+        strategy="websearch",
+    )
+
+    assert calls == [
+        "lookup",
+        "assign_framework",
+        "harmonize_label",
+        ("strategy", "websearch"),
+    ]
 
 
 def test_harmonize_routes_failed_lookup_to_strategy_handler() -> None:
@@ -1896,13 +2130,19 @@ def test_harmonize_miniml_json_accepts_explicit_target_paths() -> None:
                 "hz_field": "tissue",
                 "hz_label": "lung",
                 "ontology_match": False,
-                "ontology_framework_assignment": {
-                    "decision": "unsure",
-                    "confidence": "low",
-                    "reason": "No clear framework match.",
-                },
-            }
-        ],
+                    "ontology_framework_assignment": {
+                        "decision": "unsure",
+                        "confidence": "low",
+                        "reason": "No clear framework match.",
+                    },
+                    "field_assignment": {
+                        "decision": "tissue",
+                        "confidence": "low",
+                        "reason": "No clear field match.",
+                        "new_field": True,
+                    },
+                }
+            ],
         "strategy": "identity",
         "target_paths": ["/sample"],
     }

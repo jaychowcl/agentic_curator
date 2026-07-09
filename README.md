@@ -352,9 +352,12 @@ the target, publication context, and candidate ontology framework config to the
 LLM, parses a JSON object with `decision`, `confidence`, and `reason`, stores it
 at `ontology_framework_assignment`, and sets `ontology_id` when `decision` is a
 configured framework ID. After assignment, `harmonize(...)` routes only
-`websearch` and `rag` targets to placeholder strategy handlers, which store
-`ontology_strategy_result` with the strategy, `status="placeholder"`, and a
-reason. The default `identity` strategy does not call a handler. It returns:
+the target field through `harmonize_label(...)`: first by dictionary lookup
+against `ontostore.fields`, then by LLM field assignment when no field matches.
+It routes only `websearch` and `rag` targets to placeholder strategy handlers,
+which store `ontology_strategy_result` with the strategy,
+`status="placeholder"`, and a reason. The default `identity` strategy does not
+call a handler. It returns:
 
 ```python
 {
@@ -403,6 +406,11 @@ optional `owl_path`, `json_path`, `version`, `title`, and `description`.
 `configure_framework(...)` is the lower-level add/replace/remove API. URL-backed
 frameworks download to `owl_path`; path-backed frameworks point at an existing
 local OWL file and never call `requests`.
+
+`OntoStore(fields=...)` stores a normalized field dictionary for field-name
+harmonization. `lookup_fields(field)` matches normalized field input against
+field keys, labels, and aliases, returning matched metadata with the canonical
+`field` key or `False`.
 
 `download(name)` skips existing URL-backed files, calls
 `requests.get(url, timeout=30)`, calls `raise_for_status()`, writes bytes to
@@ -621,12 +629,18 @@ class OntologyHarmonizer:
                     publication_context=publication_context,
                     ontostore=effective_store,
                 )
-                self.harmonize_with_strategy(
+                self.harmonize_label(
                     target,
                     publication_context=publication_context,
                     ontostore=effective_store,
-                    strategy=strategy,
                 )
+                if strategy in strategy_handlers:
+                    self.harmonize_with_strategy(
+                        target,
+                        publication_context=publication_context,
+                        ontostore=effective_store,
+                        strategy=strategy,
+                    )
         return {
             "publication_context": publication_context,
             "harmonization_targets": targets,
@@ -659,6 +673,35 @@ class OntologyHarmonizer:
         target["ontology_framework_assignment"] = assignment
         if assignment["decision"] is a configured framework ID:
             target["ontology_id"] = assignment["decision"]
+        return assignment
+
+    def harmonize_label(target, publication_context, ontostore):
+        lookup = ontostore.lookup_fields(target["hz_field"])
+        if lookup:
+            target["hz_field"] = lookup["field"]
+            target["field_lookup"] = lookup
+            return lookup
+        return self.assign_field(
+            target,
+            publication_context=publication_context,
+            ontostore=ontostore,
+        )
+
+    def assign_field(target, publication_context, ontostore):
+        prompt = _assign_field_prompt(target, publication_context, ontostore.fields)
+        response = _llm().generate_response(
+            prompt,
+            config={
+                "response_mime_type": "application/json",
+                "response_schema": _assign_field_response_schema(),
+            },
+        )
+        assignment = parse_json_response(response)
+        require assignment has decision, confidence, reason, and new_field
+        target["hz_field"] = normalized assignment decision
+        target["field_assignment"] = assignment
+        if assignment["new_field"]:
+            ontostore.fields[target["hz_field"]] = assignment metadata
         return assignment
 
     def harmonize_with_strategy(target, publication_context, ontostore, strategy):

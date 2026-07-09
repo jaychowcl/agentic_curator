@@ -113,9 +113,11 @@ and an injected or lazy `LLM` for framework assignment when lookup fails.
 
 Public methods:
 
+- `assign_field(target, *, publication_context, ontostore) -> dict`
 - `assign_onto_framework(target, *, publication_context, ontostore) -> dict`
 - `harmonize_miniml_json(publication_context=None, miniml_json=None, ontostore=None, target_paths=None, strategy="identity") -> dict`
 - `harmonize(publication_context=None, harmonization_targets=None, target=None, strategy="identity", ontostore=None, target_paths=None) -> dict`
+- `harmonize_label(target, *, publication_context, ontostore) -> Any`
 - `harmonize_with_strategy(target, *, publication_context, ontostore, strategy) -> dict`
 - `lookup_label(target, *, publication_context, ontostore, strategy) -> Any`
 
@@ -160,9 +162,12 @@ the target, publication context, and candidate ontology framework config, parses
 JSON with `decision`, `confidence`, and `reason`, stores it at
 `ontology_framework_assignment`, and sets `ontology_id` when `decision` is a
 configured framework ID. After assignment, `harmonize(...)` calls
+`harmonize_label(...)`, which uses `OntoStore.lookup_fields(...)` and falls back
+to LLM-backed `assign_field(...)`. Then `harmonize(...)` calls
 `harmonize_with_strategy(...)` only for `websearch` and `rag`; those placeholder
-handlers store `ontology_strategy_result` with `strategy`, `status="placeholder"`,
-and `reason`. The default `identity` strategy does not call a handler.
+handlers store `ontology_strategy_result` with `strategy`,
+`status="placeholder"`, and `reason`. The default `identity` strategy does not
+call a handler.
 
 `OntologyHarmonizer(ontostore=None, llm=None)` creates a default `OntoStore`
 when no store is supplied and lazily creates `LLM()` only when framework
@@ -181,6 +186,12 @@ avoiding implicit downloads of every built-in URL-backed framework.
 framework config, downloads named frameworks, parses OWL into JSON, and looks up
 terms. `Owl2json` parses RDF/XML `.owl` files into a term-centric JSON
 dictionary.
+
+`OntoStore(fields=...)` also stores a normalized field dictionary used before
+strategy routing. `lookup_fields(field)` normalizes the incoming field and
+matches it against field keys plus each metadata dict's `label` and `aliases`.
+It returns matched metadata with a `field` key for the canonical field ID, or
+`False` when no configured field matches.
 
 Framework config uses a nested dictionary:
 
@@ -624,12 +635,18 @@ class OntologyHarmonizer:
                     publication_context=publication_context,
                     ontostore=effective_ontostore,
                 )
-                self.harmonize_with_strategy(
+                self.harmonize_label(
                     target,
                     publication_context=publication_context,
                     ontostore=effective_ontostore,
-                    strategy=strategy,
                 )
+                if strategy in self.STRATEGY_HANDLERS:
+                    self.harmonize_with_strategy(
+                        target,
+                        publication_context=publication_context,
+                        ontostore=effective_ontostore,
+                        strategy=strategy,
+                    )
         return {
             "publication_context": publication_context,
             "harmonization_targets": targets,
@@ -684,6 +701,49 @@ class OntologyHarmonizer:
         target["ontology_framework_assignment"] = assignment
         if assignment["decision"] is a configured framework ID:
             target["ontology_id"] = assignment["decision"]
+        return assignment
+
+    def harmonize_label(
+        target,
+        *,
+        publication_context,
+        ontostore,
+    ):
+        lookup = ontostore.lookup_fields(target["hz_field"])
+        if lookup:
+            target["hz_field"] = lookup["field"]
+            target["field_lookup"] = lookup
+            return lookup
+        return self.assign_field(
+            target,
+            publication_context=publication_context,
+            ontostore=ontostore,
+        )
+
+    def assign_field(
+        target,
+        *,
+        publication_context,
+        ontostore,
+    ):
+        prompt = self._assign_field_prompt(
+            target=target,
+            publication_context=publication_context,
+            fields=ontostore.fields,
+        )
+        response = self._llm().generate_response(
+            prompt,
+            config={
+                "response_mime_type": "application/json",
+                "response_schema": self._assign_field_response_schema(),
+            },
+        )
+        assignment = parse_json_response(response)
+        require assignment contains decision, confidence, reason, and new_field
+        target["field_assignment"] = assignment
+        target["hz_field"] = normalized assignment decision
+        if assignment["new_field"]:
+            ontostore.fields[target["hz_field"]] = assignment metadata
         return assignment
 
     def harmonize_with_strategy(
@@ -1298,6 +1358,8 @@ The ontology harmonizer prompt file is:
 - `assign_onto_framework.md` instructs the model to choose a configured
   ontology framework ID, `"false"`, or `"unsure"` and return `decision`,
   `confidence`, and `reason`.
+- `assign_field.md` instructs the model to choose or create a normalized field
+  key and return `decision`, `confidence`, `reason`, and `new_field`.
 
 <a id="llm-wrapper"></a>
 ## LLM Wrapper

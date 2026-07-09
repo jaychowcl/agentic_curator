@@ -92,6 +92,7 @@ class OntoStore:
     def __init__(
         self,
         ontology_frameworks: OntologyFrameworkConfig | None = None,
+        fields: dict[str, dict[str, Any]] | None = None,
         storage_dir: str | Path | None = None,
     ) -> None:
         self.storage_dir = (
@@ -103,6 +104,7 @@ class OntoStore:
                 **(ontology_frameworks or {}),
             }
         )
+        self.fields = self._normalize_fields(fields or {})
 
     def configure_framework(
         self,
@@ -234,6 +236,15 @@ class OntoStore:
         )
         return normalized
 
+    def _normalize_fields(
+        self,
+        fields: dict[str, dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        return {
+            self.harmonize_key(field): dict(metadata)
+            for field, metadata in fields.items()
+        }
+
     def get(self, name: str, force: bool = False) -> Path:
         owl_path = self._target_path(name)
         json_path = self._json_target_path(name)
@@ -266,6 +277,24 @@ class OntoStore:
                     matched_metadata,
                     ontology_id,
                 )
+
+        return False
+
+    def lookup_fields(self, field: Any) -> Any:
+        lookup_field = self.harmonize_key(field)
+        for field_key, metadata in self.fields.items():
+            candidates = [field_key]
+            label = metadata.get("label")
+            if label is not None:
+                candidates.append(label)
+            aliases = metadata.get("aliases", [])
+            if isinstance(aliases, list):
+                candidates.extend(aliases)
+
+            if lookup_field in {
+                self.harmonize_key(candidate) for candidate in candidates
+            }:
+                return {"field": field_key, **metadata}
 
         return False
 

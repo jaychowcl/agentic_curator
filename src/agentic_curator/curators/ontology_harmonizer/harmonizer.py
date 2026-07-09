@@ -74,6 +74,11 @@ class OntologyHarmonizer:
                     publication_context=publication_context,
                     ontostore=effective_ontostore,
                 )
+                self.harmonize_label(
+                    normalized_target,
+                    publication_context=publication_context,
+                    ontostore=effective_ontostore,
+                )
                 if normalized_strategy in self.STRATEGY_HANDLERS:
                     self.harmonize_with_strategy(
                         normalized_target,
@@ -203,6 +208,65 @@ class OntologyHarmonizer:
         decision = str(assignment["decision"])
         if decision in framework_configs:
             target["ontology_id"] = decision
+
+        return assignment
+
+    def harmonize_label(
+        self,
+        target: dict[str, Any],
+        *,
+        publication_context: str | None,
+        ontostore: OntoStore,
+    ) -> Any:
+        self._harmonize_target(target, ontostore)
+        field = target.get("hz_field")
+        if field is None:
+            return False
+
+        lookup = ontostore.lookup_fields(field)
+        if lookup:
+            target["hz_field"] = lookup["field"]
+            target["field_lookup"] = lookup
+            return lookup
+
+        return self.assign_field(
+            target,
+            publication_context=publication_context,
+            ontostore=ontostore,
+        )
+
+    def assign_field(
+        self,
+        target: dict[str, Any],
+        *,
+        publication_context: str | None,
+        ontostore: OntoStore,
+    ) -> dict[str, Any]:
+        prompt = self._assign_field_prompt(
+            target=target,
+            publication_context=publication_context,
+            fields=ontostore.fields,
+        )
+        response = self._llm().generate_response(
+            prompt,
+            config={
+                "response_mime_type": "application/json",
+                "response_schema": self._assign_field_response_schema(),
+            },
+        )
+        assignment = parse_json_response(response)
+        self._validate_field_assignment_response(assignment)
+        target["field_assignment"] = assignment
+
+        decision = ontostore.harmonize_key(assignment["decision"])
+        target["hz_field"] = decision
+        if assignment["new_field"]:
+            ontostore.fields[decision] = {
+                "label": decision,
+                "source": "llm",
+                "confidence": assignment["confidence"],
+                "reason": assignment["reason"],
+            }
 
         return assignment
 
@@ -336,6 +400,29 @@ class OntologyHarmonizer:
         ]
         return "\n".join(prompt_parts).lstrip("\n")
 
+    def _assign_field_prompt(
+        self,
+        *,
+        target: dict[str, Any],
+        publication_context: str | None,
+        fields: dict[str, Any],
+    ) -> str:
+        initial_prompt = files(PROMPT_PACKAGE).joinpath(
+            "prompts/assign_field.md"
+        ).read_text(encoding="utf-8").strip()
+        prompt_parts = [
+            initial_prompt,
+            "Publication Context:",
+            self._prompt_text(publication_context),
+            "",
+            "Harmonization Target:",
+            self._prompt_text(target),
+            "",
+            "Fields:",
+            self._prompt_text(fields),
+        ]
+        return "\n".join(prompt_parts).lstrip("\n")
+
     def _assign_onto_framework_response_schema(self) -> dict[str, Any]:
         return {
             "type": "OBJECT",
@@ -347,6 +434,18 @@ class OntologyHarmonizer:
             "required": ["decision", "confidence", "reason"],
         }
 
+    def _assign_field_response_schema(self) -> dict[str, Any]:
+        return {
+            "type": "OBJECT",
+            "properties": {
+                "decision": {"type": "STRING"},
+                "confidence": {"type": "STRING"},
+                "reason": {"type": "STRING"},
+                "new_field": {"type": "BOOLEAN"},
+            },
+            "required": ["decision", "confidence", "reason", "new_field"],
+        }
+
     def _validate_assignment_response(self, assignment: Any) -> None:
         if not isinstance(assignment, dict):
             raise ValueError("LLM assignment response must be a JSON object.")
@@ -355,6 +454,17 @@ class OntologyHarmonizer:
         if not required_fields.issubset(assignment):
             raise ValueError(
                 "LLM assignment response must include decision, confidence, and reason."
+            )
+
+    def _validate_field_assignment_response(self, assignment: Any) -> None:
+        if not isinstance(assignment, dict):
+            raise ValueError("LLM field assignment response must be a JSON object.")
+
+        required_fields = {"decision", "confidence", "reason", "new_field"}
+        if not required_fields.issubset(assignment):
+            raise ValueError(
+                "LLM field assignment response must include decision, confidence, "
+                "reason, and new_field."
             )
 
     def _prompt_text(
