@@ -338,9 +338,25 @@ class OntologyHarmonizer:
             ontology_ids = self._normalize_ontology_ids(configured_ids)
 
         return {
-            ontology_id: self._json_safe(framework)
+            ontology_id: self._assignment_prompt_framework(
+                ontology_id=ontology_id,
+                framework=framework,
+            )
             for ontology_id, framework in ontostore.ontology_frameworks.items()
             if ontology_id in ontology_ids
+        }
+
+    def _assignment_prompt_framework(
+        self,
+        *,
+        ontology_id: str,
+        framework: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "id": ontology_id,
+            "title": framework.get("title"),
+            "description": framework.get("description"),
+            "version": framework.get("version"),
         }
 
     def _normalize_ontology_ids(self, ontology_ids: Any) -> list[str]:
@@ -478,18 +494,6 @@ class OntologyHarmonizer:
             return json.dumps(value, indent=2, sort_keys=True)
 
         return str(value)
-
-    def _json_safe(self, value: Any) -> Any:
-        if isinstance(value, Path):
-            return str(value)
-
-        if isinstance(value, dict):
-            return {key: self._json_safe(item) for key, item in value.items()}
-
-        if isinstance(value, list):
-            return [self._json_safe(item) for item in value]
-
-        return value
 
     def _framework_has_local_file(self, framework: dict[str, Any]) -> bool:
         if "url" in framework:

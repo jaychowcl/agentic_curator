@@ -158,10 +158,12 @@ when a target has `occurrences`. When `lookup_label(...)` returns `False`,
 `harmonize(...)` calls
 `assign_onto_framework(...)` as the fallback assignment step. The fallback marks
 `ontology_match=False`, removes stale `ontology_lookup`, prompts the LLM with
-the target, publication context, and candidate ontology framework config, parses
-JSON with `decision`, `confidence`, and `reason`, stores it at
-`ontology_framework_assignment`, and sets `ontology_id` when `decision` is a
-configured framework ID. After assignment, `harmonize(...)` calls
+the target, publication context, and sanitized candidate ontology framework
+metadata. Framework prompt metadata includes only `id`, `title`, `description`,
+and `version`; download URLs and configured file paths remain internal to
+`OntoStore`. It parses JSON with `decision`, `confidence`, and `reason`, stores
+it at `ontology_framework_assignment`, and sets `ontology_id` when `decision` is
+a configured framework ID. After assignment, `harmonize(...)` calls
 `harmonize_label(...)`, which uses `OntoStore.lookup_fields(...)` and falls back
 to LLM-backed `assign_field(...)`. Then `harmonize(...)` calls
 `harmonize_with_strategy(...)` only for `websearch` and `rag`; those placeholder
@@ -684,6 +686,7 @@ class OntologyHarmonizer:
     ):
         self._mark_ontology_miss(target)
         framework_configs = self._assignment_candidate_frameworks(target, ontostore)
+        framework_configs contains only id, title, description, and version
         prompt = self._assign_onto_framework_prompt(
             target=target,
             publication_context=publication_context,

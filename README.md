@@ -348,10 +348,13 @@ punctuation, and collapse spaces to underscores. Occurrence-level `hz_field` and
 receives `ontology_match=True`, `ontology_id`, and `ontology_lookup`. If lookup
 fails, `harmonize(...)` calls the fallback
 `assign_onto_framework(...)`. That fallback marks the target unmatched, sends
-the target, publication context, and candidate ontology framework config to the
-LLM, parses a JSON object with `decision`, `confidence`, and `reason`, stores it
-at `ontology_framework_assignment`, and sets `ontology_id` when `decision` is a
-configured framework ID. After assignment, `harmonize(...)` routes only
+the target, publication context, and sanitized candidate ontology framework
+metadata to the LLM. Framework prompt metadata includes only `id`, `title`,
+`description`, and `version`; download links and file paths remain internal to
+`OntoStore`. It parses a JSON object with `decision`, `confidence`, and
+`reason`, stores it at `ontology_framework_assignment`, and sets `ontology_id`
+when `decision` is a configured framework ID. After assignment, `harmonize(...)`
+routes only
 the target field through `harmonize_label(...)`: first by dictionary lookup
 against `ontostore.fields`, then by LLM field assignment when no field matches.
 It routes only `websearch` and `rag` targets to placeholder strategy handlers,
@@ -658,8 +661,12 @@ class OntologyHarmonizer:
     def assign_onto_framework(target, publication_context, ontostore):
         mark target as unmatched fallback
         candidate_frameworks = configured target frameworks or all store frameworks
+        prompt_frameworks = {
+            id: {"id": id, "title": title, "description": description, "version": version}
+            for each candidate framework
+        }
         prompt = _assign_onto_framework_prompt(
-            target, publication_context, candidate_frameworks
+            target, publication_context, prompt_frameworks
         )
         response = _llm().generate_response(
             prompt,

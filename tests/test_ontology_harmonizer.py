@@ -1105,6 +1105,7 @@ def test_assign_onto_framework_uses_llm_framework_decision(tmp_path: Path) -> No
                 "title": "Anatomy Ontology",
                 "url": "https://example.org/anatomy.owl",
                 "description": "Anatomical entities.",
+                "version": "2026-01-01",
             },
             "disease": {
                 "title": "Disease Ontology",
@@ -1147,6 +1148,16 @@ def test_assign_onto_framework_uses_llm_framework_decision(tmp_path: Path) -> No
     ]
     assert '"id": "target-0"' in fake_llm.calls[0]["prompt"]
     assert '"anatomy"' in fake_llm.calls[0]["prompt"]
+    assert '"id": "anatomy"' in fake_llm.calls[0]["prompt"]
+    assert '"title": "Anatomy Ontology"' in fake_llm.calls[0]["prompt"]
+    assert '"description": "Anatomical entities."' in fake_llm.calls[0]["prompt"]
+    assert '"version": "2026-01-01"' in fake_llm.calls[0]["prompt"]
+    assert '"url"' not in fake_llm.calls[0]["prompt"]
+    assert '"path"' not in fake_llm.calls[0]["prompt"]
+    assert '"owl_path"' not in fake_llm.calls[0]["prompt"]
+    assert '"json_path"' not in fake_llm.calls[0]["prompt"]
+    assert "https://example.org/anatomy.owl" not in fake_llm.calls[0]["prompt"]
+    assert str(tmp_path) not in fake_llm.calls[0]["prompt"]
     assert '"Disease Ontology"' not in fake_llm.calls[0]["prompt"]
 
 
