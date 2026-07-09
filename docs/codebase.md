@@ -1,3 +1,14 @@
+<!--
+=============================================================================
+Authors
+=============================================================================
+Created by jaychowcl @ Saez-Rodriguez Group & GSK on June 2026
+https://github.com/jaychowcl
+https://saezlab.org
+https://www.gsk.com/
+=============================================================================
+-->
+
 # agentic-curator Codebase Handoff
 
 This document summarizes the live `agentic_curator` package. It is intended as
@@ -24,14 +35,24 @@ src/agentic_curator/
   __init__.py
   cli/
     __init__.py
+    cli_ontology_harmonizer.py
     cli_thematic_reviewer.py
+    common.py
   curators/
     __init__.py
+    json_response.py
     ontology_harmonizer/
       __init__.py
+      harmonization_target_extractor.py
       harmonizer.py
+      normalization.py
       ontology_store.py
       owl2json.py
+      strategy_handlers.py
+      prompts/
+        assign_field.md
+        assign_onto_framework.md
+        judge_lookup.md
     thematic_reviewer/
       __init__.py
       reviewer.py
@@ -45,15 +66,25 @@ src/agentic_curator/
     gemini_enterprise.py
     llm.py
 tests/
+  test_cli_ontology_harmonizer.py
   test_cli_thematic_reviewer.py
   test_curator_llm_wrappers.py
   test_ontology_harmonizer.py
   test_owl2json.py
+  test_repository_metadata.py
   test_thematic_reviewer.py
+  test_workflow_logging.py
 ```
 
 Ignored local development artifacts include `.dev/`, `.env/`, `.vscode/`,
 Python caches, pytest caches, build outputs, and editable-install metadata.
+
+Tracked comment-capable project files carry a distinctive authors header at the
+top of the file. Python, TOML, and `.gitignore` use `#` comments; non-prompt
+Markdown docs use a leading HTML comment. `README.md` keeps authorship in its
+`## Authors` section and includes a citation subsection. `LICENSE` and packaged
+prompt Markdown files under `curators/*/prompts/` are intentionally left
+without author comment headers.
 
 <a id="runtime-and-packaging"></a>
 ## Runtime And Packaging
@@ -1710,6 +1741,8 @@ Test coverage includes:
   subcommand routing, verbosity logging, file precedence, stdout output, and
   `--out` writing
 - workflow logging for `ThematicReviewer`, `OntologyHarmonizer`, and `OntoStore`
+- repository metadata policy checks for authors headers and skipped prompt
+  Markdown / license files
 - provider facade selection, metadata responses, Claude model routing, request
   construction, config merging, schema normalization, tool overrides, and lazy
   import errors

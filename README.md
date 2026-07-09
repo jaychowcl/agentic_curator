@@ -484,4 +484,13 @@ def ClaudeVertexPlatform.generate_response_with_metadata(...):
 
 ## Authors
 
-Created by [jaychowcl](https://github.com/jaychowcl) on June 2026
+Created by [jaychowcl](https://github.com/jaychowcl) @
+[Saez-Rodriguez Group](https://saezlab.org) &
+[GSK](https://www.gsk.com/) on June 2026
+
+### Please cite us using
+
+Jay Chow (jaychowcl), Saez-Rodriguez Group, and GSK. (June 2026).
+`agentic-curator` version 0.1.0: LLM-assisted thematic relevance review and
+ontology metadata harmonization for life science publications. GitHub
+repository: https://github.com/jaychowcl/agentic_curator
