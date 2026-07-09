@@ -348,7 +348,8 @@ currently returns:
 
 It does not call `LLM`, prompt files, provider SDKs, or ontology parsers yet.
 
-`OntoStore` manages ontology framework URL configuration and downloads.
+`OntoStore` manages ontology framework configuration for downloadable URLs and
+local OWL paths.
 
 ```python
 from agentic_curator.curators.ontology_harmonizer import OntoStore
@@ -358,7 +359,9 @@ store = OntoStore(
         "custom": {"url": "https://example.org/custom.owl", "version": "v1"},
     }
 )
-store.add_url("extra", "https://example.org/extra.owl", version="v2")
+store.configure_framework("extra", url="https://example.org/extra.owl", version="v2")
+store.configure_framework("local", path="/data/local.owl", title="Local Ontology")
+store.configure_framework("custom", remove=True)
 json_path = store.get("efo")
 owl_path = store.downloaded_paths["efo"]
 ```
@@ -368,18 +371,24 @@ SNOMED CT, NCIT, and NCBITaxon. Built-in `title`, `description`, `version`, and
 `url` metadata are sourced from OLS4 where available. Most default `url` values
 use OLS4 `versionIri` values; EFO and UBERON use stable current URLs.
 
-`download(name)` resolves `store.ontology_frameworks[name]["url"]`, skips
-existing files, calls `requests.get(url, timeout=30)`, calls
-`raise_for_status()`, writes bytes under the local `ontology_frameworks`
-directory, records `store.downloaded_paths[name] = path`, and returns a `Path`.
-`downloaded_paths` is an in-memory `dict[str, Path]` keyed by the ontology id
-passed to `download()`.
+`configure_framework(name, url=..., path=..., remove=False, ...)` is the single
+method for adding, replacing, or removing frameworks. Add/replace calls require
+exactly one of `url` or `path`. URL-backed frameworks download into the local
+`ontology_frameworks` directory. Path-backed frameworks point at an existing
+local OWL file and never call `requests`.
+
+`download(name)` skips existing URL-backed files, calls
+`requests.get(url, timeout=30)`, calls `raise_for_status()`, records
+`store.downloaded_paths[name] = path`, and returns a `Path`. For path-backed
+frameworks, `download(name)` validates and returns the configured local path.
+`downloaded_paths` is an in-memory `dict[str, Path]` keyed by the ontology id.
 
 `get(name, force=False)` is the ontology-serving entrypoint. It returns a JSON
 `Path` under `storage_dir / "jsons"` after parsing the local `.owl` with
 `Owl2json`. If the JSON already exists, `get()` returns it without reparsing. If
-the `.owl` is missing, `get()` downloads it first. Use `get(name, force=True)`
-to redownload the `.owl` and overwrite the parsed JSON.
+a URL-backed `.owl` is missing, `get()` downloads it first. Use
+`get(name, force=True)` to redownload URL-backed ontologies and overwrite the
+parsed JSON, or to reparse path-backed ontologies without network I/O.
 
 ### Code flow
 
@@ -609,12 +618,21 @@ def _extract_harmonization_targets(metadata, start_paths=None):
 
 ```python
 class OntoStore:
+    def configure_framework(name, url=None, path=None, version=None,
+                            title=None, description=None, remove=False):
+        if remove:
+            delete ontology_frameworks[name]
+            remove downloaded_paths[name]
+            return
+        require exactly one of url or path
+        ontology_frameworks[name] = config with url/path and provided metadata
+
     def get(name, force=False):
         owl_path = target_path(name)
         json_path = json_target_path(owl_path)
         if json_path.exists() and not force:
             return json_path
-        if force:
+        if force and framework uses url:
             download_to_path(name, owl_path)
         elif owl_path.exists():
             downloaded_paths[name] = owl_path
@@ -624,6 +642,10 @@ class OntoStore:
 
     def download(name):
         target = target_path(name)
+        if framework uses path:
+            validate target exists
+            downloaded_paths[name] = target
+            return target
         if target.exists():
             downloaded_paths[name] = target
             return target
