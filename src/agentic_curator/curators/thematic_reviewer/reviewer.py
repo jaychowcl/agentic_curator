@@ -4,6 +4,7 @@ import json
 from importlib.resources import files
 from typing import Any
 
+from agentic_curator.curators.json_response import parse_json_response
 from agentic_curator.wrappers import LLM
 
 
@@ -38,39 +39,41 @@ class ThematicReviewer:
         theme: str | None = None,
         metadata: str | dict[str, Any] | None = None,
         title: str | None = None,
-    ) -> str:
+    ) -> dict[str, Any] | list[Any]:
         prompt = self._evidence_prompt(
             publication_text=publication_text,
             theme=theme,
             metadata=metadata,
             title=title,
         )
-        return self._llm().generate_response(
+        response = self._llm().generate_response(
             prompt,
             config={
                 "response_mime_type": "application/json",
                 "response_schema": self._evidence_response_schema(),
             },
         )
+        return parse_json_response(response)
 
     def judge_evidence(
         self,
         evidences: Any,
         theme: str | None = None,
         title: str | None = None,
-    ) -> str:
+    ) -> dict[str, Any] | list[Any]:
         prompt = self._judge_evidence_prompt(
             evidences=evidences,
             theme=theme,
             title=title,
         )
-        return self._llm().generate_response(
+        response = self._llm().generate_response(
             prompt,
             config={
                 "response_mime_type": "application/json",
                 "response_schema": self._judge_evidence_response_schema(),
             },
         )
+        return parse_json_response(response)
 
     def _llm(self) -> Any:
         if self.llm is None:

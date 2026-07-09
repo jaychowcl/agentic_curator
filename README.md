@@ -11,14 +11,14 @@ then judges whether those evidences satisfy the requested theme.
 The package also includes ontology metadata utilities:
 
 - `OntologyHarmonizer` is a metadata harmonization API scaffold that currently
-  returns metadata unchanged.
+  normalizes metadata targets, looks up ontology terms, and assigns an ontology
+  framework with an LLM when lookup fails.
 - `OntoStore` stores OLS4-sourced ontology framework metadata and downloads
   configured ontology URLs.
 - `LLM` routes generation calls to Gemini Enterprise or Claude on Vertex AI.
 
-The reviewer asks model providers for JSON-formatted responses, but returns raw
-generated text strings. Callers are responsible for JSON parsing, validation,
-storage, and error handling.
+The reviewer asks model providers for JSON-formatted responses and returns
+parsed JSON objects or arrays.
 
 ## Installation
 
@@ -113,8 +113,8 @@ Reviewer output:
 
 ```python
 {
-    "evidences": "raw provider-generated text",
-    "judgement": "raw provider-generated text",
+    "evidences": {"evidences": [...]},
+    "judgement": {"judgement": "relevant", "reasoning": "...", "confidence": "high"},
 }
 ```
 
@@ -122,7 +122,8 @@ CLI output is the same reviewer result serialized as pretty-printed JSON. If
 `--out` is supplied, JSON is written to that file; otherwise it is written to
 stdout.
 
-Ontology harmonizer output currently wraps extracted harmonization targets:
+Ontology harmonizer output wraps extracted harmonization targets after lookup or
+framework assignment:
 
 ```python
 {
@@ -154,12 +155,14 @@ creates `LLM()` on the first generation call.
 
 | Method | Inputs | Output | Notes |
 | --- | --- | --- | --- |
-| `review_relevancy(publication_text=None, theme=None, metadata=None, title=None)` | Publication text, theme, metadata, title. | `{"evidences": str, "judgement": str}` | Runs evidence extraction, then final judging. |
-| `extract_evidence(publication_text=None, theme=None, metadata=None, title=None)` | Publication text, theme, metadata, title. | Raw generated text string. | Loads `evidence_extraction.md` and requests JSON with an `evidences` array. |
-| `judge_evidence(evidences, theme=None, title=None)` | Evidence text/object, theme, title. | Raw generated text string. | Loads `judge_evidence.md` and requests JSON with `judgement`, `reasoning`, and `confidence`. |
+| `review_relevancy(publication_text=None, theme=None, metadata=None, title=None)` | Publication text, theme, metadata, title. | `{"evidences": dict/list, "judgement": dict/list}` | Runs evidence extraction, parses JSON, then final judging. |
+| `extract_evidence(publication_text=None, theme=None, metadata=None, title=None)` | Publication text, theme, metadata, title. | Parsed JSON object or array. | Loads `evidence_extraction.md` and requests JSON with an `evidences` array. |
+| `judge_evidence(evidences, theme=None, title=None)` | Evidence text/object, theme, title. | Parsed JSON object or array. | Loads `judge_evidence.md` and requests JSON with `judgement`, `reasoning`, and `confidence`. |
 
 Dictionary and list metadata are inserted into prompts as sorted, indented JSON.
-`None` values become empty prompt blocks.
+`None` values become empty prompt blocks. Dict/list LLM responses pass through;
+JSON text responses are parsed with `json.loads(...)`; invalid JSON text raises
+`ValueError`.
 
 #### LLM Facade
 
@@ -284,9 +287,11 @@ unless `--out` is used.
 
 ### Ontology Guide
 
-`OntologyHarmonizer(ontostore=None)` accepts an optional `OntoStore`. If
-omitted, it creates a default store. Custom ontology framework dictionaries
-should be passed to `OntoStore(...)`, then injected into the harmonizer.
+`OntologyHarmonizer(ontostore=None, llm=None)` accepts an optional `OntoStore`
+and optional LLM-like object. If omitted, it creates a default store and lazily
+creates `LLM()` only when framework assignment is needed. Custom ontology
+framework dictionaries should be passed to `OntoStore(...)`, then injected into
+the harmonizer.
 
 ```python
 from agentic_curator import OntologyHarmonizer
@@ -341,8 +346,11 @@ punctuation, and collapse spaces to underscores. Occurrence-level `hz_field` and
 `hz_label` values are normalized the same way. If lookup succeeds, the target
 receives `ontology_match=True`, `ontology_id`, and `ontology_lookup`. If lookup
 fails, `harmonize(...)` calls the fallback
-`assign_onto_framework(...)`, which currently marks the target unmatched. It
-returns:
+`assign_onto_framework(...)`. That fallback marks the target unmatched, sends
+the target, publication context, strategy, and candidate ontology framework
+config to the LLM, parses a JSON object with `decision`, `confidence`, and
+`reason`, stores it at `ontology_framework_assignment`, and sets `ontology_id`
+when `decision` is a configured framework ID. It returns:
 
 ```python
 {
@@ -353,8 +361,8 @@ returns:
 }
 ```
 
-It does not call `LLM`, prompt files, or provider SDKs. It uses the injected
-`OntoStore` for ontology lookup when targets are available.
+It uses the injected `OntoStore` for ontology lookup when targets are available
+and calls the injected or lazy LLM only for targets that do not match lookup.
 
 `OntoStore` manages ontology framework configuration for downloadable URLs and
 local OWL paths.
@@ -439,13 +447,14 @@ class ThematicReviewer:
 ```python
 def extract_evidence(publication_text, theme, metadata, title):
     prompt = _evidence_prompt(publication_text, theme, metadata, title)
-    return _llm().generate_response(
+    response = _llm().generate_response(
         prompt,
         config={
             "response_mime_type": "application/json",
             "response_schema": _evidence_response_schema(),
         },
     )
+    return parse_json_response(response)
 
 def _evidence_prompt(...):
     initial_prompt = read_package_text("prompts/evidence_extraction.md")
@@ -473,13 +482,14 @@ Internal calls:
 ```python
 def judge_evidence(evidences, theme, title):
     prompt = _judge_evidence_prompt(evidences, theme, title)
-    return _llm().generate_response(
+    response = _llm().generate_response(
         prompt,
         config={
             "response_mime_type": "application/json",
             "response_schema": _judge_evidence_response_schema(),
         },
     )
+    return parse_json_response(response)
 
 def _judge_evidence_prompt(...):
     initial_prompt = read_package_text("prompts/judge_evidence.md")
@@ -624,7 +634,23 @@ class OntologyHarmonizer:
 
     def assign_onto_framework(target, publication_context, ontostore, strategy):
         mark target as unmatched fallback
-        return False
+        candidate_frameworks = configured target frameworks or all store frameworks
+        prompt = _assign_onto_framework_prompt(
+            target, publication_context, candidate_frameworks, strategy
+        )
+        response = _llm().generate_response(
+            prompt,
+            config={
+                "response_mime_type": "application/json",
+                "response_schema": _assign_onto_framework_response_schema(),
+            },
+        )
+        assignment = parse_json_response(response)
+        require assignment has decision, confidence, and reason
+        target["ontology_framework_assignment"] = assignment
+        if assignment["decision"] is a configured framework ID:
+            target["ontology_id"] = assignment["decision"]
+        return assignment
 ```
 
 Target extraction is handled by

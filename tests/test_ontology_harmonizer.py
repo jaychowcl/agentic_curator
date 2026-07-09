@@ -1,6 +1,7 @@
 import inspect
 import json
 from pathlib import Path
+from importlib.resources import files
 
 import pytest
 
@@ -87,6 +88,10 @@ DEFAULT_ONTOLOGY_FRAMEWORKS = {
     },
 }
 
+ASSIGN_ONTO_FRAMEWORK_PROMPT = files("agentic_curator").joinpath(
+    "curators/ontology_harmonizer/prompts/assign_onto_framework.md"
+).read_text(encoding="utf-8").strip()
+
 
 class FakeResponse:
     def __init__(self, content: bytes = b"ontology", error: Exception | None = None):
@@ -96,6 +101,31 @@ class FakeResponse:
     def raise_for_status(self) -> None:
         if self.error is not None:
             raise self.error
+
+
+class FakeLLM:
+    def __init__(self, response=None) -> None:
+        self.calls = []
+        self.response = (
+            {
+                "decision": "unsure",
+                "confidence": "low",
+                "reason": "No clear framework match.",
+            }
+            if response is None
+            else response
+        )
+
+    def generate_response(self, prompt, *, model=None, config=None, **extra_options):
+        self.calls.append(
+            {
+                "prompt": prompt,
+                "model": model,
+                "config": config,
+                "extra_options": extra_options,
+            }
+        )
+        return self.response
 
 
 def ontology_bytes(*, title: str = "Cell Ontology", label: str = "cell") -> bytes:
@@ -1000,25 +1030,113 @@ def test_lookup_label_respects_target_framework_subset(
     assert "ontology_lookup" not in target
 
 
-def test_assign_onto_framework_marks_lookup_miss() -> None:
+def test_assign_onto_framework_uses_llm_framework_decision(tmp_path: Path) -> None:
+    response = {
+        "decision": "anatomy",
+        "confidence": "high",
+        "reason": "The target is an anatomical tissue.",
+    }
+    fake_llm = FakeLLM(response=json.dumps(response))
+    store = OntoStore(
+        ontology_frameworks={
+            "anatomy": {
+                "title": "Anatomy Ontology",
+                "url": "https://example.org/anatomy.owl",
+                "description": "Anatomical entities.",
+            },
+            "disease": {
+                "title": "Disease Ontology",
+                "url": "https://example.org/disease.owl",
+                "description": "Disease entities.",
+            },
+        },
+        storage_dir=tmp_path,
+    )
     target = {
         "id": "target-0",
         "pre_hz_label": "lung",
         "ontology_id": "old",
         "ontology_lookup": {"title": "old"},
+        "ontology_ids": ["anatomy"],
     }
 
-    result = OntologyHarmonizer().assign_onto_framework(
+    result = OntologyHarmonizer(llm=fake_llm).assign_onto_framework(
+        target,
+        publication_context="sample is from lung tissue",
+        ontostore=store,
+        strategy="identity",
+    )
+
+    assert result == response
+    assert target["ontology_match"] is False
+    assert target["ontology_id"] == "anatomy"
+    assert "ontology_lookup" not in target
+    assert target["ontology_framework_assignment"] == response
+    assert len(fake_llm.calls) == 1
+    assert fake_llm.calls[0]["model"] is None
+    assert fake_llm.calls[0]["extra_options"] == {}
+    assert fake_llm.calls[0]["config"] == {
+        "response_mime_type": "application/json",
+        "response_schema": OntologyHarmonizer()._assign_onto_framework_response_schema(),
+    }
+    assert fake_llm.calls[0]["prompt"].startswith(ASSIGN_ONTO_FRAMEWORK_PROMPT)
+    assert "Publication Context:\nsample is from lung tissue" in fake_llm.calls[0][
+        "prompt"
+    ]
+    assert '"id": "target-0"' in fake_llm.calls[0]["prompt"]
+    assert '"anatomy"' in fake_llm.calls[0]["prompt"]
+    assert '"Disease Ontology"' not in fake_llm.calls[0]["prompt"]
+
+
+def test_assign_onto_framework_stores_false_decision_without_ontology_id() -> None:
+    response = {
+        "decision": "false",
+        "confidence": "none",
+        "reason": "No configured framework matches.",
+    }
+    target = {
+        "id": "target-0",
+        "pre_hz_label": "unmapped",
+        "ontology_id": "old",
+        "ontology_lookup": {"title": "old"},
+    }
+
+    result = OntologyHarmonizer(llm=FakeLLM(response=response)).assign_onto_framework(
         target,
         publication_context=None,
         ontostore=OntoStore(),
         strategy="identity",
     )
 
-    assert result is False
+    assert result == response
     assert target["ontology_match"] is False
     assert "ontology_id" not in target
     assert "ontology_lookup" not in target
+    assert target["ontology_framework_assignment"] == response
+
+
+def test_assign_onto_framework_response_schema_requires_decision_fields() -> None:
+    assert OntologyHarmonizer()._assign_onto_framework_response_schema() == {
+        "type": "OBJECT",
+        "properties": {
+            "decision": {"type": "STRING"},
+            "confidence": {"type": "STRING"},
+            "reason": {"type": "STRING"},
+        },
+        "required": ["decision", "confidence", "reason"],
+    }
+
+
+def test_assign_onto_framework_raises_value_error_for_invalid_json_response() -> None:
+    target = {"id": "target-0", "pre_hz_label": "lung"}
+
+    with pytest.raises(ValueError, match="valid JSON"):
+        OntologyHarmonizer(llm=FakeLLM(response="not json")).assign_onto_framework(
+            target,
+            publication_context=None,
+            ontostore=OntoStore(),
+            strategy="identity",
+        )
 
 
 def test_harmonize_assigns_ontology_metadata_from_store(tmp_path: Path) -> None:
@@ -1098,7 +1216,7 @@ def test_harmonize_returns_targets_wrapper() -> None:
     ]
     ontostore = OntoStore()
 
-    result = OntologyHarmonizer().harmonize(
+    result = OntologyHarmonizer(llm=FakeLLM()).harmonize(
         publication_context="Full publication context",
         harmonization_targets=harmonization_targets,
         ontostore=ontostore,
@@ -1121,7 +1239,7 @@ def test_harmonize_accepts_single_target() -> None:
         "pre_hz_label": "lung",
     }
 
-    result = OntologyHarmonizer().harmonize(target=target)
+    result = OntologyHarmonizer(llm=FakeLLM()).harmonize(target=target)
 
     assert result == {
         "publication_context": None,
@@ -1139,7 +1257,7 @@ def test_harmonize_accepts_dict_harmonization_target() -> None:
         "pre_hz_label": "Homo sapiens",
     }
 
-    result = OntologyHarmonizer().harmonize(harmonization_targets=target)
+    result = OntologyHarmonizer(llm=FakeLLM()).harmonize(harmonization_targets=target)
 
     assert result["harmonization_targets"] == [target]
 
@@ -1196,6 +1314,14 @@ def test_harmonizer_accepts_ontostore_in_constructor() -> None:
     harmonizer = OntologyHarmonizer(ontostore=store)
 
     assert harmonizer.ontostore is store
+
+
+def test_harmonizer_accepts_llm_in_constructor() -> None:
+    fake_llm = FakeLLM()
+
+    harmonizer = OntologyHarmonizer(llm=fake_llm)
+
+    assert harmonizer.llm is fake_llm
 
 
 def test_harmonizer_rejects_ontology_frameworks_constructor_arg() -> None:
@@ -1566,7 +1692,7 @@ def test_target_extractor_schema_excludes_old_target_keys() -> None:
 
 
 def test_harmonize_miniml_json_extracts_default_targets() -> None:
-    result = OntologyHarmonizer().harmonize_miniml_json(
+    result = OntologyHarmonizer(llm=FakeLLM()).harmonize_miniml_json(
         publication_context="Full publication context",
         miniml_json=miniml_metadata(),
     )
@@ -1619,7 +1745,7 @@ def test_harmonize_miniml_json_extracts_default_targets() -> None:
 
 
 def test_harmonize_miniml_json_accepts_explicit_target_paths() -> None:
-    result = OntologyHarmonizer().harmonize_miniml_json(
+    result = OntologyHarmonizer(llm=FakeLLM()).harmonize_miniml_json(
         miniml_json={"sample": {"tissue": "lung"}},
         target_paths=["/sample"],
     )
@@ -1638,6 +1764,11 @@ def test_harmonize_miniml_json_accepts_explicit_target_paths() -> None:
                 "hz_field": "tissue",
                 "hz_label": "lung",
                 "ontology_match": False,
+                "ontology_framework_assignment": {
+                    "decision": "unsure",
+                    "confidence": "low",
+                    "reason": "No clear framework match.",
+                },
             }
         ],
         "strategy": "identity",

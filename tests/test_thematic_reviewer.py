@@ -1,4 +1,5 @@
 import importlib
+import json
 import pytest
 from importlib.resources import files
 
@@ -44,8 +45,23 @@ def test_thematic_reviewer_remains_exported_from_package_root() -> None:
 
 
 def test_review_relevancy_returns_evidence_decision() -> None:
+    evidences = {
+        "evidences": [
+            {
+                "evidence": "fibrotic tissue",
+                "judgement": "relevant",
+                "confidence": "high",
+                "reason": "Directly names fibrotic tissue.",
+            }
+        ]
+    }
+    judgement = {
+        "judgement": "relevant",
+        "reasoning": "The evidence directly supports the theme.",
+        "confidence": "high",
+    }
     result = ThematicReviewer(
-        llm=FakeLLM(responses=["matched evidence", "relevant judgement"])
+        llm=FakeLLM(responses=[json.dumps(evidences), json.dumps(judgement)])
     ).review_relevancy(
         publication_text="Full publication text",
         theme="fibrosis",
@@ -54,8 +70,8 @@ def test_review_relevancy_returns_evidence_decision() -> None:
     )
 
     assert result == {
-        "evidences": "matched evidence",
-        "judgement": "relevant judgement",
+        "evidences": evidences,
+        "judgement": judgement,
     }
 
 
@@ -123,9 +139,13 @@ def test_review_relevancy_passes_inputs_to_extract_evidence() -> None:
     ]
 
 
-def test_judge_evidence_accepts_expected_inputs_and_returns_generated_text() -> None:
-    response = "relevant judgement"
-    result = ThematicReviewer(llm=FakeLLM(response=response)).judge_evidence(
+def test_judge_evidence_accepts_expected_inputs_and_returns_json() -> None:
+    response = {
+        "judgement": "relevant",
+        "reasoning": "Evidence supports the theme.",
+        "confidence": "high",
+    }
+    result = ThematicReviewer(llm=FakeLLM(response=json.dumps(response))).judge_evidence(
         evidences="matched evidence",
         theme="fibrosis",
         title="Fibrosis atlas publication",
@@ -135,7 +155,12 @@ def test_judge_evidence_accepts_expected_inputs_and_returns_generated_text() -> 
 
 
 def test_judge_evidence_generates_json_response_from_prompt() -> None:
-    fake_llm = FakeLLM(response="relevant judgement")
+    response = {
+        "judgement": "relevant",
+        "reasoning": "Evidence supports the theme.",
+        "confidence": "high",
+    }
+    fake_llm = FakeLLM(response=json.dumps(response))
     reviewer = ThematicReviewer(llm=fake_llm)
     evidences = [
         {
@@ -150,7 +175,7 @@ def test_judge_evidence_generates_json_response_from_prompt() -> None:
         evidences=evidences,
         theme="fibrosis",
         title="Fibrosis atlas publication",
-    ) == "relevant judgement"
+    ) == response
     assert len(fake_llm.calls) == 1
     assert fake_llm.calls[0]["model"] is None
     assert fake_llm.calls[0]["config"] == {
@@ -179,9 +204,27 @@ def test_judge_evidence_response_schema_requires_judgement_fields() -> None:
     }
 
 
-def test_extract_evidence_accepts_expected_inputs_and_returns_generated_text() -> None:
-    response = "matched evidence"
-    result = ThematicReviewer(llm=FakeLLM(response=response)).extract_evidence(
+def test_judge_evidence_raises_value_error_for_invalid_json_response() -> None:
+    with pytest.raises(ValueError, match="valid JSON"):
+        ThematicReviewer(llm=FakeLLM(response="not json")).judge_evidence(
+            evidences="matched evidence",
+            theme="fibrosis",
+            title="Fibrosis atlas publication",
+        )
+
+
+def test_extract_evidence_accepts_expected_inputs_and_returns_json() -> None:
+    response = {
+        "evidences": [
+            {
+                "evidence": "fibrotic tissue",
+                "judgement": "relevant",
+                "confidence": "high",
+                "reason": "Directly names fibrotic tissue.",
+            }
+        ]
+    }
+    result = ThematicReviewer(llm=FakeLLM(response=json.dumps(response))).extract_evidence(
         publication_text="Full publication text",
         theme="fibrosis",
         metadata={"organism": "human", "tissue": "lung"},
@@ -192,7 +235,17 @@ def test_extract_evidence_accepts_expected_inputs_and_returns_generated_text() -
 
 
 def test_extract_evidence_generates_json_response_from_prompt() -> None:
-    fake_llm = FakeLLM(response="matched evidence")
+    response = {
+        "evidences": [
+            {
+                "evidence": "fibrotic tissue",
+                "judgement": "relevant",
+                "confidence": "high",
+                "reason": "Directly names fibrotic tissue.",
+            }
+        ]
+    }
+    fake_llm = FakeLLM(response=json.dumps(response))
     reviewer = ThematicReviewer(llm=fake_llm)
 
     assert reviewer.extract_evidence(
@@ -200,7 +253,7 @@ def test_extract_evidence_generates_json_response_from_prompt() -> None:
         theme="fibrosis",
         metadata={"organism": "human", "tissue": "lung"},
         title="Fibrosis atlas publication",
-    ) == "matched evidence"
+    ) == response
     assert len(fake_llm.calls) == 1
     assert fake_llm.calls[0]["model"] is None
     assert fake_llm.calls[0]["config"] == {
@@ -213,6 +266,16 @@ def test_extract_evidence_generates_json_response_from_prompt() -> None:
     assert "Title:\nFibrosis atlas publication" in fake_llm.calls[0]["prompt"]
     assert "Publication Text:\nFull publication text" in fake_llm.calls[0]["prompt"]
     assert '"organism": "human"' in fake_llm.calls[0]["prompt"]
+
+
+def test_extract_evidence_raises_value_error_for_invalid_json_response() -> None:
+    with pytest.raises(ValueError, match="valid JSON"):
+        ThematicReviewer(llm=FakeLLM(response="not json")).extract_evidence(
+            publication_text="Full publication text",
+            theme="fibrosis",
+            metadata={"organism": "human"},
+            title="Fibrosis atlas publication",
+        )
 
 
 def test_evidence_response_schema_requires_evidence_fields() -> None:

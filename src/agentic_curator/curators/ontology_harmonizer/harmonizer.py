@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import json
+from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
+from agentic_curator.curators.json_response import parse_json_response
 from agentic_curator.curators.ontology_harmonizer.harmonization_target_extractor import (
     HarmonizationTargetExtractor,
     StartPathSpec,
 )
 from agentic_curator.curators.ontology_harmonizer.ontology_store import OntoStore
+from agentic_curator.wrappers import LLM
+
+
+PROMPT_PACKAGE = "agentic_curator.curators.ontology_harmonizer"
 
 
 class OntologyHarmonizer:
@@ -19,8 +26,13 @@ class OntologyHarmonizer:
         "noop": "identity",
     }
 
-    def __init__(self, ontostore: OntoStore | None = None) -> None:
+    def __init__(
+        self,
+        ontostore: OntoStore | None = None,
+        llm: Any | None = None,
+    ) -> None:
         self.ontostore = OntoStore() if ontostore is None else ontostore
+        self.llm = llm
         self.target_extractor = HarmonizationTargetExtractor()
 
     def harmonize(
@@ -154,9 +166,37 @@ class OntologyHarmonizer:
         publication_context: str | None,
         ontostore: OntoStore,
         strategy: str,
-    ) -> bool:
-        del publication_context, ontostore, strategy
-        return self._mark_ontology_miss(target)
+    ) -> dict[str, Any]:
+        self._mark_ontology_miss(target)
+        framework_configs = self._assignment_candidate_frameworks(target, ontostore)
+        prompt = self._assign_onto_framework_prompt(
+            target=target,
+            publication_context=publication_context,
+            ontology_frameworks=framework_configs,
+            strategy=strategy,
+        )
+        response = self._llm().generate_response(
+            prompt,
+            config={
+                "response_mime_type": "application/json",
+                "response_schema": self._assign_onto_framework_response_schema(),
+            },
+        )
+        assignment = parse_json_response(response)
+        self._validate_assignment_response(assignment)
+        target["ontology_framework_assignment"] = assignment
+
+        decision = str(assignment["decision"])
+        if decision in framework_configs:
+            target["ontology_id"] = decision
+
+        return assignment
+
+    def _llm(self) -> Any:
+        if self.llm is None:
+            self.llm = LLM()
+
+        return self.llm
 
     def _effective_ontostore(self, ontostore: OntoStore | None = None) -> OntoStore:
         effective_ontostore = self.ontostore if ontostore is None else ontostore
@@ -185,6 +225,23 @@ class OntologyHarmonizer:
             for ontology_id, framework in ontostore.ontology_frameworks.items()
             if self._framework_has_local_file(framework)
         ]
+
+    def _assignment_candidate_frameworks(
+        self,
+        target: dict[str, Any],
+        ontostore: OntoStore,
+    ) -> dict[str, Any]:
+        configured_ids = target.get("ontology_frameworks", target.get("ontology_ids"))
+        if configured_ids is None:
+            ontology_ids = list(ontostore.ontology_frameworks)
+        else:
+            ontology_ids = self._normalize_ontology_ids(configured_ids)
+
+        return {
+            ontology_id: self._json_safe(framework)
+            for ontology_id, framework in ontostore.ontology_frameworks.items()
+            if ontology_id in ontology_ids
+        }
 
     def _normalize_ontology_ids(self, ontology_ids: Any) -> list[str]:
         if isinstance(ontology_ids, str):
@@ -219,6 +276,78 @@ class OntologyHarmonizer:
         label = target.get("hz_label", target.get("pre_hz_label"))
         if label is not None:
             target["hz_label"] = ontostore.harmonize_key(label)
+
+    def _assign_onto_framework_prompt(
+        self,
+        *,
+        target: dict[str, Any],
+        publication_context: str | None,
+        ontology_frameworks: dict[str, Any],
+        strategy: str,
+    ) -> str:
+        initial_prompt = files(PROMPT_PACKAGE).joinpath(
+            "prompts/assign_onto_framework.md"
+        ).read_text(encoding="utf-8").strip()
+        prompt_parts = [
+            initial_prompt,
+            "Strategy:",
+            self._prompt_text(strategy),
+            "",
+            "Publication Context:",
+            self._prompt_text(publication_context),
+            "",
+            "Harmonization Target:",
+            self._prompt_text(target),
+            "",
+            "Ontology Framework Config:",
+            self._prompt_text(ontology_frameworks),
+        ]
+        return "\n".join(prompt_parts).lstrip("\n")
+
+    def _assign_onto_framework_response_schema(self) -> dict[str, Any]:
+        return {
+            "type": "OBJECT",
+            "properties": {
+                "decision": {"type": "STRING"},
+                "confidence": {"type": "STRING"},
+                "reason": {"type": "STRING"},
+            },
+            "required": ["decision", "confidence", "reason"],
+        }
+
+    def _validate_assignment_response(self, assignment: Any) -> None:
+        if not isinstance(assignment, dict):
+            raise ValueError("LLM assignment response must be a JSON object.")
+
+        required_fields = {"decision", "confidence", "reason"}
+        if not required_fields.issubset(assignment):
+            raise ValueError(
+                "LLM assignment response must include decision, confidence, and reason."
+            )
+
+    def _prompt_text(
+        self,
+        value: Any,
+    ) -> str:
+        if value is None:
+            return ""
+
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, indent=2, sort_keys=True)
+
+        return str(value)
+
+    def _json_safe(self, value: Any) -> Any:
+        if isinstance(value, Path):
+            return str(value)
+
+        if isinstance(value, dict):
+            return {key: self._json_safe(item) for key, item in value.items()}
+
+        if isinstance(value, list):
+            return [self._json_safe(item) for item in value]
+
+        return value
 
     def _framework_has_local_file(self, framework: dict[str, Any]) -> bool:
         if "url" in framework:

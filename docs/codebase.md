@@ -96,24 +96,24 @@ first generation call.
 Main methods:
 
 - `review_relevancy(publication_text=None, theme=None, metadata=None, title=None) -> dict`
-- `extract_evidence(publication_text=None, theme=None, metadata=None, title=None) -> str`
-- `judge_evidence(evidences, theme=None, title=None) -> str`
+- `extract_evidence(publication_text=None, theme=None, metadata=None, title=None) -> dict | list`
+- `judge_evidence(evidences, theme=None, title=None) -> dict | list`
 
 `metadata` may be a string, dictionary, list, or `None` when used by reviewer
-prompt helpers. The reviewer asks providers for JSON output but returns raw
-generated text. JSON parsing and validation are caller responsibilities in the
-current implementation.
+prompt helpers. The reviewer asks providers for JSON output, passes dict/list
+responses through, parses JSON text with `json.loads(...)`, and raises
+`ValueError` for invalid JSON text.
 
 <a id="ontology-harmonizer"></a>
 ## Ontology Harmonizer
 
 `agentic_curator.curators.ontology_harmonizer.OntologyHarmonizer` is the
-metadata harmonization curator. It has no LLM, prompt, provider, or CLI
-integration yet.
+metadata harmonization curator. It uses `OntoStore` for exact ontology lookup
+and an injected or lazy `LLM` for framework assignment when lookup fails.
 
 Public methods:
 
-- `assign_onto_framework(target, *, publication_context, ontostore, strategy) -> bool`
+- `assign_onto_framework(target, *, publication_context, ontostore, strategy) -> dict`
 - `harmonize_miniml_json(publication_context=None, miniml_json=None, ontostore=None, target_paths=None, strategy="identity") -> dict`
 - `harmonize(publication_context=None, harmonization_targets=None, target=None, strategy="identity", ontostore=None, target_paths=None) -> dict`
 - `lookup_label(target, *, publication_context, ontostore, strategy) -> Any`
@@ -152,14 +152,20 @@ trim, strip edge punctuation, and collapse whitespace to underscores. The same
 normalization is applied to occurrence-level `hz_field` and `hz_label` values
 when a target has `occurrences`. When `lookup_label(...)` returns `False`,
 `harmonize(...)` calls
-`assign_onto_framework(...)` as the fallback assignment step; the current
-fallback marks `ontology_match=False` and removes stale ontology fields.
+`assign_onto_framework(...)` as the fallback assignment step. The fallback marks
+`ontology_match=False`, removes stale `ontology_lookup`, prompts the LLM with
+the target, publication context, strategy, and candidate ontology framework
+config, parses JSON with `decision`, `confidence`, and `reason`, stores it at
+`ontology_framework_assignment`, and sets `ontology_id` when `decision` is a
+configured framework ID.
 
-`OntologyHarmonizer(ontostore=None)` creates a default `OntoStore` when no store
-is supplied. Custom ontology framework dictionaries should be passed to
-`OntoStore(ontology_frameworks=...)`, then injected into the harmonizer. A
-per-call `ontostore` can override the constructor value for harmonization. The
-effective store is validated before lookup and assignment. Targets may constrain
+`OntologyHarmonizer(ontostore=None, llm=None)` creates a default `OntoStore`
+when no store is supplied and lazily creates `LLM()` only when framework
+assignment needs generation. Custom ontology framework dictionaries should be
+passed to `OntoStore(ontology_frameworks=...)`, then injected into the
+harmonizer. A per-call `ontostore` can override the constructor value for
+harmonization. The effective store is validated before lookup and assignment.
+Targets may constrain
 lookup by setting `ontology_frameworks` or `ontology_ids` to a string or
 sequence of framework IDs. Without an explicit constraint, `lookup_label(...)`
 searches only path-backed frameworks with existing local OWL or JSON files,
@@ -420,7 +426,7 @@ Major orchestration flow:
 
 1. CLI users call `cli_thematic_reviewer`, which reads direct or UTF-8 file
    inputs and passes strings into `ThematicReviewer.review_relevancy(...)`.
-2. `review_relevancy()` calls `extract_evidence(...)`, then passes that raw
+2. `review_relevancy()` calls `extract_evidence(...)`, then passes that parsed
    evidence result into `judge_evidence(...)`.
 3. Each reviewer primitive loads its packaged Markdown prompt, appends labeled
    input blocks, then calls `self._llm().generate_response(...)` with a JSON
@@ -431,14 +437,16 @@ Major orchestration flow:
 5. Provider adapters construct SDK-specific requests, call the injected or
    lazily created client, and normalize the provider response to a raw text
    string.
+6. Curator methods that request JSON parse dict/list or JSON text responses
+   before returning.
 
-The current code does not parse model JSON responses, configure logging, or wrap
-provider exceptions. Those responsibilities stay with callers.
+The current code does not configure logging or wrap provider exceptions. Those
+responsibilities stay with callers.
 
-`OntologyHarmonizer.harmonize(...)` is separate from this LLM flow. It normalizes
-single-target input, validates the selected strategy, assigns ontology metadata
-through `OntoStore.lookup(...)`, returns a target wrapper directly, and does not
-call `LLM`, provider adapters, or prompt files.
+`OntologyHarmonizer.harmonize(...)` normalizes single-target input, validates
+the selected strategy, first assigns ontology metadata through
+`OntoStore.lookup(...)`, then calls `assign_onto_framework(...)` and the LLM
+only when exact lookup fails.
 
 <a id="method-orchestrator-pseudocode"></a>
 ## Method Orchestrator Pseudocode
@@ -492,13 +500,14 @@ def extract_evidence(publication_text=None, theme=None, metadata=None, title=Non
         metadata=metadata,
         title=title,
     )
-    return self._llm().generate_response(
+    response = self._llm().generate_response(
         prompt,
         config={
             "response_mime_type": "application/json",
             "response_schema": self._evidence_response_schema(),
         },
     )
+    return parse_json_response(response)
 ```
 
 Internal calls from `extract_evidence()`:
@@ -506,6 +515,7 @@ Internal calls from `extract_evidence()`:
 - `_evidence_prompt(...)`
 - `_llm()`
 - `_evidence_response_schema()`
+- `parse_json_response(...)`
 
 ```python
 def judge_evidence(evidences, theme=None, title=None):
@@ -514,13 +524,14 @@ def judge_evidence(evidences, theme=None, title=None):
         theme=theme,
         title=title,
     )
-    return self._llm().generate_response(
+    response = self._llm().generate_response(
         prompt,
         config={
             "response_mime_type": "application/json",
             "response_schema": self._judge_evidence_response_schema(),
         },
     )
+    return parse_json_response(response)
 ```
 
 Internal calls from `judge_evidence()`:
@@ -528,6 +539,7 @@ Internal calls from `judge_evidence()`:
 - `_judge_evidence_prompt(...)`
 - `_llm()`
 - `_judge_evidence_response_schema()`
+- `parse_json_response(...)`
 
 ```python
 def _llm():
@@ -574,8 +586,9 @@ injected `OntoStore`.
 class OntologyHarmonizer:
     DEFAULT_TARGET_PATHS = HarmonizationTargetExtractor.DEFAULT_TARGET_PATHS
 
-    def __init__(ontostore=None):
+    def __init__(ontostore=None, llm=None):
         self.ontostore = OntoStore() if ontostore is None else ontostore
+        self.llm = llm
         self.target_extractor = HarmonizationTargetExtractor()
 
     def harmonize(
@@ -643,7 +656,27 @@ class OntologyHarmonizer:
         ontostore,
         strategy,
     ):
-        return self._mark_ontology_miss(target)
+        self._mark_ontology_miss(target)
+        framework_configs = self._assignment_candidate_frameworks(target, ontostore)
+        prompt = self._assign_onto_framework_prompt(
+            target=target,
+            publication_context=publication_context,
+            ontology_frameworks=framework_configs,
+            strategy=strategy,
+        )
+        response = self._llm().generate_response(
+            prompt,
+            config={
+                "response_mime_type": "application/json",
+                "response_schema": self._assign_onto_framework_response_schema(),
+            },
+        )
+        assignment = parse_json_response(response)
+        require assignment contains decision, confidence, and reason
+        target["ontology_framework_assignment"] = assignment
+        if assignment["decision"] is a configured framework ID:
+            target["ontology_id"] = assignment["decision"]
+        return assignment
 
     def _candidate_ontology_ids(target, ontostore):
         configured_ids = target.get("ontology_frameworks", target.get("ontology_ids"))
@@ -702,7 +735,8 @@ local frameworks, so no external API call is made. If a target explicitly
 selects a URL-backed framework whose configured JSON/OWL files are missing,
 lookup may reach `requests.get(...)` through `OntoStore.download(...)`.
 `assign_onto_framework()` is called only when `lookup_label()` returns `False`;
-the current fallback marks the target as unmatched.
+it calls the LLM with the packaged `assign_onto_framework.md` prompt and returns
+the parsed assignment JSON.
 
 ```python
 def _extract_harmonization_targets(metadata, start_paths=None):
@@ -1236,6 +1270,12 @@ thematic reviewer prompts live under
 - `theme.md` is a fibrosis theme example used by local development fixtures and
   manual CLI runs. It is packaged but not loaded automatically by
   `ThematicReviewer`.
+
+The ontology harmonizer prompt file is:
+
+- `assign_onto_framework.md` instructs the model to choose a configured
+  ontology framework ID, `"false"`, or `"unsure"` and return `decision`,
+  `confidence`, and `reason`.
 
 <a id="llm-wrapper"></a>
 ## LLM Wrapper
