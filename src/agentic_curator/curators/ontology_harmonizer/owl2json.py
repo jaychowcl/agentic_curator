@@ -26,18 +26,29 @@ class Owl2json:
     def __init__(self, owl_path: str | Path) -> None:
         self.owl_path = Path(owl_path)
 
-    def parse(self) -> dict[str, Any]:
+    def parse(self, ontology_id: str | None = None) -> dict[str, Any]:
         self._validate_rdf_xml_candidate()
         graph = self._parse_graph()
+        ontology_metadata = self._extract_ontology_metadata(graph)
+        ontology_metadata["id"] = ontology_id
         return {
-            "ontology": self._extract_ontology_metadata(graph),
+            "ontology": ontology_metadata,
             "terms": self._extract_terms(graph),
         }
 
-    def write_json(self, output_path: str | Path) -> Path:
+    def write_json(
+        self,
+        output_path: str | Path,
+        ontology_id: str | None = None,
+    ) -> Path:
         target = Path(output_path)
         target.write_text(
-            json.dumps(self.parse(), indent=2, ensure_ascii=False) + "\n",
+            json.dumps(
+                self.parse(ontology_id=ontology_id),
+                indent=2,
+                ensure_ascii=False,
+            )
+            + "\n",
             encoding="utf-8",
         )
         return target
@@ -67,6 +78,7 @@ class Owl2json:
         ontology = self._first_subject(graph, RDF.type, OWL.Ontology)
         if ontology is None:
             return {
+                "id": None,
                 "iri": None,
                 "version_iri": None,
                 "title": None,
@@ -76,6 +88,7 @@ class Owl2json:
             }
 
         return {
+            "id": None,
             "iri": str(ontology),
             "version_iri": self._first_resource(graph, ontology, OWL.versionIRI),
             "title": self._first_literal(graph, ontology, DC.title)

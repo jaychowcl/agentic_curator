@@ -235,7 +235,7 @@ class OntoStore:
         owl_path = self._target_path(name)
         json_path = self._json_target_path(name)
         if json_path.exists() and not force:
-            return json_path
+            return self._ensure_json_ontology_id(json_path, name)
 
         if force and self._is_url_framework(name):
             self._download_to_path(name, owl_path)
@@ -243,7 +243,7 @@ class OntoStore:
             owl_path = self.download(name)
 
         json_path.parent.mkdir(parents=True, exist_ok=True)
-        return Owl2json(owl_path).write_json(json_path)
+        return Owl2json(owl_path).write_json(json_path, ontology_id=name)
 
     def lookup(self, label: str, ontology_id: str) -> Any:
         json_path = self.get(ontology_id)
@@ -255,9 +255,35 @@ class OntoStore:
         for index_name in ("label", "id", "accession", "iri"):
             index = terms.get(index_name, {})
             if isinstance(index, dict) and label in index:
-                return index[label]
+                return self._metadata_with_ontology_id(index[label], ontology_id)
 
         return False
+
+    def _ensure_json_ontology_id(self, json_path: Path, ontology_id: str) -> Path:
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+        ontology = payload.get("ontology")
+        if not isinstance(ontology, dict):
+            payload["ontology"] = {"id": ontology_id}
+        elif ontology.get("id") == ontology_id:
+            return json_path
+        else:
+            ontology["id"] = ontology_id
+
+        json_path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        return json_path
+
+    def _metadata_with_ontology_id(self, metadata: Any, ontology_id: str) -> Any:
+        if isinstance(metadata, list):
+            return [
+                self._metadata_with_ontology_id(item, ontology_id)
+                for item in metadata
+            ]
+        if isinstance(metadata, dict):
+            return {**metadata, "ontology_id": ontology_id}
+        return metadata
 
     def download(self, name: str) -> Path:
         target = self._target_path(name)

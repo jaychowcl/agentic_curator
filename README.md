@@ -346,7 +346,8 @@ currently returns:
 }
 ```
 
-It does not call `LLM`, prompt files, provider SDKs, or ontology parsers yet.
+It does not call `LLM`, prompt files, or provider SDKs. It uses the injected
+`OntoStore` for ontology lookup when targets are available.
 
 `OntoStore` manages ontology framework configuration for downloadable URLs and
 local OWL paths.
@@ -392,11 +393,17 @@ local `owl_path`.
 
 `get(name, force=False)` is the ontology-serving entrypoint. It returns a JSON
 `Path` from `store.ontology_frameworks[name]["json_path"]` after parsing the
-local `.owl` with `Owl2json`. If the JSON already exists, `get()` returns it
-without reparsing. If a URL-backed `.owl` is missing, `get()` downloads it
-first. Use `get(name, force=True)` to redownload URL-backed ontologies and
-overwrite the parsed JSON, or to reparse path-backed ontologies without network
-I/O.
+local `.owl` with `Owl2json`. Parsed JSON stores the framework ID at
+`ontology["id"]`. If the JSON already exists, `get()` returns it without
+reparsing and repairs a missing or stale `ontology["id"]` in place. If a
+URL-backed `.owl` is missing, `get()` downloads it first. Use
+`get(name, force=True)` to redownload URL-backed ontologies and overwrite the
+parsed JSON, or to reparse path-backed ontologies without network I/O.
+
+`lookup(label, ontology_id)` calls `get(ontology_id)`, searches the parsed
+`label`, `id`, `accession`, and `iri` term indexes, and returns matched term
+metadata with `ontology_id` added to each returned term dictionary. Label
+matches can return a list because labels are not guaranteed unique.
 
 ### Code flow
 
@@ -645,12 +652,18 @@ class OntoStore:
         owl_path = ontology_frameworks[name]["owl_path"]
         json_path = ontology_frameworks[name]["json_path"]
         if json_path.exists() and not force:
+            repair cached ontology["id"] if needed
             return json_path
         if force and framework uses url:
             download_to_path(name, owl_path)
         elif not owl_path.exists():
             owl_path = download(name)
-        return Owl2json(owl_path).write_json(json_path)
+        return Owl2json(owl_path).write_json(json_path, ontology_id=name)
+
+    def lookup(label, ontology_id):
+        json_path = get(ontology_id)
+        search terms["label"], terms["id"], terms["accession"], terms["iri"]
+        return matched metadata with ontology_id added, or False
 
     def download(name):
         target = ontology_frameworks[name]["owl_path"]

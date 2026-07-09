@@ -75,6 +75,7 @@ def test_owl2json_extracts_ontology_metadata_and_terms(tmp_path: Path) -> None:
     result = Owl2json(write_fixture(tmp_path)).parse()
 
     assert result["ontology"] == {
+        "id": None,
         "iri": "http://purl.obolibrary.org/obo/test.owl",
         "version_iri": "http://purl.obolibrary.org/obo/test/releases/2026-01-01/test.owl",
         "title": "Test Ontology",
@@ -114,6 +115,12 @@ def test_owl2json_extracts_ontology_metadata_and_terms(tmp_path: Path) -> None:
     ]
 
 
+def test_owl2json_parse_accepts_ontology_id(tmp_path: Path) -> None:
+    result = Owl2json(write_fixture(tmp_path)).parse(ontology_id="test")
+
+    assert result["ontology"]["id"] == "test"
+
+
 def test_owl2json_derives_accession_from_obo_iri(tmp_path: Path) -> None:
     result = Owl2json(write_fixture(tmp_path)).parse()
 
@@ -149,8 +156,9 @@ def test_owl2json_write_json_writes_deterministic_json(tmp_path: Path) -> None:
     parser = Owl2json(write_fixture(tmp_path))
     output_path = tmp_path / "test.json"
 
-    result_path = parser.write_json(output_path)
+    result_path = parser.write_json(output_path, ontology_id="test")
 
     assert result_path == output_path
     assert output_path.read_text(encoding="utf-8").startswith('{\n  "ontology":')
+    assert '"id": "test"' in output_path.read_text(encoding="utf-8")
     assert '"accession": "TEST:0001"' in output_path.read_text(encoding="utf-8")

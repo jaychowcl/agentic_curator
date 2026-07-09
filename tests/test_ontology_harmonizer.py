@@ -575,6 +575,7 @@ def test_get_downloads_missing_ontology_and_returns_path(
     assert result == tmp_path / "jsons" / "cl.json"
     assert (tmp_path / "cl.owl").read_bytes() == ontology_bytes()
     assert '"CL:0000000"' in result.read_text(encoding="utf-8")
+    assert '"id": "CL"' in result.read_text(encoding="utf-8")
     assert store.ontology_frameworks["CL"]["owl_path"] == tmp_path / "cl.owl"
     assert store.ontology_frameworks["CL"]["json_path"] == tmp_path / "jsons" / "cl.json"
     assert calls == [{"url": "https://example.org/cl.owl", "timeout": 30}]
@@ -606,7 +607,10 @@ def test_get_returns_existing_json_without_calling_download(tmp_path: Path) -> N
     existing.write_bytes(b"invalid existing ontology")
     existing_json = tmp_path / "jsons" / "cl.json"
     existing_json.parent.mkdir(parents=True)
-    existing_json.write_text('{"cached": true}\n', encoding="utf-8")
+    existing_json.write_text(
+        '{"cached": true, "ontology": {"title": "cached ontology"}}\n',
+        encoding="utf-8",
+    )
 
     class DownloadFailingStore(OntoStore):
         def download(self, name: str) -> Path:
@@ -620,8 +624,34 @@ def test_get_returns_existing_json_without_calling_download(tmp_path: Path) -> N
     result = store.get("CL")
 
     assert result == existing_json
-    assert result.read_text(encoding="utf-8") == '{"cached": true}\n'
+    assert json.loads(result.read_text(encoding="utf-8")) == {
+        "cached": True,
+        "ontology": {"title": "cached ontology", "id": "CL"},
+    }
     assert store.ontology_frameworks["CL"]["json_path"] == existing_json
+
+
+def test_get_updates_stale_existing_json_ontology_id(tmp_path: Path) -> None:
+    existing = tmp_path / "cl.owl"
+    existing.write_bytes(b"invalid existing ontology")
+    existing_json = tmp_path / "jsons" / "cl.json"
+    existing_json.parent.mkdir(parents=True)
+    existing_json.write_text(
+        '{"ontology": {"id": "old", "title": "cached ontology"}, "terms": {}}\n',
+        encoding="utf-8",
+    )
+    store = OntoStore(
+        ontology_frameworks={"CL": {"url": "https://example.org/cl.owl"}},
+        storage_dir=tmp_path,
+    )
+
+    result = store.get("CL")
+
+    assert result == existing_json
+    assert json.loads(result.read_text(encoding="utf-8"))["ontology"] == {
+        "id": "CL",
+        "title": "cached ontology",
+    }
 
 
 def test_get_force_redownloads_and_reparses_existing_files(
@@ -754,7 +784,7 @@ def test_lookup_matches_label_index(tmp_path: Path) -> None:
         storage_dir=tmp_path,
     )
 
-    assert store.lookup("lung", "uberon") == [term]
+    assert store.lookup("lung", "uberon") == [{**term, "ontology_id": "uberon"}]
 
 
 def test_lookup_matches_id_accession_and_iri_indexes(tmp_path: Path) -> None:
@@ -786,11 +816,17 @@ def test_lookup_matches_id_accession_and_iri_indexes(tmp_path: Path) -> None:
         storage_dir=tmp_path,
     )
 
-    assert store.lookup("CUSTOM:1", "lookup") == id_term
-    assert store.lookup("UBERON:0002048", "lookup") == accession_term
+    assert store.lookup("CUSTOM:1", "lookup") == {
+        **id_term,
+        "ontology_id": "lookup",
+    }
+    assert store.lookup("UBERON:0002048", "lookup") == {
+        **accession_term,
+        "ontology_id": "lookup",
+    }
     assert (
         store.lookup("http://purl.obolibrary.org/obo/UBERON_0002048", "lookup")
-        == accession_term
+        == {**accession_term, "ontology_id": "lookup"}
     )
 
 
@@ -830,9 +866,10 @@ def test_assign_onto_framework_matches_available_store_framework(
         strategy="identity",
     )
 
-    assert result == [term]
+    expected_lookup = [{**term, "ontology_id": "uberon"}]
+    assert result == expected_lookup
     assert target["ontology_id"] == "uberon"
-    assert target["ontology_lookup"] == [term]
+    assert target["ontology_lookup"] == expected_lookup
     assert target["ontology_match"] is True
 
 
@@ -902,7 +939,7 @@ def test_harmonize_assigns_ontology_metadata_from_store(tmp_path: Path) -> None:
     target = result["harmonization_targets"][0]
     assert target["ontology_match"] is True
     assert target["ontology_id"] == "uberon"
-    assert target["ontology_lookup"] == [term]
+    assert target["ontology_lookup"] == [{**term, "ontology_id": "uberon"}]
 
 
 def miniml_metadata() -> dict:

@@ -198,16 +198,17 @@ a framework mapping with the same supported fields. `configure_framework(...)`
 is the lower-level add/replace/remove API. Removal deletes the framework entry.
 `OntoStore.get(name, force=False)` is the ontology-serving entrypoint. It
 returns the parsed JSON `Path` stored in `ontology_frameworks[name]["json_path"]`,
-reusing existing JSON unless `force=True`. When JSON is missing for a URL-backed
-framework, it parses the configured `owl_path` if present or downloads the
-`.owl` there first. With `force=True`, URL-backed frameworks redownload the
-`.owl` before reparsing, and path-backed frameworks reparse the configured local
-`owl_path` without network I/O.
+reusing existing JSON unless `force=True`. Existing JSON is repaired in place
+when `ontology["id"]` is missing or does not match the requested framework name.
+When JSON is missing for a URL-backed framework, it parses the configured
+`owl_path` if present or downloads the `.owl` there first. With `force=True`,
+URL-backed frameworks redownload the `.owl` before reparsing, and path-backed
+frameworks reparse the configured local `owl_path` without network I/O.
 `OntoStore.lookup(label, ontology_id)` calls `get(ontology_id)`, loads the JSON
 from the configured `json_path`, and searches `terms["label"]`, `terms["id"]`,
-`terms["accession"]`, and `terms["iri"]` in that order. It returns the matched
-metadata value from the index, which may be a list for label matches, or `False`
-when no index contains the label.
+`terms["accession"]`, and `terms["iri"]` in that order. It returns a matched
+metadata dict, or a list for label matches, with `ontology_id` added to each
+term dict. It returns `False` when no index contains the label.
 `OntoStore.download(name)` downloads only URL-backed frameworks with
 `requests.get(url, timeout=30)`, calls `raise_for_status()`, and returns the
 configured `owl_path`. Path-backed frameworks validate and return the configured
@@ -217,17 +218,18 @@ When no explicit path is supplied, URL-backed `.owl` files are saved under
 `src/agentic_curator/curators/ontology_harmonizer/ontology_frameworks/` using
 the URL basename, and parsed JSON files are saved under the sibling `jsons/`
 directory within `storage_dir`. The default storage directory is ignored by
-git. Existing downloaded files are skipped by `download()` and existing JSON is
-skipped by `get()` unless `force=True`. Unknown framework names raise
-`KeyError`; missing or invalid URLs or paths raise `ValueError`, and missing
-local path files raise `FileNotFoundError`.
+git. Existing downloaded files are skipped by `download()`, and existing JSON is
+reused by `get()` after `ontology["id"]` repair unless `force=True`. Unknown
+framework names raise `KeyError`; missing or invalid URLs or paths raise
+`ValueError`, and missing local path files raise `FileNotFoundError`.
 
 `Owl2json(owl_path)` accepts a local `.owl` path and uses RDFLib to parse it as
-RDF/XML. `parse()` returns:
+RDF/XML. `parse(ontology_id=None)` returns:
 
 ```python
 {
     "ontology": {
+        "id": "chebi",
         "iri": "...",
         "version_iri": "...",
         "title": "...",
@@ -267,10 +269,11 @@ parents from URI-valued `rdfs:subClassOf`, synonyms and xrefs from common
 by accession, IRI, and label. Label values are lists because labels are not
 guaranteed unique. Terms without accessions or labels are omitted from those
 specific indexes but remain available by IRI. Unmapped literal annotations are
-preserved in `properties` by predicate IRI. `write_json(output_path)` writes
-deterministic pretty JSON and returns the output path. HTML-like files, such as
-a bad `.owl` download that starts with `<!DOCTYPE html>` or `<html`, and RDFLib
-parse failures raise `Owl2jsonParseError`.
+preserved in `properties` by predicate IRI.
+`write_json(output_path, ontology_id=None)` writes deterministic pretty JSON and
+returns the output path. HTML-like files, such as a bad `.owl` download that
+starts with `<!DOCTYPE html>` or `<html`, and RDFLib parse failures raise
+`Owl2jsonParseError`.
 
 `HarmonizationTargetExtractor` lives in
 `ontology_harmonizer/harmonization_target_extractor.py` and performs target
@@ -834,7 +837,7 @@ def get(name, force=False):
     owl_path = self._target_path(name)
     json_path = self._json_target_path(name)
     if json_path.exists() and not force:
-        return json_path
+        return self._ensure_json_ontology_id(json_path, name)
 
     if force and self._is_url_framework(name):
         self._download_to_path(name, owl_path)
@@ -842,7 +845,7 @@ def get(name, force=False):
         owl_path = self.download(name)
 
     json_path.parent.mkdir(parents=True, exist_ok=True)
-    return Owl2json(owl_path).write_json(json_path)
+    return Owl2json(owl_path).write_json(json_path, ontology_id=name)
 
 def lookup(label, ontology_id):
     json_path = self.get(ontology_id)
@@ -851,7 +854,7 @@ def lookup(label, ontology_id):
     for index_name in ("label", "id", "accession", "iri"):
         index = terms.get(index_name, {})
         if index is dict and label in index:
-            return index[label]
+            return matched metadata with ontology_id added to each term dict
     return False
 
 def download(name):
@@ -889,7 +892,9 @@ Internal calls from `get()`:
   validates a path-backed framework.
 - `_download_to_path(name, owl_path)`: redownloads and overwrites the `.owl`
   when `force=True` for URL-backed frameworks.
-- `Owl2json(owl_path).write_json(json_path)`: parses the `.owl` into JSON.
+- `_ensure_json_ontology_id(json_path, name)`: repairs cached JSON metadata.
+- `Owl2json(owl_path).write_json(json_path, ontology_id=name)`: parses the
+  `.owl` into JSON with `ontology["id"]`.
 
 Internal calls from `download()`:
 
@@ -912,16 +917,18 @@ class Owl2json:
     def __init__(owl_path):
         self.owl_path = Path(owl_path)
 
-    def parse():
+    def parse(ontology_id=None):
         self._validate_rdf_xml_candidate()
         graph = self._parse_graph()
         return {
-            "ontology": self._extract_ontology_metadata(graph),
+            "ontology": self._extract_ontology_metadata(graph) plus {"id": ontology_id},
             "terms": self._extract_terms(graph),
         }
 
-    def write_json(output_path):
-        output_path.write_text(json.dumps(self.parse(), indent=2) + "\n")
+    def write_json(output_path, ontology_id=None):
+        output_path.write_text(
+            json.dumps(self.parse(ontology_id=ontology_id), indent=2) + "\n"
+        )
         return output_path
 ```
 
