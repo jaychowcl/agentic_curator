@@ -29,11 +29,6 @@ class PlaceholderStrategyHandler:
         return result
 
 
-class DirectStrategyHandler(PlaceholderStrategyHandler):
-    strategy = "direct"
-    reason = "Direct ontology harmonization is not implemented yet."
-
-
 class WebsearchStrategyHandler(PlaceholderStrategyHandler):
     strategy = "websearch"
     reason = "Websearch ontology harmonization is not implemented yet."

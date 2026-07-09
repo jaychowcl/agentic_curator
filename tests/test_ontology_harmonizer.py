@@ -9,7 +9,6 @@ from agentic_curator import OntologyHarmonizer as RootOntologyHarmonizer
 from agentic_curator.curators.ontology_harmonizer import ontology_store
 from agentic_curator.curators import OntologyHarmonizer
 from agentic_curator.curators.ontology_harmonizer import (
-    DirectStrategyHandler,
     HarmonizationTargetExtractor,
     OntoStore,
     OntologyHarmonizer as SubpackageOntologyHarmonizer,
@@ -179,7 +178,6 @@ def test_ontostore_can_be_imported_from_subpackage() -> None:
 
 
 def test_strategy_handlers_can_be_imported_from_subpackage() -> None:
-    assert DirectStrategyHandler.__name__ == "DirectStrategyHandler"
     assert WebsearchStrategyHandler.__name__ == "WebsearchStrategyHandler"
     assert RagStrategyHandler.__name__ == "RagStrategyHandler"
 
@@ -1233,7 +1231,7 @@ def test_harmonize_returns_targets_wrapper() -> None:
     assert result == {
         "publication_context": "Full publication context",
         "harmonization_targets": harmonization_targets,
-        "strategy": "direct",
+        "strategy": "identity",
         "target_paths": ["/sample"],
     }
 
@@ -1251,7 +1249,7 @@ def test_harmonize_accepts_single_target() -> None:
     assert result == {
         "publication_context": None,
         "harmonization_targets": [target],
-        "strategy": "direct",
+        "strategy": "identity",
         "target_paths": None,
     }
 
@@ -1277,28 +1275,25 @@ def test_harmonize_rejects_target_and_targets_together() -> None:
         )
 
 
-def test_harmonize_accepts_noop_strategy_alias_as_direct() -> None:
+def test_harmonize_accepts_noop_strategy_alias_as_identity() -> None:
     result = OntologyHarmonizer().harmonize(
         harmonization_targets=[],
         strategy="noop",
     )
 
-    assert result["strategy"] == "direct"
+    assert result["strategy"] == "identity"
 
 
-def test_harmonize_accepts_identity_strategy_alias_as_direct() -> None:
+def test_harmonize_accepts_identity_strategy() -> None:
     result = OntologyHarmonizer().harmonize(
         harmonization_targets=[],
         strategy="identity",
     )
 
-    assert result["strategy"] == "direct"
+    assert result["strategy"] == "identity"
 
 
-def test_harmonize_accepts_direct_websearch_and_rag_strategies() -> None:
-    assert OntologyHarmonizer().harmonize(harmonization_targets=[], strategy="direct")[
-        "strategy"
-    ] == "direct"
+def test_harmonize_accepts_websearch_and_rag_strategies() -> None:
     assert OntologyHarmonizer().harmonize(
         harmonization_targets=[], strategy="websearch"
     )["strategy"] == "websearch"
@@ -1310,6 +1305,11 @@ def test_harmonize_accepts_direct_websearch_and_rag_strategies() -> None:
 def test_harmonize_rejects_unknown_strategy() -> None:
     with pytest.raises(ValueError, match="strategy"):
         OntologyHarmonizer().harmonize(strategy="exact_match")
+
+
+def test_harmonize_rejects_direct_strategy() -> None:
+    with pytest.raises(ValueError, match="strategy"):
+        OntologyHarmonizer().harmonize(strategy="direct")
 
 
 def test_harmonize_signature_excludes_old_metadata_api() -> None:
@@ -1327,7 +1327,7 @@ def test_harmonize_defaults_to_empty_targets() -> None:
     assert result == {
         "publication_context": None,
         "harmonization_targets": [],
-        "strategy": "direct",
+        "strategy": "identity",
         "target_paths": None,
     }
 
@@ -1382,7 +1382,7 @@ def test_harmonize_accepts_ontostore_override() -> None:
     assert result == {
         "publication_context": None,
         "harmonization_targets": [],
-        "strategy": "direct",
+        "strategy": "identity",
         "target_paths": None,
     }
 
@@ -1467,7 +1467,7 @@ def test_harmonize_calls_lookup_label_before_assign_onto_framework() -> None:
     )
 
     assert calls == [
-        ("lookup", "target-0", "context", "direct"),
+        ("lookup", "target-0", "context", "identity"),
         ("assign", "target-0", "context"),
     ]
 
@@ -1619,7 +1619,6 @@ def test_harmonize_routes_failed_lookup_to_strategy_handler() -> None:
 
 def test_harmonize_placeholder_strategy_handlers_mutate_target() -> None:
     for strategy, reason in [
-        ("direct", "Direct ontology harmonization is not implemented yet."),
         ("websearch", "Websearch ontology harmonization is not implemented yet."),
         ("rag", "RAG ontology harmonization is not implemented yet."),
     ]:
@@ -1636,6 +1635,17 @@ def test_harmonize_placeholder_strategy_handlers_mutate_target() -> None:
             "status": "placeholder",
             "reason": reason,
         }
+
+
+def test_harmonize_identity_assignment_does_not_route_to_strategy_handler() -> None:
+    target = {"id": "target-identity", "pre_hz_label": "lung"}
+
+    result = OntologyHarmonizer(llm=FakeLLM()).harmonize(target=target)
+
+    assert result["strategy"] == "identity"
+    assert target["ontology_match"] is False
+    assert "ontology_framework_assignment" in target
+    assert "ontology_strategy_result" not in target
 
 
 def test_harmonize_skips_strategy_handler_when_lookup_label_succeeds() -> None:
@@ -1891,14 +1901,9 @@ def test_harmonize_miniml_json_accepts_explicit_target_paths() -> None:
                     "confidence": "low",
                     "reason": "No clear framework match.",
                 },
-                "ontology_strategy_result": {
-                    "strategy": "direct",
-                    "status": "placeholder",
-                    "reason": "Direct ontology harmonization is not implemented yet.",
-                },
             }
         ],
-        "strategy": "direct",
+        "strategy": "identity",
         "target_paths": ["/sample"],
     }
 
@@ -2103,7 +2108,7 @@ def test_harmonize_accepts_target_paths() -> None:
     assert result == {
         "publication_context": None,
         "harmonization_targets": [],
-        "strategy": "direct",
+        "strategy": "identity",
         "target_paths": [],
     }
 

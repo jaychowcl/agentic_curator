@@ -133,7 +133,7 @@ The lower-level `harmonize(...)` returns a target wrapper:
 {
     "publication_context": publication_context,
     "harmonization_targets": normalized_targets,
-    "strategy": "direct",
+    "strategy": "identity",
     "target_paths": target_paths,
 }
 ```
@@ -142,9 +142,9 @@ The lower-level `harmonize(...)` returns a target wrapper:
 dictionary, list, or `None`, `harmonization_targets` may be a list of extracted
 target dictionaries, a single target dictionary, or `None`, and `target` may be
 a single target dictionary. Passing both `target` and `harmonization_targets`
-raises `ValueError`. Canonical strategies are `direct`, `websearch`, and `rag`;
-`identity` and `noop` are compatibility aliases for `direct`. A per-call
-`ontostore` override must be an `OntoStore`.
+raises `ValueError`. Supported strategies are `identity`, `websearch`, and
+`rag`; `noop` is a compatibility alias for `identity`. A per-call `ontostore`
+override must be an `OntoStore`.
 `harmonize(...)` calls `lookup_label(...)` once for each normalized target. On a
 match, `lookup_label(...)` mutates the target with `ontology_match=True`,
 `ontology_id`, and `ontology_lookup` from `OntoStore.lookup(...)`. Before
@@ -160,9 +160,9 @@ the target, publication context, and candidate ontology framework config, parses
 JSON with `decision`, `confidence`, and `reason`, stores it at
 `ontology_framework_assignment`, and sets `ontology_id` when `decision` is a
 configured framework ID. After assignment, `harmonize(...)` calls
-`harmonize_with_strategy(...)`, which routes to the selected placeholder
-strategy handler and stores `ontology_strategy_result` with `strategy`,
-`status="placeholder"`, and `reason`.
+`harmonize_with_strategy(...)` only for `websearch` and `rag`; those placeholder
+handlers store `ontology_strategy_result` with `strategy`, `status="placeholder"`,
+and `reason`. The default `identity` strategy does not call a handler.
 
 `OntologyHarmonizer(ontostore=None, llm=None)` creates a default `OntoStore`
 when no store is supplied and lazily creates `LLM()` only when framework

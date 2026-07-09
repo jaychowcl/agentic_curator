@@ -12,7 +12,6 @@ from agentic_curator.curators.ontology_harmonizer.harmonization_target_extractor
 )
 from agentic_curator.curators.ontology_harmonizer.ontology_store import OntoStore
 from agentic_curator.curators.ontology_harmonizer.strategy_handlers import (
-    DirectStrategyHandler,
     RagStrategyHandler,
     WebsearchStrategyHandler,
 )
@@ -27,14 +26,12 @@ class OntologyHarmonizer:
 
     DEFAULT_TARGET_PATHS = HarmonizationTargetExtractor.DEFAULT_TARGET_PATHS
     STRATEGY_ALIASES = {
-        "direct": "direct",
-        "identity": "direct",
-        "noop": "direct",
+        "identity": "identity",
+        "noop": "identity",
         "rag": "rag",
         "websearch": "websearch",
     }
     STRATEGY_HANDLERS = {
-        "direct": DirectStrategyHandler,
         "rag": RagStrategyHandler,
         "websearch": WebsearchStrategyHandler,
     }
@@ -77,12 +74,13 @@ class OntologyHarmonizer:
                     publication_context=publication_context,
                     ontostore=effective_ontostore,
                 )
-                self.harmonize_with_strategy(
-                    normalized_target,
-                    publication_context=publication_context,
-                    ontostore=effective_ontostore,
-                    strategy=normalized_strategy,
-                )
+                if normalized_strategy in self.STRATEGY_HANDLERS:
+                    self.harmonize_with_strategy(
+                        normalized_target,
+                        publication_context=publication_context,
+                        ontostore=effective_ontostore,
+                        strategy=normalized_strategy,
+                    )
 
         return {
             "publication_context": publication_context,
