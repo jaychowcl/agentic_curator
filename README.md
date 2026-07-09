@@ -1,57 +1,52 @@
 # agentic-curator
 
-LLM-assisted thematic relevance review and ontology metadata utilities for life science publications.
+LLM-assisted thematic relevance review and ontology metadata harmonization for life science publications.
 
 ## Description
 
-`agentic-curator` helps review publication text against a thematic curation
-target. Its main reviewer extracts evidence statements from publication content,
-then judges whether those evidences satisfy the requested theme.
+`agentic-curator` provides small curator workflows for publication metadata and
+text. The current package includes:
 
-The package also includes ontology metadata utilities:
-
-- `OntologyHarmonizer` is a metadata harmonization API scaffold that currently
-  normalizes metadata targets, looks up ontology terms, and assigns an ontology
-  framework with an LLM when lookup fails.
-- `OntoStore` stores OLS4-sourced ontology framework metadata and downloads
-  configured ontology URLs.
-- `LLM` routes generation calls to Gemini Enterprise or Claude on Vertex AI.
-
-The reviewer asks model providers for JSON-formatted responses and returns
-parsed JSON objects or arrays.
+- A thematic reviewer that extracts evidence from publication text and judges
+  relevance to a curation theme.
+- Ontology utilities that download OWL frameworks, convert them to JSON lookup
+  indexes, and harmonize metadata labels against configured ontology terms.
+- An LLM facade for Gemini Enterprise and Claude on Vertex AI, including a
+  metadata-returning generation API for tool/citation-aware workflows.
 
 ## Installation
 
-Install from the repository in editable mode:
-
-```bash
-python -m pip install -e ".[dev]"
-```
-
-For normal package use without test tools:
+Install the package from this repository:
 
 ```bash
 python -m pip install -e .
+```
+
+Install development tools as well:
+
+```bash
+python -m pip install -e ".[dev]"
 ```
 
 ### Requirements
 
 - Python `>=3.10`
 - Runtime dependencies:
-  - `google-genai>=1.72,<2`
   - `anthropic[vertex]>=0.107,<1`
+  - `google-genai>=1.72,<2`
+  - `rdflib>=7,<8`
   - `requests>=2,<3`
 - Development dependency:
   - `pytest>=8`
-- Provider credentials and project configuration for live Gemini or Claude
-  Vertex AI calls.
+- Live LLM calls require provider credentials and project configuration for
+  Gemini Enterprise or Claude on Vertex AI.
 
 ## Quickstart
 
-### Python
+### Python Thematic Review
 
-Use `ThematicReviewer` for the two-step evidence and judgement workflow. See
-the [Python API guide](#python-api-guide) for all options.
+Use `ThematicReviewer` for the evidence extraction and judgement workflow. See
+the [thematic reviewer guide](#thematic-reviewer) for all options.
 
 ```python
 from agentic_curator import ThematicReviewer
@@ -61,17 +56,17 @@ result = reviewer.review_relevancy(
     publication_text="Full publication text",
     theme="fibrosis",
     metadata={"organism": "human", "tissue": "lung"},
-    title="Fibrosis atlas publication",
+    title="Publication title",
 )
 
 print(result["evidences"])
 print(result["judgement"])
 ```
 
-### CLI
+### CLI Thematic Review
 
-Run the installed console script. See the [CLI guide](#cli-guide) for all
-arguments.
+Use the installed console script for the same reviewer workflow. See the
+[CLI guide](#cli-guide) for all arguments.
 
 ```bash
 cli_thematic_reviewer \
@@ -82,17 +77,36 @@ cli_thematic_reviewer \
   --out decision.json
 ```
 
-### Ontology Utilities
+### Python Ontology Utilities
 
-Use `OntoStore` to inspect or download configured ontology frameworks. See the
-[ontology guide](#ontology-guide) for defaults and download behavior.
+Use `OntoStore` to download and parse a configured ontology framework. See the
+[ontology guide](#ontology-guide) for lookup and harmonization options.
 
 ```python
 from agentic_curator.curators.ontology_harmonizer import OntoStore
 
 store = OntoStore()
-path = store.download("efo")
-print(path)
+json_path = store.get("efo")
+hits = store.lookup("lung", "efo")
+
+print(json_path)
+print(hits[:1])
+```
+
+### Python LLM Facade
+
+Use `LLM` directly when you need provider-routed text or metadata responses.
+See the [LLM guide](#llm-facade) for platform options.
+
+```python
+from agentic_curator.wrappers import LLM
+
+llm = LLM(platform="gemini_enterprise", project="my-project", location="global")
+text = llm.generate_response("Summarize this publication.")
+metadata = llm.generate_response_with_metadata(
+    "Find supporting ontology pages for lung.",
+    tools=[{"type": "google_search"}],
+)
 ```
 
 ### Docker
@@ -102,771 +116,299 @@ interface.
 
 ### Inputs & Outputs
 
-Reviewer inputs:
+The thematic reviewer accepts publication text, a curation theme, optional
+metadata, and an optional title. Python callers may pass metadata as a string,
+dictionary, list, or `None`; the CLI reads metadata as text.
 
-- `publication_text`: full text or extracted publication content.
-- `theme`: curation target or criteria.
-- `metadata`: optional string, dictionary, list, or `None`.
-- `title`: optional publication title.
-
-Reviewer output:
+The reviewer returns parsed JSON:
 
 ```python
 {
     "evidences": {"evidences": [...]},
-    "judgement": {"judgement": "relevant", "reasoning": "...", "confidence": "high"},
+    "judgement": {
+        "judgement": "relevant",
+        "reasoning": "...",
+        "confidence": "high",
+    },
 }
 ```
 
-CLI output is the same reviewer result serialized as pretty-printed JSON. If
-`--out` is supplied, JSON is written to that file; otherwise it is written to
-stdout.
-
-Ontology harmonizer output wraps extracted harmonization targets after lookup or
-framework assignment:
+Ontology harmonization accepts one target, many targets, or MINiML-style JSON.
+It returns the publication context, harmonized targets, selected strategy, and
+target paths. `harmonize_miniml_json(...)` also returns the mutated
+`miniml_json` with harmonized alternatives applied at each occurrence.
 
 ```python
 {
-    "publication_context": publication_context,
-    "harmonization_targets": harmonization_targets,
+    "publication_context": "...",
+    "harmonization_targets": [...],
     "strategy": "websearch",
-    "target_paths": target_paths,
+    "target_paths": [...],
+    "miniml_json": {...},
 }
 ```
 
 ## Guide
 
-### Python API Guide
+### Thematic Reviewer
 
-The main APIs are exported from both `agentic_curator` and
-`agentic_curator.curators`.
+Import the reviewer from either `agentic_curator` or `agentic_curator.curators`:
 
 ```python
-from agentic_curator import OntologyHarmonizer, ThematicReviewer
-from agentic_curator.curators.ontology_harmonizer import OntoStore
-from agentic_curator.wrappers import LLM
+from agentic_curator import ThematicReviewer
 ```
-
-#### Thematic Reviewer
 
 `ThematicReviewer(llm=None)` accepts an optional LLM-like object with a
-`generate_response(...)` method. If no object is provided, the reviewer lazily
-creates `LLM()` on the first generation call.
+`generate_response(...)` method. If none is supplied, it lazily creates
+`agentic_curator.wrappers.LLM()` when the first generation call is made.
 
-| Method | Inputs | Output | Notes |
-| --- | --- | --- | --- |
-| `review_relevancy(publication_text=None, theme=None, metadata=None, title=None)` | Publication text, theme, metadata, title. | `{"evidences": dict/list, "judgement": dict/list}` | Runs evidence extraction, parses JSON, then final judging. |
-| `extract_evidence(publication_text=None, theme=None, metadata=None, title=None)` | Publication text, theme, metadata, title. | Parsed JSON object or array. | Loads `evidence_extraction.md` and requests JSON with an `evidences` array. |
-| `judge_evidence(evidences, theme=None, title=None)` | Evidence text/object, theme, title. | Parsed JSON object or array. | Loads `judge_evidence.md` and requests JSON with `judgement`, `reasoning`, and `confidence`. |
+Public methods:
 
-Dictionary and list metadata are inserted into prompts as sorted, indented JSON.
-`None` values become empty prompt blocks. Dict/list LLM responses pass through;
-JSON text responses are parsed with `json.loads(...)`; invalid JSON text raises
+| Method | Purpose | Output |
+| --- | --- | --- |
+| `review_relevancy(publication_text=None, theme=None, metadata=None, title=None)` | Runs evidence extraction, then evidence judgement. | `{"evidences": ..., "judgement": ...}` |
+| `extract_evidence(publication_text=None, theme=None, metadata=None, title=None)` | Builds the evidence prompt and requests JSON evidence. | Parsed dict or list |
+| `judge_evidence(evidences, theme=None, title=None)` | Builds the judgement prompt from evidence and requests JSON judgement. | Parsed dict or list |
+
+The reviewer loads packaged Markdown prompts from
+`curators/thematic_reviewer/prompts/`. Dict and list values are rendered into
+prompts as sorted, indented JSON. Invalid JSON text returned by the LLM raises
 `ValueError`.
-
-#### LLM Facade
-
-`LLM(platform="gemini_enterprise", **platform_options)` creates a provider
-facade. Supported platforms are:
-
-- `gemini_enterprise`
-- `claude_vertex`
-
-```python
-from agentic_curator.wrappers import LLM
-
-llm = LLM(
-    platform="gemini_enterprise",
-    project="my-gcp-project",
-    location="global",
-)
-
-text = llm.generate_response(
-    "Summarize this publication.",
-    model="gemini-2.5-flash",
-    config={"temperature": 0.2},
-)
-```
-
-`LLM.generate_response(prompt, model=None, config=None, tools=None,
-**extra_options)` delegates to the configured platform. If the model name starts
-with `claude-` and the current platform is not `claude_vertex`, the facade
-creates and caches a `ClaudeVertexPlatform` route using compatible platform
-options.
-
-#### Provider Adapters
-
-Gemini Enterprise:
-
-```python
-from agentic_curator.wrappers import GeminiEnterprisePlatform
-
-platform = GeminiEnterprisePlatform(
-    project="my-gcp-project",
-    location="global",
-    model="gemini-2.5-flash",
-    config={"temperature": 0.2},
-)
-text = platform.generate_response("Prompt text")
-```
-
-The Gemini adapter calls:
-
-```python
-client.models.generate_content(
-    model=effective_model,
-    contents=prompt,
-    config=generation_config,
-    tools=tools_if_any,
-    **extra_options,
-)
-```
-
-Claude Vertex:
-
-```python
-from agentic_curator.wrappers import ClaudeVertexPlatform
-
-platform = ClaudeVertexPlatform(
-    project="my-gcp-project",
-    location="global",
-    model="claude-opus-4-8",
-)
-text = platform.generate_response("Prompt text")
-```
-
-The Claude adapter calls:
-
-```python
-client.messages.create(
-    model=effective_model,
-    messages=[{"role": "user", "content": prompt}],
-    max_tokens=max_output_tokens,
-    temperature=temperature,
-    output_config=json_schema_config_if_any,
-    tools=tools_if_any,
-    **extra_options,
-)
-```
-
-Response adapters normalize provider-specific response shapes to a string. They
-look for Claude content blocks, Gemini candidate parts, `text`, `response`, and
-finally fall back to `str(response)`.
 
 ### CLI Guide
 
-The console script is installed from `pyproject.toml`:
+The installed command is `cli_thematic_reviewer`.
 
 ```bash
 cli_thematic_reviewer --help
 ```
 
-Equivalent module form:
+Arguments:
 
-```bash
-python -m agentic_curator.cli.cli_thematic_reviewer --help
-```
-
-Options:
-
-| Option | Description |
+| Argument | Description |
 | --- | --- |
-| `--publication-text` | Publication text supplied directly as a string. |
-| `--publication-text-file` | UTF-8 file containing publication text. Overrides `--publication-text`. |
-| `--theme` | Theme or curation criteria supplied directly as a string. |
-| `--theme-file` | UTF-8 file containing the theme. Overrides `--theme`. |
-| `--metadata` | Publication metadata supplied directly as a string. |
-| `--metadata-file` | UTF-8 file containing metadata text. Overrides `--metadata`; the CLI does not parse it as JSON. |
-| `--title` | Publication title supplied directly as a string. |
-| `--title-file` | UTF-8 file containing the title. Overrides `--title`. |
-| `--out` | Output file for pretty-printed JSON. If omitted, JSON is written to stdout. |
+| `--publication-text` | Publication text supplied directly. |
+| `--publication-text-file` | UTF-8 file containing publication text. Takes precedence over `--publication-text`. |
+| `--theme` | Theme supplied directly. |
+| `--theme-file` | UTF-8 file containing the theme. Takes precedence over `--theme`. |
+| `--metadata` | Metadata supplied directly as text. |
+| `--metadata-file` | UTF-8 file containing metadata text. Takes precedence over `--metadata`. |
+| `--title` | Title supplied directly. |
+| `--title-file` | UTF-8 file containing the title. Takes precedence over `--title`. |
+| `--out` | Output JSON file. If omitted, JSON is written to stdout. |
 
-File arguments take precedence over direct string arguments. Provider and
-runtime exceptions are not wrapped by the CLI. Stdout is reserved for JSON
-unless `--out` is used.
+The CLI passes all inputs to `ThematicReviewer.review_relevancy(...)` and writes
+pretty-printed JSON.
 
 ### Ontology Guide
 
-`OntologyHarmonizer(ontostore=None, llm=None)` accepts an optional `OntoStore`
-and optional LLM-like object. If omitted, it creates a default store and lazily
-creates `LLM()` only when framework assignment is needed. Custom ontology
-framework dictionaries should be passed to `OntoStore(...)`, then injected into
-the harmonizer.
+Import ontology helpers from the ontology harmonizer package:
+
+```python
+from agentic_curator import OntologyHarmonizer
+from agentic_curator.curators.ontology_harmonizer import OntoStore, Owl2json
+```
+
+`OntoStore(ontology_frameworks=None, fields=None, storage_dir=None)` stores
+ontology framework configuration and normalized field metadata. It ships with
+configured frameworks such as EFO, MONDO, UBERON, HP, CL, ChEBI, PATO, OBI,
+SNOMED, NCIT, and NCBITaxon.
+
+Common `OntoStore` methods:
+
+| Method | Purpose |
+| --- | --- |
+| `configure_framework(name, ..., remove=False)` | Add, replace, or remove one framework configuration. |
+| `add_url(name, url, ..., title=None, description=None)` | Add one URL-backed framework. |
+| `add_urls(ontology_frameworks)` | Add many framework configs. |
+| `download(name)` | Return an existing OWL path, or download URL-backed OWL to its configured path. |
+| `get(name, force=False)` | Ensure the ontology JSON exists and return its path. |
+| `lookup(label, ontology_id)` | Return all matching term metadata hits from label, id, accession, and IRI indexes. |
+| `lookup_fields(field)` | Match a field name against configured field labels and aliases. |
+| `harmonize_key(value)` | Lowercase, strip, and normalize lookup keys. |
+
+`OntologyHarmonizer(ontostore=None, llm=None)` uses an `OntoStore` for exact
+lookup and an injected or lazy `LLM` for assignment fallbacks.
+
+Common `OntologyHarmonizer` methods:
+
+| Method | Purpose |
+| --- | --- |
+| `harmonize(...)` | Harmonize one or more target dictionaries. |
+| `harmonize_miniml_json(...)` | Extract targets from MINiML-style JSON, harmonize them, then apply alternatives back to the JSON object. |
+| `lookup_label(...)` | Lookup `hz_label` against candidate ontology JSON indexes and mutate the target on match. |
+| `assign_onto_framework(...)` | Ask the LLM which configured framework should be used when lookup fails. |
+| `harmonize_field(...)` | Lookup or assign the harmonized metadata field. |
+| `harmonize_label(...)` | Route label harmonization to the selected strategy handler. |
+| `apply_targets(...)` | Add `hz_field`, `hz_label`, and alternatives back to MINiML occurrences. |
+
+Supported harmonization strategies are `websearch` and `rag`; the default is
+`websearch`. `rag` is currently a placeholder. The websearch handler searches
+OLS4 first with the assigned ontology restriction, then falls back to
+unrestricted OLS and an injected search client. The default search client is
+`NullSearchClient`, which performs no network search.
+
+Example:
 
 ```python
 from agentic_curator import OntologyHarmonizer
 from agentic_curator.curators.ontology_harmonizer import OntoStore
 
-harmonizer = OntologyHarmonizer(
-    ontostore=OntoStore(
-        ontology_frameworks={
-            "custom": {"url": "https://example.org/custom.owl"},
-        }
-    )
-)
-result = harmonizer.harmonize_miniml_json(
-    publication_context="Full publication text",
-    miniml_json={
-        "sample": [
-            {
-                "channel": [
-                    {
-                        "source": "Oral buccal mucosa",
-                        "organism": [{"taxid": "9606", "value": "Homo sapiens"}],
-                        "characteristics": [{"tag": "tissue", "value": "lung"}],
-                        "molecule": "total RNA",
-                    }
-                ]
-            }
-        ]
+store = OntoStore(fields={"organism": {"label": "organism"}})
+harmonizer = OntologyHarmonizer(ontostore=store)
+
+result = harmonizer.harmonize(
+    publication_context="Mouse lung fibrosis study.",
+    target={
+        "id": "target-1",
+        "pre_hz_field": "Organism",
+        "pre_hz_label": "Mus musculus",
+        "ontology_ids": ["ncbitaxon"],
     },
+    llm=False,
 )
-print(result)
 ```
 
-`harmonize_miniml_json(publication_context=None, miniml_json=None,
-ontostore=None, target_paths=None, strategy="websearch")` extracts targets from
-MINiML-style JSON, then calls the lower-level target-based `harmonize(...)`.
-When `target_paths` is omitted it builds paths for every
-`sample[*].channel[*]`, extracts meaningful sample metadata (`source`,
-`molecule`, `organism`, and `characteristics`), and dedupes by
-`pre_hz_field:pre_hz_label` while preserving every source path only in an
-`occurrences` list.
+### LLM Facade
 
-`harmonize(publication_context=None, harmonization_targets=None, target=None,
-strategy="websearch", ontostore=None, target_paths=None, lookup_llm_judge=False,
-lookup_llm_threshold=2, llm=True)` accepts either a list of targets, a single
-target dictionary via `target=`, or a single dictionary in
-`harmonization_targets`. Passing both `target` and `harmonization_targets`
-raises `ValueError`. Supported strategies are `websearch` and `rag`; the
-default strategy is `websearch`. Before returning,
-`harmonize(...)` calls
-`lookup_label(...)` once for each normalized target. The harmonizer first
-normalizes working `hz_field` and `hz_label` values from existing `hz_*` values
-or from `pre_hz_field` and `pre_hz_label`: lowercase, trim, strip edge
-punctuation, and collapse spaces to underscores. Occurrence-level `hz_field` and
-`hz_label` values are normalized the same way. If lookup succeeds, the target
-receives `ontology_match=True`, `ontology_id`, selected `ontology_lookup`, and
-all `ontology_lookup_hits`. By default the first hit is selected without an LLM.
-When `lookup_llm_judge=True` and the hit count is at least
-`lookup_llm_threshold` (default `2`), the LLM receives the hits, publication
-context, and target context and returns `decision`, `confidence`, and `reason`;
-the judgement is stored at `ontology_lookup_judgement`. If lookup fails,
-`harmonize(...)` marks the target unmatched and, when `llm=True`, calls the
-fallback `assign_onto_framework(...)`. That fallback sends the target,
-publication context, and sanitized candidate ontology framework metadata to the
-LLM. Framework prompt metadata includes only `id`, `title`, `description`, and
-`version`; download links and file paths remain internal to `OntoStore`. It
-parses a JSON object with `decision`, `confidence`, and `reason`, stores it at
-`ontology_framework_assignment`, and sets `ontology_id` when `decision` is a
-configured framework ID. After assignment, `harmonize(...)`
-routes the target field through `harmonize_field(...)`: first by dictionary lookup
-against `ontostore.fields`, then by LLM field assignment when no field matches
-and `llm=True`.
-It routes only `websearch` and `rag` targets to strategy handlers. `websearch`
-uses OLS4 restricted to the assigned `ontology_id`, then falls back to
-unrestricted OLS plus an injected web search client. Strategy results always
-include `strategy`, `status`, `decision`, `confidence`, and `reason`; the
-`rag` strategy currently routes to a placeholder handler. It returns:
+Import the facade and provider adapters from `agentic_curator.wrappers`:
 
 ```python
-{
-    "publication_context": publication_context,
-    "harmonization_targets": normalized_targets,
-    "strategy": "websearch",
-    "target_paths": target_paths,
-}
+from agentic_curator.wrappers import (
+    ClaudeVertexPlatform,
+    GeminiEnterprisePlatform,
+    LLM,
+)
 ```
 
-It uses the injected `OntoStore` for ontology lookup when targets are available
-and calls the injected or lazy LLM only for targets that do not match lookup.
+`LLM(platform="gemini_enterprise", **platform_options)` supports:
 
-`OntoStore` manages ontology framework configuration for downloadable URLs and
-local OWL paths.
+- `gemini_enterprise`
+- `claude_vertex`
 
-```python
-from agentic_curator.curators.ontology_harmonizer import OntoStore
+Methods:
 
-store = OntoStore(
-    ontology_frameworks={
-        "custom": {"url": "https://example.org/custom.owl", "version": "v1"},
-    }
-)
-store.add_url(
-    "extra",
-    "https://example.org/extra.owl",
-    version="v2",
-    json_path="/tmp/extra.json",
-)
-store.configure_framework("local", path="/data/local.owl", title="Local Ontology")
-store.configure_framework("custom", remove=True)
-json_path = store.get("efo")
-owl_path = store.ontology_frameworks["efo"]["owl_path"]
-```
+| Method | Output |
+| --- | --- |
+| `generate_response(prompt, model=None, config=None, tools=None, **extra_options)` | Text string |
+| `generate_response_with_metadata(prompt, model=None, config=None, tools=None, **extra_options)` | Dict with `text`, `raw_response`, `citations`, `tool_calls`, and `provider` |
 
-Default frameworks include EFO, MONDO, UBERON, HP, CL, ChEBI, PATO, OBI,
-SNOMED CT, NCIT, and NCBITaxon. Built-in `title`, `description`, `version`, and
-`url` metadata are sourced from OLS4 where available. Most default `url` values
-use OLS4 `versionIri` values; EFO and UBERON use stable current URLs.
+If a call-level model starts with `claude-` while the default platform is
+Gemini, the facade lazily creates and caches a Claude Vertex route.
 
-Framework configs are normalized with concrete `owl_path` and `json_path`
-fields. `add_url(...)` adds or replaces one URL-backed framework and accepts
-optional `owl_path`, `json_path`, `version`, `title`, and `description`.
-`add_urls(...)` merges a mapping of framework configs with the same attributes.
-`configure_framework(...)` is the lower-level add/replace/remove API. URL-backed
-frameworks download to `owl_path`; path-backed frameworks point at an existing
-local OWL file and never call `requests`.
+Provider adapters:
 
-`OntoStore(fields=...)` stores a normalized field dictionary for field-name
-harmonization. `lookup_fields(field)` matches normalized field input against
-field keys, labels, and aliases, returning matched metadata with the canonical
-`field` key or `False`.
+- `GeminiEnterprisePlatform(...)` calls
+  `google.genai.Client(...).models.generate_content(...)`.
+- `ClaudeVertexPlatform(...)` calls
+  `anthropic.AnthropicVertex(...).messages.create(...)`.
 
-`download(name)` skips existing URL-backed files, calls
-`requests.get(url, timeout=30)`, calls `raise_for_status()`, writes bytes to
-`store.ontology_frameworks[name]["owl_path"]`, and returns that `Path`. For
-path-backed frameworks, `download(name)` validates and returns the configured
-local `owl_path`.
-
-`get(name, force=False)` is the ontology-serving entrypoint. It returns a JSON
-`Path` from `store.ontology_frameworks[name]["json_path"]` after parsing the
-local `.owl` with `Owl2json`. Parsed JSON stores the framework ID at
-`ontology["id"]`. If the JSON already exists, `get()` returns it without
-reparsing and repairs a missing or stale `ontology["id"]` in place. If a
-URL-backed `.owl` is missing, `get()` downloads it first. Use
-`get(name, force=True)` to redownload URL-backed ontologies and overwrite the
-parsed JSON, or to reparse path-backed ontologies without network I/O.
-
-`lookup(label, ontology_id)` calls `get(ontology_id)`, normalizes the supplied
-label with the same simple harmonization rules, searches the parsed `label`,
-`id`, `accession`, and `iri` term indexes, and returns a list of all matched
-term dictionaries with `ontology_id` added. It returns `[]` when no index
-matches. Hits are flattened and deduped while preserving search order.
+Both adapters support injected clients for tests and return parsed text through
+the compatibility `generate_response(...)` method.
 
 ### Code flow
 
-#### Reviewer Orchestrator
+Thematic reviewer orchestration:
 
 ```python
-class ThematicReviewer:
-    def review_relevancy(publication_text, theme, metadata, title):
-        evidences = self.extract_evidence(
-            publication_text=publication_text,
-            theme=theme,
-            metadata=metadata,
-            title=title,
-        )
-        judgement = self.judge_evidence(
-            evidences=evidences,
-            theme=theme,
-            title=title,
-        )
-        return {"evidences": evidences, "judgement": judgement}
-```
+def review_relevancy(publication_text, theme, metadata, title):
+    evidences = extract_evidence(publication_text, theme, metadata, title)
+    judgement = judge_evidence(evidences, theme, title)
+    return {"evidences": evidences, "judgement": judgement}
 
-#### Evidence Extraction
-
-```python
-def extract_evidence(publication_text, theme, metadata, title):
-    prompt = _evidence_prompt(publication_text, theme, metadata, title)
-    response = _llm().generate_response(
-        prompt,
-        config={
-            "response_mime_type": "application/json",
-            "response_schema": _evidence_response_schema(),
-        },
-    )
+def extract_evidence(...):
+    prompt = evidence_prompt + labeled_inputs
+    response = llm.generate_response(prompt, config=json_schema_config)
     return parse_json_response(response)
 
-def _evidence_prompt(...):
-    initial_prompt = read_package_text("prompts/evidence_extraction.md")
-    return join_blocks(
-        initial_prompt,
-        "Theme:", prompt_text(theme),
-        "Title:", prompt_text(title),
-        "Publication Text:", prompt_text(publication_text),
-        "Metadata:", prompt_text(metadata),
-    )
-```
-
-Internal calls:
-
-- `_evidence_prompt(...)`
-- `_prompt_text(...)`
-- `_llm()`
-- `LLM.generate_response(...)`
-- provider adapter `generate_response(...)`
-- Gemini `client.models.generate_content(...)` or Claude
-  `client.messages.create(...)`
-
-#### Evidence Judging
-
-```python
-def judge_evidence(evidences, theme, title):
-    prompt = _judge_evidence_prompt(evidences, theme, title)
-    response = _llm().generate_response(
-        prompt,
-        config={
-            "response_mime_type": "application/json",
-            "response_schema": _judge_evidence_response_schema(),
-        },
-    )
+def judge_evidence(...):
+    prompt = judge_prompt + labeled_evidences
+    response = llm.generate_response(prompt, config=json_schema_config)
     return parse_json_response(response)
-
-def _judge_evidence_prompt(...):
-    initial_prompt = read_package_text("prompts/judge_evidence.md")
-    return join_blocks(
-        initial_prompt,
-        "Theme:", prompt_text(theme),
-        "Title:", prompt_text(title),
-        "Evidences:", prompt_text(evidences),
-    )
 ```
 
-#### LLM Routing
+CLI orchestration:
 
 ```python
-class LLM:
-    def generate_response(prompt, model=None, config=None, tools=None, **extra):
-        return generate_response_with_metadata(
-            prompt,
-            model=model,
-            config=config,
-            tools=tools,
-            **extra,
-        )["text"]
-
-    def generate_response_with_metadata(prompt, model=None, config=None, tools=None, **extra):
-        platform = _platform_for_model(model)
-        return platform.generate_response_with_metadata(...)
-
-    def _platform_for_model(model):
-        if model startswith "claude-" and default platform is not claude_vertex:
-            create cached ClaudeVertexPlatform
-            return cached ClaudeVertexPlatform
-        return configured platform
-```
-
-#### Provider Requests
-
-```python
-class GeminiEnterprisePlatform:
-    def generate_response_with_metadata(prompt, model=None, config=None, tools=None, **extra):
-        request = {
-            "model": model or default_model,
-            "contents": prompt,
-            "config": merged_config_without_none,
-            **extra,
-        }
-        if tools:
-            request["tools"] = tools
-        raw = client.models.generate_content(**request)
-        return {
-            "text": model_adapter.parse_response(raw),
-            "raw_response": raw,
-            "citations": citation_annotations,
-            "tool_calls": response_steps,
-            "provider": "gemini_enterprise",
-        }
-```
-
-```python
-class ClaudeVertexPlatform:
-    def generate_response_with_metadata(prompt, model=None, config=None, tools=None, **extra):
-        request = {
-            "model": model or default_model,
-            "messages": [{"role": "user", "content": prompt}],
-            **claude_config,
-            **extra,
-        }
-        if tools:
-            request["tools"] = tools
-        raw = client.messages.create(**request)
-        return {
-            "text": ClaudeModelAdapter().parse_response(raw),
-            "raw_response": raw,
-            "citations": [],
-            "tool_calls": [],
-            "provider": "claude_vertex",
-        }
-```
-
-#### CLI Orchestrator
-
-```python
-def main(argv=None):
-    args = parser.parse_args(argv)
+def main(argv):
+    args = argparse.parse_args(argv)
     result = ThematicReviewer().review_relevancy(
-        publication_text=input_value(args.publication_text, args.publication_text_file),
-        theme=input_value(args.theme, args.theme_file),
-        metadata=input_value(args.metadata, args.metadata_file),
-        title=input_value(args.title, args.title_file),
+        publication_text=input_or_file(args.publication_text),
+        theme=input_or_file(args.theme),
+        metadata=input_or_file(args.metadata),
+        title=input_or_file(args.title),
     )
-    write result as JSON to args.out or stdout
-    return 0
+    write_json_to_outfile_or_stdout(result)
 ```
 
-#### Ontology Utilities
+Ontology harmonizer orchestration:
 
 ```python
-class OntologyHarmonizer:
-    def harmonize_miniml_json(
-        publication_context,
-        miniml_json,
-        ontostore,
-        target_paths,
-        strategy="websearch",
-    ):
-        effective_paths = target_paths or target_extractor.build_miniml_sample_target_paths(miniml_json)
-        targets = self.target_extractor.extract(miniml_json, start_paths=effective_paths)
-        if target_paths is None:
-            targets = self.target_extractor.dedupe_targets(targets)
-        result = self.harmonize(
-            publication_context,
-            harmonization_targets=targets,
-            strategy=strategy,
-            ontostore=ontostore,
-            target_paths=effective_paths,
-        )
-        result["miniml_json"] = self.apply_targets(
-            miniml_json,
-            result["harmonization_targets"],
-        )
-        return result
+def harmonize_miniml_json(publication_context, miniml_json, target_paths=None):
+    paths = target_paths or target_extractor.build_miniml_sample_target_paths(miniml_json)
+    targets = target_extractor.extract(miniml_json, start_paths=paths)
+    if target_paths is None:
+        targets = target_extractor.dedupe_targets(targets)
+    result = harmonize(publication_context, harmonization_targets=targets)
+    result["miniml_json"] = apply_targets(miniml_json, result["harmonization_targets"])
+    return result
 
-    def harmonize(
-        publication_context,
-        harmonization_targets=None,
-        target=None,
-        strategy="websearch",
-        ontostore=None,
-        target_paths=None,
-        lookup_llm_judge=False,
-        lookup_llm_threshold=2,
-        llm=True,
-    ):
-        effective_store = ontostore or self.ontostore
-        targets = normalize_target_inputs(harmonization_targets, target)
-        strategy = normalize_strategy(strategy)
-        for target in targets:
-            normalize target hz_field and hz_label with ontostore.harmonize_key(...)
-            lookup = self.lookup_label(
-                target,
-                publication_context=publication_context,
-                ontostore=effective_store,
-                strategy=strategy,
-                lookup_llm_judge=lookup_llm_judge,
-                lookup_llm_threshold=lookup_llm_threshold,
-            )
-            if not lookup:
-                mark target unmatched
-                if llm:
-                    self.assign_onto_framework(
-                        target,
-                        publication_context=publication_context,
-                        ontostore=effective_store,
-                    )
-                self.harmonize_field(
-                    target,
-                    publication_context=publication_context,
-                    ontostore=effective_store,
-                    llm=llm,
-                )
-                if strategy in strategy_handlers:
-                    self.harmonize_label(
-                        target,
-                        publication_context=publication_context,
-                        ontostore=effective_store,
-                        strategy=strategy,
-                    )
-        return {
-            "publication_context": publication_context,
-            "harmonization_targets": targets,
-            "strategy": strategy,
-            "target_paths": target_paths,
-        }
-
-    def lookup_label(
-        target,
-        publication_context,
-        ontostore,
-        strategy,
-        lookup_llm_judge=False,
-        lookup_llm_threshold=2,
-    ):
-        normalize target hz_field and hz_label with ontostore.harmonize_key(...)
-        hits = all ontostore.lookup(...) hits from candidate ontology frameworks
-        if hits:
-            selected = first hit
-            if lookup_llm_judge and len(hits) >= lookup_llm_threshold:
-                judgement = LLM chooses best hit id from hits
-                selected = hit whose id matches judgement["decision"]
-            set target ontology fields, ontology_lookup_hits, and selected lookup
-            return selected
-        return False
-
-    def assign_onto_framework(target, publication_context, ontostore):
-        mark target as unmatched fallback
-        candidate_frameworks = configured target frameworks or all store frameworks
-        prompt_frameworks = {
-            id: {"id": id, "title": title, "description": description, "version": version}
-            for each candidate framework
-        }
-        prompt = _assign_onto_framework_prompt(
-            target, publication_context, prompt_frameworks
-        )
-        response = _llm().generate_response(
-            prompt,
-            config={
-                "response_mime_type": "application/json",
-                "response_schema": _assign_onto_framework_response_schema(),
-            },
-        )
-        assignment = parse_json_response(response)
-        require assignment has decision, confidence, and reason
-        target["ontology_framework_assignment"] = assignment
-        if assignment["decision"] is a configured framework ID:
-            target["ontology_id"] = assignment["decision"]
-        return assignment
-
-    def harmonize_field(target, publication_context, ontostore, llm=True):
-        lookup = ontostore.lookup_fields(target["hz_field"])
-        if lookup:
-            target["hz_field"] = lookup["field"]
-            target["field_lookup"] = lookup
-            return lookup
-        if not llm:
-            return False
-        return self.assign_field(
-            target,
-            publication_context=publication_context,
-            ontostore=ontostore,
-        )
-
-    def assign_field(target, publication_context, ontostore):
-        prompt = _assign_field_prompt(target, publication_context, ontostore.fields)
-        response = _llm().generate_response(
-            prompt,
-            config={
-                "response_mime_type": "application/json",
-                "response_schema": _assign_field_response_schema(),
-            },
-        )
-        assignment = parse_json_response(response)
-        require assignment has decision, confidence, reason, and new_field
-        target["hz_field"] = normalized assignment decision
-        target["field_assignment"] = assignment
-        if assignment["new_field"]:
-            ontostore.fields[target["hz_field"]] = assignment metadata
-        return assignment
-
-    def harmonize_label(target, publication_context, ontostore, strategy):
-        handler = strategy handler class for websearch or rag
-        return handler().handle(
-            target,
-            publication_context=publication_context,
-            ontostore=ontostore,
-        )
-
-    class WebsearchStrategyHandler:
-        restricted = OLS search(label, ontology=target["ontology_id"], rows=25)
-        if restricted:
-            validate framework metadata from OLS ontology endpoint
-            update ontostore framework config
-            set target ontology lookup fields
-            return matched strategy result with decision, confidence, and reason
-
-        unrestricted = OLS search(label, rows=25)
-        web_hits = search_client.search(f"{hz_field}: {hz_label} ontology", max_results=25)
-        if unrestricted and complete framework metadata is available:
-            update ontostore framework config
-            set target ontology lookup fields
-            return matched strategy result
-        return not_harmonized strategy result
+def harmonize(publication_context, harmonization_targets, strategy="websearch"):
+    targets = normalize_targets(harmonization_targets)
+    for target in targets:
+        harmonize target hz_field and hz_label keys
+        lookup = lookup_label(target)
+        if lookup fails:
+            assign ontology framework with LLM when enabled
+            harmonize field by store lookup or LLM assignment
+            harmonize label with selected strategy handler
+    return wrapper with publication_context, targets, strategy, target_paths
 ```
 
-Target extraction is handled by
-`ontology_harmonizer.harmonization_target_extractor.HarmonizationTargetExtractor`;
-the harmonizer keeps public lookup and framework-assignment hooks and a private
-target-extraction delegation wrapper:
+Ontology store flow:
 
 ```python
-class HarmonizationTargetExtractor:
-    def build_miniml_sample_target_paths(miniml_json):
-        walk every sample[*].channel[*]
-        return paths for source, molecule, organism, and characteristics
+def get(ontology_id, force=False):
+    if configured JSON exists and not force:
+        ensure ontology.id is present
+        return json_path
+    if OWL is missing or force requires redownload:
+        download configured URL to owl_path
+    return Owl2json(owl_path).write_json(json_path, ontology_id=ontology_id)
 
-    def extract(metadata, start_paths=None):
-        if metadata is not dict/list:
-            return []
-        if start_paths is None:
-            collect scalar targets from whole metadata tree
-        for each start path or path spec:
-            resolve JSON Pointer
-            collect targets by mode: scalar, field_value, tag_value, or container_value
-        return targets
-
-    def dedupe_targets(targets):
-        return one target per pre_hz_field:pre_hz_label with paths only in occurrences
-
-def _extract_harmonization_targets(metadata, start_paths=None):
-    return self.target_extractor.extract(metadata, start_paths=start_paths)
+def lookup(label, ontology_id):
+    json_path = get(ontology_id)
+    ontology = read JSON
+    key = harmonize_key(label)
+    hits = search label, id, accession, and iri indexes
+    return deduped hits with ontology_id added
 ```
 
+LLM and provider flow:
+
 ```python
-class OntoStore:
-    def add_url(name, url, owl_path=None, json_path=None, version=None,
-                title=None, description=None):
-        configure_framework(name, url=url, owl_path=owl_path, json_path=json_path, ...)
+def LLM.generate_response(prompt, **options):
+    response = generate_response_with_metadata(prompt, **options)
+    return response["text"]
 
-    def add_urls(ontology_frameworks):
-        normalize and merge each framework config
+def LLM.generate_response_with_metadata(prompt, model=None, **options):
+    platform = claude_route_if_model_startswith_claude(model) or default_platform
+    return platform.generate_response_with_metadata(prompt, model=model, **options)
 
-    def configure_framework(name, url=None, path=None, owl_path=None,
-                            json_path=None, version=None, title=None,
-                            description=None, remove=False):
-        if remove:
-            delete ontology_frameworks[name]
-            return
-        normalize config with url/path, owl_path, json_path, and metadata
+def GeminiEnterprisePlatform.generate_response_with_metadata(...):
+    raw = client.models.generate_content(model=..., contents=prompt, config=..., tools=...)
+    return {"text": parsed_text, "raw_response": raw, "citations": ..., "tool_calls": ..., "provider": "gemini_enterprise"}
 
-    def get(name, force=False):
-        owl_path = ontology_frameworks[name]["owl_path"]
-        json_path = ontology_frameworks[name]["json_path"]
-        if json_path.exists() and not force:
-            repair cached ontology["id"] if needed
-            return json_path
-        if force and framework uses url:
-            download_to_path(name, owl_path)
-        elif not owl_path.exists():
-            owl_path = download(name)
-        return Owl2json(owl_path).write_json(json_path, ontology_id=name)
-
-    def lookup(label, ontology_id):
-        json_path = get(ontology_id)
-        search terms["label"], terms["id"], terms["accession"], terms["iri"]
-        return all matched metadata with ontology_id added, or []
-
-    def download(name):
-        target = ontology_frameworks[name]["owl_path"]
-        if framework uses path:
-            validate target exists
-            return target
-        if target.exists():
-            return target
-        url = _framework_url(name)
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        target.write_bytes(response.content)
-        return target
+def ClaudeVertexPlatform.generate_response_with_metadata(...):
+    raw = client.messages.create(model=..., messages=[...], tools=..., **config)
+    return {"text": parsed_text, "raw_response": raw, "citations": [], "tool_calls": [], "provider": "claude_vertex"}
 ```
 
 ## Docs
 
 - [Documentation index](docs/index.md)
 - [Codebase handoff](docs/codebase.md)
-- [Code flow](docs/codebase.md#code-flow)
-- [Reviewer workflow](docs/codebase.md#reviewer-workflow)
-- [Ontology harmonizer](docs/codebase.md#ontology-harmonizer)
-- [CLI behavior](docs/codebase.md#cli)
-- [LLM wrapper](docs/codebase.md#llm-wrapper)
+
+## Authors
+
+Created by [jaychowcl](https://github.com/jaychowcl) on June 2026
