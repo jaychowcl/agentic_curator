@@ -124,6 +124,17 @@ print(json_path)
 print(hits[:1])
 ```
 
+Build the built-in ontology cache concurrently from the command line:
+
+```bash
+python -m agentic_curator.curators.ontology_harmonizer.cache_builder \
+  --max-workers 4 \
+  --timeout 2700
+```
+
+After editable installation, the same workflow is available as
+`build_ontology_cache`.
+
 ### Python LLM Facade
 
 Use `LLM` directly when you need provider-routed text or metadata responses.

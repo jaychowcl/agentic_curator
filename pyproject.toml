@@ -30,6 +30,7 @@ dependencies = [
 dev = ["pytest>=8"]
 
 [project.scripts]
+build_ontology_cache = "agentic_curator.curators.ontology_harmonizer.cache_builder:main"
 cli_thematic_reviewer = "agentic_curator.cli.cli_thematic_reviewer:main"
 cli_ontology_harmonizer = "agentic_curator.cli.cli_ontology_harmonizer:main"
 

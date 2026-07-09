@@ -100,6 +100,7 @@ The package uses a `src/` layout with setuptools:
 - `requirements.txt` mirrors the direct runtime/dev dependencies for pip-based
   environment bootstrap and includes `-e .`
 - console scripts:
+  - `build_ontology_cache = "agentic_curator.curators.ontology_harmonizer.cache_builder:main"`
   - `cli_thematic_reviewer = "agentic_curator.cli.cli_thematic_reviewer:main"`
   - `cli_ontology_harmonizer = "agentic_curator.cli.cli_ontology_harmonizer:main"`
 - package data: `agentic_curator/curators/*/prompts/*.md`
@@ -348,6 +349,23 @@ git. Existing downloaded files are skipped by `download()`, and existing JSON is
 reused by `get()` after `ontology["id"]` repair unless `force=True`. Unknown
 framework names raise `KeyError`; missing or invalid URLs or paths raise
 `ValueError`, and missing local path files raise `FileNotFoundError`.
+
+`agentic_curator.curators.ontology_harmonizer.cache_builder` is the package
+cache-build workflow for preparing all built-in ontology JSON files. It can be
+run as `build_ontology_cache` after installation or as
+`python -m agentic_curator.curators.ontology_harmonizer.cache_builder`. The
+builder submits one job per framework through a parent `ThreadPoolExecutor` and
+keeps each job in an isolated child Python process that calls
+`OntoStore().get(name, force=force)`. This overlaps downloads/parses across
+frameworks while keeping RDFLib parse memory isolated per child. The default
+worker count is `min(4, os.cpu_count() or 1)` with a floor of one, and
+`--max-workers` overrides it. `--force-framework` may be passed repeatedly to
+redownload/reparse specific URL-backed frameworks or reparse path-backed
+frameworks. The builder writes a JSON manifest and text log to `.dev/` by
+default, preserves manifest result order in framework order, records per
+framework `cached`, `parsed`, `downloaded_parsed`, `force_rebuilt`, `failed`,
+or `timeout` status, validates successful JSON files, and continues collecting
+other framework results when one framework fails.
 
 `Owl2json(owl_path)` accepts a local `.owl` path and uses RDFLib to parse it as
 RDF/XML. `parse(ontology_id=None)` returns:
@@ -1712,16 +1730,23 @@ adapter behavior: `text`, `response`, candidate content part text, then
 <a id="cli"></a>
 ## CLI
 
-The installed console commands are `cli_thematic_reviewer` and
-`cli_ontology_harmonizer`. The modules can also be run directly:
+The installed console commands are `build_ontology_cache`,
+`cli_thematic_reviewer`, and `cli_ontology_harmonizer`. The modules can also be
+run directly:
 
 ```bash
+.env/bin/python -m agentic_curator.curators.ontology_harmonizer.cache_builder --help
 .env/bin/python -m agentic_curator.cli.cli_thematic_reviewer --help
 .env/bin/python -m agentic_curator.cli.cli_ontology_harmonizer --help
 ```
 
-Both commands accept `--verbosity {quiet,error,warning,info,debug}`. Logs are
-written to stderr and JSON results stay on stdout unless `--out` is supplied.
+The curator CLI commands accept `--verbosity {quiet,error,warning,info,debug}`.
+Logs are written to stderr and JSON results stay on stdout unless `--out` is
+supplied.
+
+`build_ontology_cache` prepares OWL/JSON caches for configured built-in
+ontology frameworks. Options include `--timeout`, `--out-dir`, `--out-prefix`,
+`--max-workers`, and repeated `--force-framework FRAMEWORK_ID`.
 
 `cli_thematic_reviewer` exposes `ThematicReviewer` methods:
 
@@ -1780,6 +1805,9 @@ Test coverage includes:
   application, Gemini grounded search client citation/error handling,
   websearch strategy fallback behavior, and `OntoStore`
   defaults/overrides/download/get/lookup behavior
+- ontology cache builder framework ordering, default worker count, threaded
+  scheduling, force flags, failure collection, manifest/log writing, and
+  console script metadata
 - Owl2json imports, ontology metadata extraction, normalized term JSON,
   accession fallback, deprecated/replaced terms, HTML rejection, and JSON file
   writing
@@ -1851,8 +1879,17 @@ Run tests:
 Run CLI help:
 
 ```bash
+.env/bin/python -m agentic_curator.curators.ontology_harmonizer.cache_builder --help
 .env/bin/python -m agentic_curator.cli.cli_thematic_reviewer --help
 .env/bin/python -m agentic_curator.cli.cli_ontology_harmonizer --help
+```
+
+Build ontology OWL/JSON caches with concurrent framework jobs:
+
+```bash
+.env/bin/python -m agentic_curator.curators.ontology_harmonizer.cache_builder \
+  --max-workers 4 \
+  --timeout 2700
 ```
 
 Run the CLI against local fixtures, if present:
