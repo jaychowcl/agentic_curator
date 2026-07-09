@@ -345,11 +345,11 @@ starts with `<!DOCTYPE html>` or `<html`, and RDFLib parse failures raise
 `Owl2jsonParseError`.
 
 `HarmonizationTargetExtractor` lives in
-`ontology_harmonizer/harmonization_target_extractor.py` and performs target
-extraction for future metadata edit planning. `OntologyHarmonizer` owns
-`self.target_extractor` and keeps `_extract_harmonization_targets(...)` as a
-private compatibility wrapper around `self.target_extractor.extract(...)`.
-Targets are not returned by `harmonize()`. The extractor still supports
+`ontology_harmonizer/harmonization_target_extractor.py` and extracts editable
+metadata targets for ontology harmonization. `OntologyHarmonizer` owns
+`self.target_extractor`, keeps `_extract_harmonization_targets(...)` as a
+private compatibility wrapper around `self.target_extractor.extract(...)`, and
+returns harmonized targets from `harmonize(...)`. The extractor still supports
 root-level default path specs:
 
 ```python
@@ -1225,8 +1225,24 @@ class LLM:
         self.platform = self._create_platform(platform, **platform_options)
 
     def generate_response(prompt, model=None, config=None, tools=None, **extra_options):
+        response = self.generate_response_with_metadata(
+            prompt,
+            model=model,
+            config=config,
+            tools=tools,
+            **extra_options,
+        )
+        return response["text"]
+
+    def generate_response_with_metadata(
+        prompt,
+        model=None,
+        config=None,
+        tools=None,
+        **extra_options,
+    ):
         platform = self._platform_for_model(model)
-        return platform.generate_response(
+        return platform.generate_response_with_metadata(
             prompt,
             model=model,
             config=config,
@@ -1278,7 +1294,13 @@ class GeminiEnterprisePlatform:
         self.client = client
         self.client_options = client_options
 
-    def generate_response(prompt, model=None, config=None, tools=None, **extra_options):
+    def generate_response_with_metadata(
+        prompt,
+        model=None,
+        config=None,
+        tools=None,
+        **extra_options,
+    ):
         effective_model = model or self.model
         generation_config = self._clean_options(self._generation_config(config))
         generation_tools = self.tools_template if tools is None else tools
@@ -1292,16 +1314,27 @@ class GeminiEnterprisePlatform:
             request["tools"] = generation_tools
 
         raw_response = self._client().models.generate_content(**request)
-        return self._model_adapter(effective_model).parse_response(raw_response)
+        return {
+            "text": self._model_adapter(effective_model).parse_response(raw_response),
+            "raw_response": raw_response,
+            "citations": self._citations(raw_response),
+            "tool_calls": self._tool_calls(raw_response),
+            "provider": "gemini_enterprise",
+        }
+
+    def generate_response(...):
+        return self.generate_response_with_metadata(...)["text"]
 ```
 
-Internal calls from `generate_response()`:
+Internal calls from `generate_response_with_metadata()`:
 
 - `_generation_config(...)`
 - `_clean_options(...)`
 - `_client()`
 - `_model_adapter(...)`
 - `parse_response(...)` on `GeminiModelAdapter` or `ClaudeModelAdapter`
+- `_citations(...)`
+- `_tool_calls(...)`
 
 External API call:
 
@@ -1337,7 +1370,13 @@ class ClaudeVertexPlatform:
         self.client = client
         self.client_options = client_options
 
-    def generate_response(prompt, model=None, config=None, tools=None, **extra_options):
+    def generate_response_with_metadata(
+        prompt,
+        model=None,
+        config=None,
+        tools=None,
+        **extra_options,
+    ):
         effective_model = model or self.model
         request = {
             "model": effective_model,
@@ -1350,10 +1389,19 @@ class ClaudeVertexPlatform:
             request["tools"] = generation_tools
 
         raw_response = self._client().messages.create(**request)
-        return ClaudeModelAdapter().parse_response(raw_response)
+        return {
+            "text": ClaudeModelAdapter().parse_response(raw_response),
+            "raw_response": raw_response,
+            "citations": [],
+            "tool_calls": [],
+            "provider": "claude_vertex",
+        }
+
+    def generate_response(...):
+        return self.generate_response_with_metadata(...)["text"]
 ```
 
-Internal calls from `generate_response()`:
+Internal calls from `generate_response_with_metadata()`:
 
 - `_claude_config(...)`
 - `_client()`

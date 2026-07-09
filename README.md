@@ -528,14 +528,17 @@ def _judge_evidence_prompt(...):
 ```python
 class LLM:
     def generate_response(prompt, model=None, config=None, tools=None, **extra):
-        platform = _platform_for_model(model)
-        return platform.generate_response(
+        return generate_response_with_metadata(
             prompt,
             model=model,
             config=config,
             tools=tools,
             **extra,
-        )
+        )["text"]
+
+    def generate_response_with_metadata(prompt, model=None, config=None, tools=None, **extra):
+        platform = _platform_for_model(model)
+        return platform.generate_response_with_metadata(...)
 
     def _platform_for_model(model):
         if model startswith "claude-" and default platform is not claude_vertex:
@@ -548,7 +551,7 @@ class LLM:
 
 ```python
 class GeminiEnterprisePlatform:
-    def generate_response(prompt, model=None, config=None, tools=None, **extra):
+    def generate_response_with_metadata(prompt, model=None, config=None, tools=None, **extra):
         request = {
             "model": model or default_model,
             "contents": prompt,
@@ -558,12 +561,18 @@ class GeminiEnterprisePlatform:
         if tools:
             request["tools"] = tools
         raw = client.models.generate_content(**request)
-        return model_adapter.parse_response(raw)
+        return {
+            "text": model_adapter.parse_response(raw),
+            "raw_response": raw,
+            "citations": citation_annotations,
+            "tool_calls": response_steps,
+            "provider": "gemini_enterprise",
+        }
 ```
 
 ```python
 class ClaudeVertexPlatform:
-    def generate_response(prompt, model=None, config=None, tools=None, **extra):
+    def generate_response_with_metadata(prompt, model=None, config=None, tools=None, **extra):
         request = {
             "model": model or default_model,
             "messages": [{"role": "user", "content": prompt}],
@@ -573,7 +582,13 @@ class ClaudeVertexPlatform:
         if tools:
             request["tools"] = tools
         raw = client.messages.create(**request)
-        return ClaudeModelAdapter().parse_response(raw)
+        return {
+            "text": ClaudeModelAdapter().parse_response(raw),
+            "raw_response": raw,
+            "citations": [],
+            "tool_calls": [],
+            "provider": "claude_vertex",
+        }
 ```
 
 #### CLI Orchestrator
@@ -606,13 +621,18 @@ class OntologyHarmonizer:
         targets = self.target_extractor.extract(miniml_json, start_paths=effective_paths)
         if target_paths is None:
             targets = self.target_extractor.dedupe_targets(targets)
-        return self.harmonize(
+        result = self.harmonize(
             publication_context,
             harmonization_targets=targets,
             strategy=strategy,
             ontostore=ontostore,
             target_paths=effective_paths,
         )
+        result["miniml_json"] = self.apply_targets(
+            miniml_json,
+            result["harmonization_targets"],
+        )
+        return result
 
     def harmonize(
         publication_context,
