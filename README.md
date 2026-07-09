@@ -359,11 +359,16 @@ store = OntoStore(
         "custom": {"url": "https://example.org/custom.owl", "version": "v1"},
     }
 )
-store.configure_framework("extra", url="https://example.org/extra.owl", version="v2")
+store.add_url(
+    "extra",
+    "https://example.org/extra.owl",
+    version="v2",
+    json_path="/tmp/extra.json",
+)
 store.configure_framework("local", path="/data/local.owl", title="Local Ontology")
 store.configure_framework("custom", remove=True)
 json_path = store.get("efo")
-owl_path = store.downloaded_paths["efo"]
+owl_path = store.ontology_frameworks["efo"]["owl_path"]
 ```
 
 Default frameworks include EFO, MONDO, UBERON, HP, CL, ChEBI, PATO, OBI,
@@ -371,24 +376,27 @@ SNOMED CT, NCIT, and NCBITaxon. Built-in `title`, `description`, `version`, and
 `url` metadata are sourced from OLS4 where available. Most default `url` values
 use OLS4 `versionIri` values; EFO and UBERON use stable current URLs.
 
-`configure_framework(name, url=..., path=..., remove=False, ...)` is the single
-method for adding, replacing, or removing frameworks. Add/replace calls require
-exactly one of `url` or `path`. URL-backed frameworks download into the local
-`ontology_frameworks` directory. Path-backed frameworks point at an existing
+Framework configs are normalized with concrete `owl_path` and `json_path`
+fields. `add_url(...)` adds or replaces one URL-backed framework and accepts
+optional `owl_path`, `json_path`, `version`, `title`, and `description`.
+`add_urls(...)` merges a mapping of framework configs with the same attributes.
+`configure_framework(...)` is the lower-level add/replace/remove API. URL-backed
+frameworks download to `owl_path`; path-backed frameworks point at an existing
 local OWL file and never call `requests`.
 
 `download(name)` skips existing URL-backed files, calls
-`requests.get(url, timeout=30)`, calls `raise_for_status()`, records
-`store.downloaded_paths[name] = path`, and returns a `Path`. For path-backed
-frameworks, `download(name)` validates and returns the configured local path.
-`downloaded_paths` is an in-memory `dict[str, Path]` keyed by the ontology id.
+`requests.get(url, timeout=30)`, calls `raise_for_status()`, writes bytes to
+`store.ontology_frameworks[name]["owl_path"]`, and returns that `Path`. For
+path-backed frameworks, `download(name)` validates and returns the configured
+local `owl_path`.
 
 `get(name, force=False)` is the ontology-serving entrypoint. It returns a JSON
-`Path` under `storage_dir / "jsons"` after parsing the local `.owl` with
-`Owl2json`. If the JSON already exists, `get()` returns it without reparsing. If
-a URL-backed `.owl` is missing, `get()` downloads it first. Use
-`get(name, force=True)` to redownload URL-backed ontologies and overwrite the
-parsed JSON, or to reparse path-backed ontologies without network I/O.
+`Path` from `store.ontology_frameworks[name]["json_path"]` after parsing the
+local `.owl` with `Owl2json`. If the JSON already exists, `get()` returns it
+without reparsing. If a URL-backed `.owl` is missing, `get()` downloads it
+first. Use `get(name, force=True)` to redownload URL-backed ontologies and
+overwrite the parsed JSON, or to reparse path-backed ontologies without network
+I/O.
 
 ### Code flow
 
@@ -618,42 +626,43 @@ def _extract_harmonization_targets(metadata, start_paths=None):
 
 ```python
 class OntoStore:
-    def configure_framework(name, url=None, path=None, version=None,
-                            title=None, description=None, remove=False):
+    def add_url(name, url, owl_path=None, json_path=None, version=None,
+                title=None, description=None):
+        configure_framework(name, url=url, owl_path=owl_path, json_path=json_path, ...)
+
+    def add_urls(ontology_frameworks):
+        normalize and merge each framework config
+
+    def configure_framework(name, url=None, path=None, owl_path=None,
+                            json_path=None, version=None, title=None,
+                            description=None, remove=False):
         if remove:
             delete ontology_frameworks[name]
-            remove downloaded_paths[name]
             return
-        require exactly one of url or path
-        ontology_frameworks[name] = config with url/path and provided metadata
+        normalize config with url/path, owl_path, json_path, and metadata
 
     def get(name, force=False):
-        owl_path = target_path(name)
-        json_path = json_target_path(owl_path)
+        owl_path = ontology_frameworks[name]["owl_path"]
+        json_path = ontology_frameworks[name]["json_path"]
         if json_path.exists() and not force:
             return json_path
         if force and framework uses url:
             download_to_path(name, owl_path)
-        elif owl_path.exists():
-            downloaded_paths[name] = owl_path
-        else:
+        elif not owl_path.exists():
             owl_path = download(name)
         return Owl2json(owl_path).write_json(json_path)
 
     def download(name):
-        target = target_path(name)
+        target = ontology_frameworks[name]["owl_path"]
         if framework uses path:
             validate target exists
-            downloaded_paths[name] = target
             return target
         if target.exists():
-            downloaded_paths[name] = target
             return target
         url = _framework_url(name)
         response = requests.get(url, timeout=30)
         response.raise_for_status()
         target.write_bytes(response.content)
-        downloaded_paths[name] = target
         return target
 ```
 

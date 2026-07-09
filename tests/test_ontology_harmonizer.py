@@ -144,9 +144,17 @@ def test_harmonizer_uses_harmonization_target_extractor() -> None:
 def test_ontostore_initializes_with_default_frameworks(tmp_path: Path) -> None:
     store = OntoStore(storage_dir=tmp_path)
 
-    assert store.ontology_frameworks == DEFAULT_ONTOLOGY_FRAMEWORKS
+    assert store.ontology_frameworks["efo"] == {
+        **DEFAULT_ONTOLOGY_FRAMEWORKS["efo"],
+        "owl_path": tmp_path / "efo.owl",
+        "json_path": tmp_path / "jsons" / "efo.json",
+    }
+    assert store.ontology_frameworks["mondo"] == {
+        **DEFAULT_ONTOLOGY_FRAMEWORKS["mondo"],
+        "owl_path": tmp_path / "mondo-international.owl",
+        "json_path": tmp_path / "jsons" / "mondo-international.json",
+    }
     assert store.storage_dir == tmp_path
-    assert store.downloaded_paths == {}
 
 
 def test_default_frameworks_include_titles() -> None:
@@ -170,8 +178,12 @@ def test_ontostore_constructor_frameworks_extend_defaults(tmp_path: Path) -> Non
     )
 
     assert store.ontology_frameworks == {
-        **DEFAULT_ONTOLOGY_FRAMEWORKS,
-        "CL": {"url": "https://example.org/cl.owl"},
+        **store._normalize_frameworks(DEFAULT_ONTOLOGY_FRAMEWORKS),
+        "CL": {
+            "url": "https://example.org/cl.owl",
+            "owl_path": tmp_path / "cl.owl",
+            "json_path": tmp_path / "jsons" / "cl.json",
+        },
     }
 
 
@@ -189,6 +201,67 @@ def test_constructor_framework_can_override_default(tmp_path: Path) -> None:
     assert store.ontology_frameworks["efo"] == {
         "url": "https://example.org/custom-efo.owl",
         "version": "custom",
+        "owl_path": tmp_path / "custom-efo.owl",
+        "json_path": tmp_path / "jsons" / "custom-efo.json",
+    }
+
+
+def test_add_url_adds_single_framework_url_with_extra_attributes(
+    tmp_path: Path,
+) -> None:
+    store = OntoStore(storage_dir=tmp_path)
+    owl_path = tmp_path / "downloads" / "cl.owl"
+    json_path = tmp_path / "parsed" / "cl.json"
+
+    store.add_url(
+        "CL",
+        "https://example.org/cl.owl",
+        owl_path=owl_path,
+        json_path=json_path,
+        version="v1",
+        title="Cell Ontology",
+        description="Cells.",
+    )
+
+    assert store.ontology_frameworks["CL"] == {
+        "url": "https://example.org/cl.owl",
+        "owl_path": owl_path,
+        "json_path": json_path,
+        "version": "v1",
+        "title": "Cell Ontology",
+        "description": "Cells.",
+    }
+
+
+def test_add_urls_merges_frameworks_with_extra_attributes(tmp_path: Path) -> None:
+    store = OntoStore(storage_dir=tmp_path)
+    local_owl = tmp_path / "local.owl"
+    local_json = tmp_path / "local.json"
+
+    store.add_urls(
+        {
+            "CL": {
+                "url": "https://example.org/cl.owl",
+                "version": "v1",
+            },
+            "local": {
+                "path": local_owl,
+                "json_path": local_json,
+                "title": "Local Ontology",
+            },
+        }
+    )
+
+    assert store.ontology_frameworks["CL"] == {
+        "url": "https://example.org/cl.owl",
+        "version": "v1",
+        "owl_path": tmp_path / "cl.owl",
+        "json_path": tmp_path / "jsons" / "cl.json",
+    }
+    assert store.ontology_frameworks["local"] == {
+        "owl_path": local_owl,
+        "json_path": local_json,
+        "title": "Local Ontology",
     }
 
 
@@ -199,6 +272,8 @@ def test_configure_framework_adds_single_framework_url(tmp_path: Path) -> None:
 
     assert store.ontology_frameworks["CL"] == {
         "url": "https://example.org/cl.owl",
+        "owl_path": tmp_path / "cl.owl",
+        "json_path": tmp_path / "jsons" / "cl.json",
         "version": "v1",
     }
 
@@ -215,7 +290,8 @@ def test_configure_framework_adds_single_framework_path(tmp_path: Path) -> None:
     )
 
     assert store.ontology_frameworks["local"] == {
-        "path": ontology_path,
+        "owl_path": ontology_path,
+        "json_path": tmp_path / "jsons" / "local.json",
         "title": "Local Ontology",
         "description": "A local OWL ontology.",
     }
@@ -229,10 +305,14 @@ def test_configure_framework_replaces_existing_framework(tmp_path: Path) -> None
 
     store.configure_framework("CL", url="https://example.org/new-cl.owl")
 
-    assert store.ontology_frameworks["CL"] == {"url": "https://example.org/new-cl.owl"}
+    assert store.ontology_frameworks["CL"] == {
+        "url": "https://example.org/new-cl.owl",
+        "owl_path": tmp_path / "new-cl.owl",
+        "json_path": tmp_path / "jsons" / "new-cl.json",
+    }
 
 
-def test_configure_framework_removes_framework_and_downloaded_path(
+def test_configure_framework_removes_framework_config(
     tmp_path: Path,
 ) -> None:
     existing = tmp_path / "cl.owl"
@@ -240,12 +320,11 @@ def test_configure_framework_removes_framework_and_downloaded_path(
         ontology_frameworks={"CL": {"url": "https://example.org/cl.owl"}},
         storage_dir=tmp_path,
     )
-    store.downloaded_paths["CL"] = existing
+    store.ontology_frameworks["CL"]["owl_path"] = existing
 
     store.configure_framework("CL", remove=True)
 
     assert "CL" not in store.ontology_frameworks
-    assert "CL" not in store.downloaded_paths
 
 
 def test_configure_framework_remove_unknown_framework_raises_key_error(
@@ -341,7 +420,7 @@ def test_download_uses_framework_name_to_route_to_url(monkeypatch, tmp_path: Pat
 
     assert result == tmp_path / "cl.owl"
     assert result.read_bytes() == b"cl ontology"
-    assert store.downloaded_paths == {"CL": tmp_path / "cl.owl"}
+    assert store.ontology_frameworks["CL"]["owl_path"] == tmp_path / "cl.owl"
     assert calls == [{"url": "https://example.org/cl.owl", "timeout": 30}]
 
 
@@ -385,7 +464,7 @@ def test_download_skips_existing_file(monkeypatch, tmp_path: Path) -> None:
 
     assert result == existing
     assert existing.read_bytes() == b"existing ontology"
-    assert store.downloaded_paths == {"CL": existing}
+    assert store.ontology_frameworks["CL"]["owl_path"] == existing
 
 
 def test_download_path_framework_returns_local_path_without_request(
@@ -405,7 +484,7 @@ def test_download_path_framework_returns_local_path_without_request(
     result = store.download("local")
 
     assert result == existing
-    assert store.downloaded_paths == {"local": existing}
+    assert store.ontology_frameworks["local"]["owl_path"] == existing
 
 
 def test_download_path_framework_missing_file_raises_file_not_found(
@@ -427,23 +506,19 @@ def test_download_raises_key_error_for_unknown_framework(tmp_path: Path) -> None
 
 
 def test_download_raises_value_error_for_missing_url(tmp_path: Path) -> None:
-    store = OntoStore(
-        ontology_frameworks={"CL": {}},
-        storage_dir=tmp_path,
-    )
-
     with pytest.raises(ValueError, match="CL"):
-        store.download("CL")
+        OntoStore(
+            ontology_frameworks={"CL": {}},
+            storage_dir=tmp_path,
+        )
 
 
 def test_download_raises_value_error_for_url_without_filename(tmp_path: Path) -> None:
-    store = OntoStore(
-        ontology_frameworks={"CL": {"url": "https://example.org/"}},
-        storage_dir=tmp_path,
-    )
-
     with pytest.raises(ValueError, match="filename"):
-        store.download("CL")
+        OntoStore(
+            ontology_frameworks={"CL": {"url": "https://example.org/"}},
+            storage_dir=tmp_path,
+        )
 
 
 def test_download_propagates_http_errors(monkeypatch, tmp_path: Path) -> None:
@@ -460,7 +535,7 @@ def test_download_propagates_http_errors(monkeypatch, tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="bad response"):
         store.download("CL")
-    assert store.downloaded_paths == {}
+    assert store.ontology_frameworks["CL"]["owl_path"] == tmp_path / "cl.owl"
 
 
 def test_get_downloads_missing_ontology_and_returns_path(
@@ -484,7 +559,8 @@ def test_get_downloads_missing_ontology_and_returns_path(
     assert result == tmp_path / "jsons" / "cl.json"
     assert (tmp_path / "cl.owl").read_bytes() == ontology_bytes()
     assert '"CL:0000000"' in result.read_text(encoding="utf-8")
-    assert store.downloaded_paths == {"CL": tmp_path / "cl.owl"}
+    assert store.ontology_frameworks["CL"]["owl_path"] == tmp_path / "cl.owl"
+    assert store.ontology_frameworks["CL"]["json_path"] == tmp_path / "jsons" / "cl.json"
     assert calls == [{"url": "https://example.org/cl.owl", "timeout": 30}]
 
 
@@ -506,7 +582,7 @@ def test_get_uses_existing_downloaded_file(monkeypatch, tmp_path: Path) -> None:
     assert result == tmp_path / "jsons" / "cl.json"
     assert existing.read_bytes() == ontology_bytes()
     assert '"CL:0000000"' in result.read_text(encoding="utf-8")
-    assert store.downloaded_paths == {"CL": existing}
+    assert store.ontology_frameworks["CL"]["owl_path"] == existing
 
 
 def test_get_returns_existing_json_without_calling_download(tmp_path: Path) -> None:
@@ -529,7 +605,7 @@ def test_get_returns_existing_json_without_calling_download(tmp_path: Path) -> N
 
     assert result == existing_json
     assert result.read_text(encoding="utf-8") == '{"cached": true}\n'
-    assert store.downloaded_paths == {}
+    assert store.ontology_frameworks["CL"]["json_path"] == existing_json
 
 
 def test_get_force_redownloads_and_reparses_existing_files(
@@ -558,7 +634,8 @@ def test_get_force_redownloads_and_reparses_existing_files(
     assert result == existing_json
     assert existing_owl.read_bytes() == ontology_bytes(title="New Cell Ontology")
     assert "New Cell Ontology" in existing_json.read_text(encoding="utf-8")
-    assert store.downloaded_paths == {"CL": existing_owl}
+    assert store.ontology_frameworks["CL"]["owl_path"] == existing_owl
+    assert store.ontology_frameworks["CL"]["json_path"] == existing_json
     assert calls == [{"url": "https://example.org/cl.owl", "timeout": 30}]
 
 
@@ -580,7 +657,8 @@ def test_get_path_framework_parses_local_ontology_without_request(
 
     assert result == tmp_path / "jsons" / "local.json"
     assert '"CL:0000000"' in result.read_text(encoding="utf-8")
-    assert store.downloaded_paths == {"local": local_owl}
+    assert store.ontology_frameworks["local"]["owl_path"] == local_owl
+    assert store.ontology_frameworks["local"]["json_path"] == result
 
 
 def test_get_force_reparses_path_framework_without_request(
@@ -604,7 +682,8 @@ def test_get_force_reparses_path_framework_without_request(
 
     assert result == existing_json
     assert "New Cell Ontology" in existing_json.read_text(encoding="utf-8")
-    assert store.downloaded_paths == {"local": local_owl}
+    assert store.ontology_frameworks["local"]["owl_path"] == local_owl
+    assert store.ontology_frameworks["local"]["json_path"] == existing_json
 
 
 def test_get_propagates_download_errors(monkeypatch, tmp_path: Path) -> None:
@@ -621,7 +700,7 @@ def test_get_propagates_download_errors(monkeypatch, tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="bad response"):
         store.get("CL")
-    assert store.downloaded_paths == {}
+    assert store.ontology_frameworks["CL"]["owl_path"] == tmp_path / "cl.owl"
 
 
 def test_get_propagates_parse_errors_for_invalid_download(
@@ -641,7 +720,8 @@ def test_get_propagates_parse_errors_for_invalid_download(
         store.get("CL")
     assert (tmp_path / "cl.owl").read_bytes() == b"not rdf xml"
     assert not (tmp_path / "jsons" / "cl.json").exists()
-    assert store.downloaded_paths == {"CL": tmp_path / "cl.owl"}
+    assert store.ontology_frameworks["CL"]["owl_path"] == tmp_path / "cl.owl"
+    assert store.ontology_frameworks["CL"]["json_path"] == tmp_path / "jsons" / "cl.json"
 
 
 def miniml_metadata() -> dict:
@@ -806,7 +886,9 @@ def test_harmonizer_accepts_custom_frameworks_through_ontostore() -> None:
     harmonizer = OntologyHarmonizer(ontostore=store)
 
     assert harmonizer.ontostore.ontology_frameworks["anatomy"] == {
-        "url": "https://example.org/anatomy.owl"
+        "url": "https://example.org/anatomy.owl",
+        "owl_path": OntoStore.DEFAULT_STORAGE_DIR / "anatomy.owl",
+        "json_path": OntoStore.DEFAULT_STORAGE_DIR / "jsons" / "anatomy.json",
     }
 
 

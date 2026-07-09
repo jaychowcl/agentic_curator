@@ -90,13 +90,15 @@ class OntoStore:
         ontology_frameworks: OntologyFrameworkConfig | None = None,
         storage_dir: str | Path | None = None,
     ) -> None:
-        self.ontology_frameworks = dict(self.DEFAULT_ONTOLOGY_FRAMEWORKS)
-        if ontology_frameworks:
-            self.ontology_frameworks.update(ontology_frameworks)
         self.storage_dir = (
             self.DEFAULT_STORAGE_DIR if storage_dir is None else Path(storage_dir)
         )
-        self.downloaded_paths: dict[str, Path] = {}
+        self.ontology_frameworks = self._normalize_frameworks(
+            {
+                **self.DEFAULT_ONTOLOGY_FRAMEWORKS,
+                **(ontology_frameworks or {}),
+            }
+        )
 
     def configure_framework(
         self,
@@ -104,6 +106,8 @@ class OntoStore:
         *,
         url: str | None = None,
         path: str | Path | None = None,
+        owl_path: str | Path | None = None,
+        json_path: str | Path | None = None,
         version: str | None = None,
         title: str | None = None,
         description: str | None = None,
@@ -115,38 +119,126 @@ class OntoStore:
             "description": description,
         }
         if remove:
-            if url is not None or path is not None or any(
-                value is not None for value in metadata.values()
+            if (
+                url is not None
+                or path is not None
+                or owl_path is not None
+                or json_path is not None
+                or any(value is not None for value in metadata.values())
             ):
                 raise ValueError(
                     "remove=True cannot be combined with url, path, or metadata."
                 )
             del self.ontology_frameworks[name]
-            self.downloaded_paths.pop(name, None)
             return
 
-        if (url is None) == (path is None):
-            raise ValueError("Configure exactly one of url or path.")
-
-        framework: dict[str, Any] = (
-            {"url": url} if url is not None else {"path": Path(path)}
-        )
-        framework.update(
+        raw_framework: dict[str, Any] = {}
+        if url is not None:
+            raw_framework["url"] = url
+        if path is not None:
+            raw_framework["path"] = path
+        if owl_path is not None:
+            raw_framework["owl_path"] = owl_path
+        if json_path is not None:
+            raw_framework["json_path"] = json_path
+        raw_framework.update(
             {key: value for key, value in metadata.items() if value is not None}
         )
-        self.ontology_frameworks[name] = framework
+        self.ontology_frameworks[name] = self._normalize_framework(
+            name=name,
+            framework=raw_framework,
+        )
+
+    def add_url(
+        self,
+        name: str,
+        url: str,
+        *,
+        owl_path: str | Path | None = None,
+        json_path: str | Path | None = None,
+        version: str | None = None,
+        title: str | None = None,
+        description: str | None = None,
+    ) -> None:
+        self.configure_framework(
+            name,
+            url=url,
+            owl_path=owl_path,
+            json_path=json_path,
+            version=version,
+            title=title,
+            description=description,
+        )
+
+    def add_urls(self, ontology_frameworks: OntologyFrameworkConfig) -> None:
+        self.ontology_frameworks.update(
+            self._normalize_frameworks(ontology_frameworks)
+        )
+
+    def _normalize_frameworks(
+        self,
+        ontology_frameworks: OntologyFrameworkConfig,
+    ) -> OntologyFrameworkConfig:
+        return {
+            name: self._normalize_framework(name=name, framework=framework)
+            for name, framework in ontology_frameworks.items()
+        }
+
+    def _normalize_framework(
+        self,
+        *,
+        name: str,
+        framework: dict[str, Any],
+    ) -> dict[str, Any]:
+        normalized = dict(framework)
+        url = normalized.get("url")
+        configured_path = normalized.pop("path", None)
+        configured_owl_path = normalized.get("owl_path")
+
+        if url is not None:
+            if configured_path is not None:
+                raise ValueError("Configure exactly one of url or path.")
+            if not isinstance(url, str) or not url:
+                raise ValueError(f"Ontology framework {name!r} requires a string URL.")
+            owl_path = configured_owl_path
+            if owl_path is None:
+                owl_path = self.storage_dir / self._filename_from_url(
+                    name=name,
+                    url=url,
+                )
+        else:
+            owl_path = (
+                configured_owl_path
+                if configured_owl_path is not None
+                else configured_path
+            )
+            if owl_path is None:
+                raise ValueError(
+                    f"Ontology framework {name!r} must configure exactly one of "
+                    "url or path."
+                )
+
+        normalized["owl_path"] = self._path_value(
+            value=owl_path,
+            name=name,
+            field="owl_path",
+        )
+        normalized["json_path"] = self._json_path_value(
+            value=normalized.get("json_path"),
+            owl_path=normalized["owl_path"],
+            name=name,
+        )
+        return normalized
 
     def get(self, name: str, force: bool = False) -> Path:
         owl_path = self._target_path(name)
-        json_path = self._json_target_path(owl_path)
+        json_path = self._json_target_path(name)
         if json_path.exists() and not force:
             return json_path
 
         if force and self._is_url_framework(name):
             self._download_to_path(name, owl_path)
-        elif owl_path.exists():
-            self.downloaded_paths[name] = owl_path
-        else:
+        elif not owl_path.exists():
             owl_path = self.download(name)
 
         json_path.parent.mkdir(parents=True, exist_ok=True)
@@ -157,11 +249,9 @@ class OntoStore:
         if self._is_path_framework(name):
             if not target.exists():
                 raise FileNotFoundError(target)
-            self.downloaded_paths[name] = target
             return target
 
         if target.exists():
-            self.downloaded_paths[name] = target
             return target
 
         return self._download_to_path(name, target)
@@ -172,30 +262,29 @@ class OntoStore:
         response = requests.get(url, timeout=30)
         response.raise_for_status()
         target.write_bytes(response.content)
-        self.downloaded_paths[name] = target
         return target
 
-    def _json_target_path(self, owl_path: Path) -> Path:
-        return self.storage_dir / "jsons" / f"{owl_path.stem}.json"
+    def _json_target_path(self, name: str) -> Path:
+        framework = self.ontology_frameworks[name]
+        json_path = framework["json_path"]
+        if isinstance(json_path, Path):
+            return json_path
+        if isinstance(json_path, str) and json_path:
+            return Path(json_path)
+        raise ValueError(
+            f"Ontology framework {name!r} requires a string or Path json_path."
+        )
 
     def _target_path(self, name: str) -> Path:
-        path = self._framework_path(name)
-        if path is not None:
-            return path
-
-        url = self._framework_url(name)
-        return self.storage_dir / self._filename_from_url(name=name, url=url)
-
-    def _framework_path(self, name: str) -> Path | None:
         framework = self.ontology_frameworks[name]
-        path = framework.get("path")
-        if path is None:
-            return None
-        if isinstance(path, Path):
-            return path
-        if isinstance(path, str) and path:
-            return Path(path)
-        raise ValueError(f"Ontology framework {name!r} requires a string or Path path.")
+        owl_path = framework["owl_path"]
+        if isinstance(owl_path, Path):
+            return owl_path
+        if isinstance(owl_path, str) and owl_path:
+            return Path(owl_path)
+        raise ValueError(
+            f"Ontology framework {name!r} requires a string or Path owl_path."
+        )
 
     def _framework_url(self, name: str) -> str:
         framework = self.ontology_frameworks[name]
@@ -206,10 +295,31 @@ class OntoStore:
         return url
 
     def _is_path_framework(self, name: str) -> bool:
-        return self._framework_path(name) is not None
+        return "url" not in self.ontology_frameworks[name]
 
     def _is_url_framework(self, name: str) -> bool:
-        return self._framework_path(name) is None
+        return "url" in self.ontology_frameworks[name]
+
+    @staticmethod
+    def _path_value(*, value: Any, name: str, field: str) -> Path:
+        if isinstance(value, Path):
+            return value
+        if isinstance(value, str) and value:
+            return Path(value)
+        raise ValueError(
+            f"Ontology framework {name!r} requires a string or Path {field}."
+        )
+
+    def _json_path_value(
+        self,
+        *,
+        value: Any,
+        owl_path: Path,
+        name: str,
+    ) -> Path:
+        if value is None:
+            return self.storage_dir / "jsons" / f"{owl_path.stem}.json"
+        return self._path_value(value=value, name=name, field="json_path")
 
     @staticmethod
     def _filename_from_url(*, name: str, url: str) -> str:

@@ -185,27 +185,27 @@ UBERON, HP, CL, ChEBI, PATO, OBI, SNOMED CT, NCIT, and NCBITaxon unless a
 caller overrides those entries in the constructor. Each built-in config
 includes OLS4-sourced `title`, `description`, `version`, and `url` metadata.
 Most default `url` values use OLS4 `versionIri` values; EFO and UBERON use
-stable current URLs. `OntoStore.configure_framework(...)` is the single method
-for adding, replacing, or removing framework configs. Add/replace calls require
-exactly one of `url` or `path`, and may include optional `title`,
-`description`, and `version` metadata. Removal deletes the framework entry and
-clears any in-memory `downloaded_paths` entry for that framework.
+stable current URLs. Framework configs are normalized at construction time with
+concrete `owl_path` and `json_path` fields. `OntoStore.add_url(...)` adds or
+replaces one URL-backed framework and accepts optional `owl_path`, `json_path`,
+`title`, `description`, and `version` metadata. `OntoStore.add_urls(...)` merges
+a framework mapping with the same supported fields. `configure_framework(...)`
+is the lower-level add/replace/remove API. Removal deletes the framework entry.
 `OntoStore.get(name, force=False)` is the ontology-serving entrypoint. It
-returns a parsed JSON `Path` under `storage_dir / "jsons"`, reusing existing
-JSON unless `force=True`. When JSON is missing for a URL-backed framework, it
-parses an existing local `.owl` or downloads the `.owl` first. With
-`force=True`, URL-backed frameworks redownload the `.owl` before reparsing, and
-path-backed frameworks reparse the configured local path without network I/O.
+returns the parsed JSON `Path` stored in `ontology_frameworks[name]["json_path"]`,
+reusing existing JSON unless `force=True`. When JSON is missing for a URL-backed
+framework, it parses the configured `owl_path` if present or downloads the
+`.owl` there first. With `force=True`, URL-backed frameworks redownload the
+`.owl` before reparsing, and path-backed frameworks reparse the configured local
+`owl_path` without network I/O.
 `OntoStore.download(name)` downloads only URL-backed frameworks with
 `requests.get(url, timeout=30)`, calls `raise_for_status()`, and returns the
-saved `Path`. Path-backed frameworks validate and return the configured local
-`Path` without calling `requests`. Successful downloads, existing-file hits,
-and path-backed validations are recorded in `self.downloaded_paths` as an
-in-memory `{ontology_id: Path}` mapping.
+configured `owl_path`. Path-backed frameworks validate and return the configured
+local `owl_path` without calling `requests`.
 
-Downloaded files are saved under
+When no explicit path is supplied, URL-backed `.owl` files are saved under
 `src/agentic_curator/curators/ontology_harmonizer/ontology_frameworks/` using
-the URL basename. Parsed JSON files are saved under the sibling `jsons/`
+the URL basename, and parsed JSON files are saved under the sibling `jsons/`
 directory within `storage_dir`. The default storage directory is ignored by
 git. Existing downloaded files are skipped by `download()` and existing JSON is
 skipped by `get()` unless `force=True`. Unknown framework names raise
@@ -746,46 +746,57 @@ class OntoStore:
     DEFAULT_STORAGE_DIR = package_dir / "ontology_frameworks"
 
     def __init__(ontology_frameworks=None, storage_dir=None):
-        self.ontology_frameworks = copy(DEFAULT_ONTOLOGY_FRAMEWORKS)
-        if ontology_frameworks:
-            self.ontology_frameworks.update(ontology_frameworks)
         self.storage_dir = DEFAULT_STORAGE_DIR if storage_dir is None else Path(storage_dir)
-        self.downloaded_paths = {}
+        self.ontology_frameworks = self._normalize_frameworks(
+            DEFAULT_ONTOLOGY_FRAMEWORKS plus ontology_frameworks
+        )
+
+    def add_url(name, url, owl_path=None, json_path=None, version=None,
+                title=None, description=None):
+        self.configure_framework(
+            name,
+            url=url,
+            owl_path=owl_path,
+            json_path=json_path,
+            version=version,
+            title=title,
+            description=description,
+        )
+
+    def add_urls(ontology_frameworks):
+        self.ontology_frameworks.update(self._normalize_frameworks(ontology_frameworks))
 
     def configure_framework(
         name,
         *,
         url=None,
         path=None,
+        owl_path=None,
+        json_path=None,
         version=None,
         title=None,
         description=None,
         remove=False,
     ):
         if remove:
-            reject any supplied url, path, or metadata
+            reject any supplied url, path, owl_path, json_path, or metadata
             del self.ontology_frameworks[name]
-            self.downloaded_paths.pop(name, None)
             return
 
-        require exactly one of url or path
-        framework = {"url": url} or {"path": Path(path)}
-        add supplied version, title, and description metadata
-        self.ontology_frameworks[name] = framework
+        normalize supplied url/path/owl_path/json_path and metadata
+        self.ontology_frameworks[name] = normalized framework
 ```
 
 ```python
 def get(name, force=False):
     owl_path = self._target_path(name)
-    json_path = self._json_target_path(owl_path)
+    json_path = self._json_target_path(name)
     if json_path.exists() and not force:
         return json_path
 
     if force and self._is_url_framework(name):
         self._download_to_path(name, owl_path)
-    elif owl_path.exists():
-        self.downloaded_paths[name] = owl_path
-    else:
+    elif not owl_path.exists():
         owl_path = self.download(name)
 
     json_path.parent.mkdir(parents=True, exist_ok=True)
@@ -796,11 +807,9 @@ def download(name):
     if self._is_path_framework(name):
         if target does not exist:
             raise FileNotFoundError
-        self.downloaded_paths[name] = target
         return target
 
     if target.exists():
-        self.downloaded_paths[name] = target
         return target
 
     return self._download_to_path(name, target)
@@ -811,38 +820,29 @@ def _download_to_path(name, target):
     response = requests.get(url, timeout=30)
     response.raise_for_status()
     target.write_bytes(response.content)
-    self.downloaded_paths[name] = target
     return target
 
 def _target_path(name):
-    path = self._framework_path(name)
-    if path is not None:
-        return path
+    return ontology_frameworks[name]["owl_path"]
 
-    url = self._framework_url(name)
-    return self.storage_dir / self._filename_from_url(name=name, url=url)
-
-def _json_target_path(owl_path):
-    return self.storage_dir / "jsons" / f"{owl_path.stem}.json"
+def _json_target_path(name):
+    return ontology_frameworks[name]["json_path"]
 ```
 
 Internal calls from `get()`:
 
-- `_target_path(name)`: computes the local path for the configured ontology.
-- `_json_target_path(owl_path)`: computes the parsed JSON path.
-- `download(name)`: downloads and records `downloaded_paths[name]` when the
-  URL-backed `.owl` file is missing, or validates a path-backed framework.
+- `_target_path(name)`: reads the configured `owl_path`.
+- `_json_target_path(name)`: reads the configured `json_path`.
+- `download(name)`: downloads a missing URL-backed `.owl` to `owl_path`, or
+  validates a path-backed framework.
 - `_download_to_path(name, owl_path)`: redownloads and overwrites the `.owl`
   when `force=True` for URL-backed frameworks.
 - `Owl2json(owl_path).write_json(json_path)`: parses the `.owl` into JSON.
 
 Internal calls from `download()`:
 
-- `_target_path(name)`: computes the local path for the configured ontology.
-- `_download_to_path(name, target)`: writes the response bytes and records
-  `downloaded_paths[name]`.
-- `_framework_path(name)`: retrieves and validates an optional path-backed
-  framework config.
+- `_target_path(name)`: reads the configured `owl_path`.
+- `_download_to_path(name, target)`: writes response bytes to `owl_path`.
 - `_framework_url(name)`: retrieves and validates `ontology_frameworks[name]["url"]`.
 - `_filename_from_url(name=name, url=url)`: derives a non-empty basename from
   the URL path.
