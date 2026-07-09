@@ -74,13 +74,13 @@ class OntologyHarmonizer:
                     publication_context=publication_context,
                     ontostore=effective_ontostore,
                 )
-                self.harmonize_label(
+                self.harmonize_field(
                     normalized_target,
                     publication_context=publication_context,
                     ontostore=effective_ontostore,
                 )
                 if normalized_strategy in self.STRATEGY_HANDLERS:
-                    self.harmonize_with_strategy(
+                    self.harmonize_label(
                         normalized_target,
                         publication_context=publication_context,
                         ontostore=effective_ontostore,
@@ -211,7 +211,7 @@ class OntologyHarmonizer:
 
         return assignment
 
-    def harmonize_label(
+    def harmonize_field(
         self,
         target: dict[str, Any],
         *,
@@ -270,7 +270,7 @@ class OntologyHarmonizer:
 
         return assignment
 
-    def harmonize_with_strategy(
+    def harmonize_label(
         self,
         target: dict[str, Any],
         *,

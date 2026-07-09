@@ -1210,7 +1210,7 @@ def test_assign_onto_framework_raises_value_error_for_invalid_json_response() ->
         )
 
 
-def test_harmonize_label_uses_ontostore_field_lookup(tmp_path: Path) -> None:
+def test_harmonize_field_uses_ontostore_field_lookup(tmp_path: Path) -> None:
     store = OntoStore(
         fields={
             "tissue": {
@@ -1227,7 +1227,7 @@ def test_harmonize_label_uses_ontostore_field_lookup(tmp_path: Path) -> None:
         "pre_hz_label": "lung",
     }
 
-    result = OntologyHarmonizer().harmonize_label(
+    result = OntologyHarmonizer().harmonize_field(
         target,
         publication_context="context",
         ontostore=store,
@@ -1579,7 +1579,7 @@ def test_harmonize_calls_assign_onto_framework_for_each_target() -> None:
                 }
             )
 
-        def harmonize_label(self, target, *, publication_context, ontostore):
+        def harmonize_field(self, target, *, publication_context, ontostore):
             return False
 
     store = OntoStore()
@@ -1634,7 +1634,7 @@ def test_harmonize_calls_lookup_label_before_assign_onto_framework() -> None:
             calls.append(("assign", target["id"], publication_context))
             return False
 
-        def harmonize_label(self, target, *, publication_context, ontostore):
+        def harmonize_field(self, target, *, publication_context, ontostore):
             return False
 
     target = {"id": "target-0", "pre_hz_label": "lung"}
@@ -1677,7 +1677,7 @@ def test_harmonize_skips_assign_onto_framework_when_lookup_label_succeeds() -> N
             calls.append("assign")
             return False
 
-        def harmonize_label(self, target, *, publication_context, ontostore):
+        def harmonize_field(self, target, *, publication_context, ontostore):
             return False
 
     target = {"id": "target-0", "pre_hz_label": "lung"}
@@ -1702,7 +1702,7 @@ def test_harmonize_single_target_calls_assign_onto_framework_once() -> None:
         ):
             calls.append(target)
 
-        def harmonize_label(self, target, *, publication_context, ontostore):
+        def harmonize_field(self, target, *, publication_context, ontostore):
             return False
 
     target = {"id": "target-0", "pre_hz_field": "tissue", "pre_hz_label": "lung"}
@@ -1726,7 +1726,7 @@ def test_harmonize_without_targets_does_not_call_assign_onto_framework() -> None
         ):
             calls.append(target)
 
-        def harmonize_label(self, target, *, publication_context, ontostore):
+        def harmonize_field(self, target, *, publication_context, ontostore):
             return False
 
     RecordingHarmonizer().harmonize()
@@ -1747,7 +1747,7 @@ def test_harmonize_assign_onto_framework_receives_ontostore_override() -> None:
         ):
             calls.append(ontostore)
 
-        def harmonize_label(self, target, *, publication_context, ontostore):
+        def harmonize_field(self, target, *, publication_context, ontostore):
             return False
 
     constructor_store = OntoStore()
@@ -1786,11 +1786,11 @@ def test_harmonize_calls_field_harmonization_before_strategy_handler() -> None:
             calls.append("assign_framework")
             return {"decision": "unsure", "confidence": "low", "reason": "none"}
 
-        def harmonize_label(self, target, *, publication_context, ontostore):
-            calls.append("harmonize_label")
+        def harmonize_field(self, target, *, publication_context, ontostore):
+            calls.append("harmonize_field")
             return {"field": "tissue"}
 
-        def harmonize_with_strategy(
+        def harmonize_label(
             self,
             target,
             *,
@@ -1810,7 +1810,7 @@ def test_harmonize_calls_field_harmonization_before_strategy_handler() -> None:
     assert calls == [
         "lookup",
         "assign_framework",
-        "harmonize_label",
+        "harmonize_field",
         ("strategy", "websearch"),
     ]
 
@@ -1908,7 +1908,7 @@ def test_harmonize_skips_strategy_handler_when_lookup_label_succeeds() -> None:
             target["ontology_match"] = True
             return {"title": "lung"}
 
-        def harmonize_with_strategy(
+        def harmonize_label(
             self,
             target,
             *,

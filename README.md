@@ -354,8 +354,7 @@ metadata to the LLM. Framework prompt metadata includes only `id`, `title`,
 `OntoStore`. It parses a JSON object with `decision`, `confidence`, and
 `reason`, stores it at `ontology_framework_assignment`, and sets `ontology_id`
 when `decision` is a configured framework ID. After assignment, `harmonize(...)`
-routes only
-the target field through `harmonize_label(...)`: first by dictionary lookup
+routes the target field through `harmonize_field(...)`: first by dictionary lookup
 against `ontostore.fields`, then by LLM field assignment when no field matches.
 It routes only `websearch` and `rag` targets to placeholder strategy handlers,
 which store `ontology_strategy_result` with the strategy,
@@ -632,13 +631,13 @@ class OntologyHarmonizer:
                     publication_context=publication_context,
                     ontostore=effective_store,
                 )
-                self.harmonize_label(
+                self.harmonize_field(
                     target,
                     publication_context=publication_context,
                     ontostore=effective_store,
                 )
                 if strategy in strategy_handlers:
-                    self.harmonize_with_strategy(
+                    self.harmonize_label(
                         target,
                         publication_context=publication_context,
                         ontostore=effective_store,
@@ -682,7 +681,7 @@ class OntologyHarmonizer:
             target["ontology_id"] = assignment["decision"]
         return assignment
 
-    def harmonize_label(target, publication_context, ontostore):
+    def harmonize_field(target, publication_context, ontostore):
         lookup = ontostore.lookup_fields(target["hz_field"])
         if lookup:
             target["hz_field"] = lookup["field"]
@@ -711,7 +710,7 @@ class OntologyHarmonizer:
             ontostore.fields[target["hz_field"]] = assignment metadata
         return assignment
 
-    def harmonize_with_strategy(target, publication_context, ontostore, strategy):
+    def harmonize_label(target, publication_context, ontostore, strategy):
         handler = strategy handler class for websearch or rag
         return handler().handle(
             target,

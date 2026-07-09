@@ -117,8 +117,8 @@ Public methods:
 - `assign_onto_framework(target, *, publication_context, ontostore) -> dict`
 - `harmonize_miniml_json(publication_context=None, miniml_json=None, ontostore=None, target_paths=None, strategy="identity") -> dict`
 - `harmonize(publication_context=None, harmonization_targets=None, target=None, strategy="identity", ontostore=None, target_paths=None) -> dict`
-- `harmonize_label(target, *, publication_context, ontostore) -> Any`
-- `harmonize_with_strategy(target, *, publication_context, ontostore, strategy) -> dict`
+- `harmonize_field(target, *, publication_context, ontostore) -> Any`
+- `harmonize_label(target, *, publication_context, ontostore, strategy) -> dict`
 - `lookup_label(target, *, publication_context, ontostore, strategy) -> Any`
 
 `harmonize_miniml_json(...)` extracts targets from MINiML-style JSON with
@@ -164,9 +164,9 @@ and `version`; download URLs and configured file paths remain internal to
 `OntoStore`. It parses JSON with `decision`, `confidence`, and `reason`, stores
 it at `ontology_framework_assignment`, and sets `ontology_id` when `decision` is
 a configured framework ID. After assignment, `harmonize(...)` calls
-`harmonize_label(...)`, which uses `OntoStore.lookup_fields(...)` and falls back
+`harmonize_field(...)`, which uses `OntoStore.lookup_fields(...)` and falls back
 to LLM-backed `assign_field(...)`. Then `harmonize(...)` calls
-`harmonize_with_strategy(...)` only for `websearch` and `rag`; those placeholder
+`harmonize_label(...)` only for `websearch` and `rag`; those placeholder
 handlers store `ontology_strategy_result` with `strategy`,
 `status="placeholder"`, and `reason`. The default `identity` strategy does not
 call a handler.
@@ -637,13 +637,13 @@ class OntologyHarmonizer:
                     publication_context=publication_context,
                     ontostore=effective_ontostore,
                 )
-                self.harmonize_label(
+                self.harmonize_field(
                     target,
                     publication_context=publication_context,
                     ontostore=effective_ontostore,
                 )
                 if strategy in self.STRATEGY_HANDLERS:
-                    self.harmonize_with_strategy(
+                    self.harmonize_label(
                         target,
                         publication_context=publication_context,
                         ontostore=effective_ontostore,
@@ -706,7 +706,7 @@ class OntologyHarmonizer:
             target["ontology_id"] = assignment["decision"]
         return assignment
 
-    def harmonize_label(
+    def harmonize_field(
         target,
         *,
         publication_context,
@@ -749,7 +749,7 @@ class OntologyHarmonizer:
             ontostore.fields[target["hz_field"]] = assignment metadata
         return assignment
 
-    def harmonize_with_strategy(
+    def harmonize_label(
         target,
         *,
         publication_context,
