@@ -28,6 +28,16 @@ Install development tools as well:
 python -m pip install -e ".[dev]"
 ```
 
+Or bootstrap the editable package and direct runtime/dev dependencies from the
+requirements file:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+`pyproject.toml` is the canonical packaging source; `requirements.txt` mirrors
+the direct dependencies for pip-based environment setup.
+
 ### Requirements
 
 - Python `>=3.10`
@@ -373,6 +383,29 @@ Provider adapters:
 
 Both adapters support injected clients for tests and return parsed text through
 the compatibility `generate_response(...)` method.
+
+#### LLM Troubleshooting
+
+The local `.env` has the package installed editable and includes the required
+provider SDKs. If Gemini calls fail while Google ADC exists, first check token
+refresh connectivity:
+
+```bash
+.env/bin/python - <<'PY'
+import google.auth
+from google.auth.transport.requests import Request
+
+creds, project = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+print(project, creds.valid, creds.expired)
+creds.refresh(Request())
+print(creds.valid, creds.expired)
+PY
+```
+
+In restricted execution environments, DNS/network blocking of
+`oauth2.googleapis.com` can prevent OAuth token refresh even when credentials
+are present. Run LLM calls with network access or outside the restricted
+sandbox when this occurs.
 
 ### Code flow
 

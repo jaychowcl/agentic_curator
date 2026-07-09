@@ -26,6 +26,7 @@ Tracked project layout:
 
 ```text
 pyproject.toml
+requirements.txt
 README.md
 LICENSE
 docs/
@@ -96,6 +97,8 @@ The package uses a `src/` layout with setuptools:
 - Python requirement: `>=3.10`
 - runtime dependencies: `anthropic[vertex]>=0.107,<1`, `google-genai>=1.72,<2`, `rdflib>=7,<8`, and `requests>=2,<3`
 - dev extra: `pytest>=8`
+- `requirements.txt` mirrors the direct runtime/dev dependencies for pip-based
+  environment bootstrap and includes `-e .`
 - console scripts:
   - `cli_thematic_reviewer = "agentic_curator.cli.cli_thematic_reviewer:main"`
   - `cli_ontology_harmonizer = "agentic_curator.cli.cli_ontology_harmonizer:main"`
@@ -107,6 +110,14 @@ command is:
 ```bash
 .env/bin/python -m pip install -e ".[dev]"
 ```
+
+Equivalent requirements bootstrap:
+
+```bash
+.env/bin/python -m pip install -r requirements.txt
+```
+
+`pyproject.toml` remains the canonical packaging source.
 
 <a id="public-api"></a>
 ## Public API
@@ -1590,6 +1601,13 @@ platform. The Claude-routed platform drops Gemini-only options such as
 `enterprise`, `client`, and a default model when deriving platform options, but
 keeps shared options such as `project` and `location`.
 
+LLM troubleshooting note: the local `.env` can have all dependencies installed
+and Google ADC present while sandboxed calls still fail. In this environment,
+`google.auth.default(...)` found ADC for project `prj-int-dev-saez-ai-thema`,
+but sandboxed token refresh failed resolving `oauth2.googleapis.com`. The same
+refresh succeeded with network access. This indicates a restricted network/DNS
+failure during OAuth token refresh, not missing dependencies or absent ADC.
+
 <a id="gemini-enterprise-platform"></a>
 ## Gemini Enterprise Platform
 
@@ -1788,6 +1806,12 @@ Install or refresh the local editable environment:
 
 ```bash
 .env/bin/python -m pip install -e ".[dev]"
+```
+
+Install from `requirements.txt`:
+
+```bash
+.env/bin/python -m pip install -r requirements.txt
 ```
 
 Run tests:

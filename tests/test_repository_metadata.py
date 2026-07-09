@@ -36,7 +36,10 @@ def _requires_header(path: Path) -> bool:
         return False
     if _is_prompt_markdown(path):
         return False
-    return path.suffix in {".py", ".md", ".toml"} or path.name == ".gitignore"
+    return path.suffix in {".py", ".md", ".toml"} or path.name in {
+        ".gitignore",
+        "requirements.txt",
+    }
 
 
 def test_tracked_comment_capable_files_have_authors_header() -> None:

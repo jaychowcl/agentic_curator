@@ -1,0 +1,15 @@
+# =============================================================================
+# Authors
+# =============================================================================
+# Created by jaychowcl @ Saez-Rodriguez Group & GSK on June 2026
+# https://github.com/jaychowcl
+# https://saezlab.org
+# https://www.gsk.com/
+# =============================================================================
+
+-e .
+anthropic[vertex]>=0.107,<1
+google-genai>=1.72,<2
+rdflib>=7,<8
+requests>=2,<3
+pytest>=8
