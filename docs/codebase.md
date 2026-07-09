@@ -116,6 +116,7 @@ Public methods:
 - `assign_onto_framework(target, *, publication_context, ontostore) -> dict`
 - `harmonize_miniml_json(publication_context=None, miniml_json=None, ontostore=None, target_paths=None, strategy="identity") -> dict`
 - `harmonize(publication_context=None, harmonization_targets=None, target=None, strategy="identity", ontostore=None, target_paths=None) -> dict`
+- `harmonize_with_strategy(target, *, publication_context, ontostore, strategy) -> dict`
 - `lookup_label(target, *, publication_context, ontostore, strategy) -> Any`
 
 `harmonize_miniml_json(...)` extracts targets from MINiML-style JSON with
@@ -132,7 +133,7 @@ The lower-level `harmonize(...)` returns a target wrapper:
 {
     "publication_context": publication_context,
     "harmonization_targets": normalized_targets,
-    "strategy": "identity",
+    "strategy": "direct",
     "target_paths": target_paths,
 }
 ```
@@ -141,8 +142,9 @@ The lower-level `harmonize(...)` returns a target wrapper:
 dictionary, list, or `None`, `harmonization_targets` may be a list of extracted
 target dictionaries, a single target dictionary, or `None`, and `target` may be
 a single target dictionary. Passing both `target` and `harmonization_targets`
-raises `ValueError`. Supported strategies are `identity` and `noop`; `noop` is
-normalized to `identity`. A per-call `ontostore` override must be an `OntoStore`.
+raises `ValueError`. Canonical strategies are `direct`, `websearch`, and `rag`;
+`identity` and `noop` are compatibility aliases for `direct`. A per-call
+`ontostore` override must be an `OntoStore`.
 `harmonize(...)` calls `lookup_label(...)` once for each normalized target. On a
 match, `lookup_label(...)` mutates the target with `ontology_match=True`,
 `ontology_id`, and `ontology_lookup` from `OntoStore.lookup(...)`. Before
@@ -157,7 +159,10 @@ when a target has `occurrences`. When `lookup_label(...)` returns `False`,
 the target, publication context, and candidate ontology framework config, parses
 JSON with `decision`, `confidence`, and `reason`, stores it at
 `ontology_framework_assignment`, and sets `ontology_id` when `decision` is a
-configured framework ID.
+configured framework ID. After assignment, `harmonize(...)` calls
+`harmonize_with_strategy(...)`, which routes to the selected placeholder
+strategy handler and stores `ontology_strategy_result` with `strategy`,
+`status="placeholder"`, and `reason`.
 
 `OntologyHarmonizer(ontostore=None, llm=None)` creates a default `OntoStore`
 when no store is supplied and lazily creates `LLM()` only when framework
@@ -445,8 +450,8 @@ responsibilities stay with callers.
 
 `OntologyHarmonizer.harmonize(...)` normalizes single-target input, validates
 the selected strategy, first assigns ontology metadata through
-`OntoStore.lookup(...)`, then calls `assign_onto_framework(...)` and the LLM
-only when exact lookup fails.
+`OntoStore.lookup(...)`, then calls `assign_onto_framework(...)`, the LLM, and
+the selected strategy handler only when exact lookup fails.
 
 <a id="method-orchestrator-pseudocode"></a>
 ## Method Orchestrator Pseudocode
@@ -619,6 +624,12 @@ class OntologyHarmonizer:
                     publication_context=publication_context,
                     ontostore=effective_ontostore,
                 )
+                self.harmonize_with_strategy(
+                    target,
+                    publication_context=publication_context,
+                    ontostore=effective_ontostore,
+                    strategy=strategy,
+                )
         return {
             "publication_context": publication_context,
             "harmonization_targets": targets,
@@ -674,6 +685,20 @@ class OntologyHarmonizer:
         if assignment["decision"] is a configured framework ID:
             target["ontology_id"] = assignment["decision"]
         return assignment
+
+    def harmonize_with_strategy(
+        target,
+        *,
+        publication_context,
+        ontostore,
+        strategy,
+    ):
+        handler_class = self.STRATEGY_HANDLERS[strategy]
+        return handler_class().handle(
+            target,
+            publication_context=publication_context,
+            ontostore=ontostore,
+        )
 
     def _candidate_ontology_ids(target, ontostore):
         configured_ids = target.get("ontology_frameworks", target.get("ontology_ids"))

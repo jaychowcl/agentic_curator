@@ -11,6 +11,11 @@ from agentic_curator.curators.ontology_harmonizer.harmonization_target_extractor
     StartPathSpec,
 )
 from agentic_curator.curators.ontology_harmonizer.ontology_store import OntoStore
+from agentic_curator.curators.ontology_harmonizer.strategy_handlers import (
+    DirectStrategyHandler,
+    RagStrategyHandler,
+    WebsearchStrategyHandler,
+)
 from agentic_curator.wrappers import LLM
 
 
@@ -22,8 +27,16 @@ class OntologyHarmonizer:
 
     DEFAULT_TARGET_PATHS = HarmonizationTargetExtractor.DEFAULT_TARGET_PATHS
     STRATEGY_ALIASES = {
-        "identity": "identity",
-        "noop": "identity",
+        "direct": "direct",
+        "identity": "direct",
+        "noop": "direct",
+        "rag": "rag",
+        "websearch": "websearch",
+    }
+    STRATEGY_HANDLERS = {
+        "direct": DirectStrategyHandler,
+        "rag": RagStrategyHandler,
+        "websearch": WebsearchStrategyHandler,
     }
 
     def __init__(
@@ -63,6 +76,12 @@ class OntologyHarmonizer:
                     normalized_target,
                     publication_context=publication_context,
                     ontostore=effective_ontostore,
+                )
+                self.harmonize_with_strategy(
+                    normalized_target,
+                    publication_context=publication_context,
+                    ontostore=effective_ontostore,
+                    strategy=normalized_strategy,
                 )
 
         return {
@@ -188,6 +207,28 @@ class OntologyHarmonizer:
             target["ontology_id"] = decision
 
         return assignment
+
+    def harmonize_with_strategy(
+        self,
+        target: dict[str, Any],
+        *,
+        publication_context: str | None,
+        ontostore: OntoStore,
+        strategy: str,
+    ) -> dict[str, Any]:
+        handler_class = self.STRATEGY_HANDLERS.get(strategy)
+        if handler_class is None:
+            supported = ", ".join(sorted(self.STRATEGY_HANDLERS))
+            raise ValueError(
+                f"Unknown harmonization strategy {strategy!r}. "
+                f"Supported strategies: {supported}."
+            )
+
+        return handler_class().handle(
+            target,
+            publication_context=publication_context,
+            ontostore=ontostore,
+        )
 
     def _llm(self) -> Any:
         if self.llm is None:

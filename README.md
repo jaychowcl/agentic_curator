@@ -129,7 +129,7 @@ framework assignment:
 {
     "publication_context": publication_context,
     "harmonization_targets": harmonization_targets,
-    "strategy": "identity",
+    "strategy": "direct",
     "target_paths": target_paths,
 }
 ```
@@ -337,8 +337,9 @@ When `target_paths` is omitted it builds paths for every
 strategy="identity", ontostore=None, target_paths=None)` accepts either a list
 of targets, a single target dictionary via `target=`, or a single dictionary in
 `harmonization_targets`. Passing both `target` and `harmonization_targets`
-raises `ValueError`. Supported strategies are `identity` and `noop`; `noop` is
-normalized to `identity`. Before returning, `harmonize(...)` calls
+raises `ValueError`. Supported strategies are `direct`, `websearch`, and `rag`;
+`identity` and `noop` are compatibility aliases for `direct`. Before returning,
+`harmonize(...)` calls
 `lookup_label(...)` once for each normalized target. The harmonizer first
 normalizes working `hz_field` and `hz_label` values from existing `hz_*` values
 or from `pre_hz_field` and `pre_hz_label`: lowercase, trim, strip edge
@@ -350,13 +351,16 @@ fails, `harmonize(...)` calls the fallback
 the target, publication context, and candidate ontology framework config to the
 LLM, parses a JSON object with `decision`, `confidence`, and `reason`, stores it
 at `ontology_framework_assignment`, and sets `ontology_id` when `decision` is a
-configured framework ID. It returns:
+configured framework ID. After assignment, `harmonize(...)` routes the target to
+the selected placeholder strategy handler, which stores
+`ontology_strategy_result` with the strategy, `status="placeholder"`, and a
+reason. It returns:
 
 ```python
 {
     "publication_context": publication_context,
     "harmonization_targets": normalized_targets,
-    "strategy": "identity",
+    "strategy": "direct",
     "target_paths": target_paths,
 }
 ```
@@ -617,6 +621,12 @@ class OntologyHarmonizer:
                     publication_context=publication_context,
                     ontostore=effective_store,
                 )
+                self.harmonize_with_strategy(
+                    target,
+                    publication_context=publication_context,
+                    ontostore=effective_store,
+                    strategy=strategy,
+                )
         return {
             "publication_context": publication_context,
             "harmonization_targets": targets,
@@ -650,6 +660,14 @@ class OntologyHarmonizer:
         if assignment["decision"] is a configured framework ID:
             target["ontology_id"] = assignment["decision"]
         return assignment
+
+    def harmonize_with_strategy(target, publication_context, ontostore, strategy):
+        handler = strategy handler class for direct, websearch, or rag
+        return handler().handle(
+            target,
+            publication_context=publication_context,
+            ontostore=ontostore,
+        )
 ```
 
 Target extraction is handled by
