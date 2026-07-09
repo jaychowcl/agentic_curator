@@ -26,8 +26,6 @@ class OntologyHarmonizer:
 
     DEFAULT_TARGET_PATHS = HarmonizationTargetExtractor.DEFAULT_TARGET_PATHS
     STRATEGY_ALIASES = {
-        "identity": "identity",
-        "noop": "identity",
         "rag": "rag",
         "websearch": "websearch",
     }
@@ -50,7 +48,7 @@ class OntologyHarmonizer:
         publication_context: str | None = None,
         harmonization_targets: dict[str, Any] | list[dict[str, Any]] | None = None,
         target: dict[str, Any] | None = None,
-        strategy: str = "identity",
+        strategy: str = "websearch",
         ontostore: OntoStore | None = None,
         target_paths: list[StartPathSpec] | None = None,
         lookup_llm_judge: bool = False,
@@ -108,7 +106,7 @@ class OntologyHarmonizer:
         miniml_json: dict[str, Any] | list[Any] | None = None,
         ontostore: OntoStore | None = None,
         target_paths: list[StartPathSpec] | None = None,
-        strategy: str = "identity",
+        strategy: str = "websearch",
         lookup_llm_judge: bool = False,
         lookup_llm_threshold: int = 2,
         llm: bool = True,

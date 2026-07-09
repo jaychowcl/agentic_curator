@@ -1133,7 +1133,7 @@ def test_lookup_label_matches_available_store_framework(
         target,
         publication_context=None,
         ontostore=store,
-        strategy="identity",
+        strategy="websearch",
     )
 
     expected_lookup = {**term, "ontology_id": "uberon"}
@@ -1174,7 +1174,7 @@ def test_lookup_label_uses_existing_hz_label_after_harmonizing_it(
         target,
         publication_context=None,
         ontostore=store,
-        strategy="identity",
+        strategy="websearch",
     )
 
     expected_lookup = {**term, "ontology_id": "uberon"}
@@ -1218,7 +1218,7 @@ def test_lookup_label_selects_first_hit_without_llm_judge_by_default(
         target,
         publication_context="lung sample context",
         ontostore=store,
-        strategy="identity",
+        strategy="websearch",
     )
 
     expected_hits = [
@@ -1255,7 +1255,7 @@ def test_lookup_label_llm_judge_is_not_called_below_threshold(
         target,
         publication_context="context",
         ontostore=store,
-        strategy="identity",
+        strategy="websearch",
         lookup_llm_judge=True,
     )
 
@@ -1309,7 +1309,7 @@ def test_lookup_label_llm_judge_selects_best_hit_by_id(
         target,
         publication_context="sample is oral buccal tissue",
         ontostore=store,
-        strategy="identity",
+        strategy="websearch",
         lookup_llm_judge=True,
     )
 
@@ -1369,7 +1369,7 @@ def test_lookup_label_llm_judge_rejects_unknown_decision(
             {"id": "target-0", "pre_hz_label": "lung"},
             publication_context=None,
             ontostore=store,
-            strategy="identity",
+            strategy="websearch",
             lookup_llm_judge=True,
         )
 
@@ -1406,7 +1406,7 @@ def test_lookup_label_llm_judge_raises_value_error_for_invalid_json_response(
             {"id": "target-0", "pre_hz_label": "lung"},
             publication_context=None,
             ontostore=store,
-            strategy="identity",
+            strategy="websearch",
             lookup_llm_judge=True,
         )
 
@@ -1443,7 +1443,7 @@ def test_lookup_label_respects_target_framework_subset(
         target,
         publication_context=None,
         ontostore=store,
-        strategy="identity",
+        strategy="websearch",
     )
 
     assert result is False
@@ -1786,7 +1786,7 @@ def test_harmonize_returns_targets_wrapper() -> None:
     assert result == {
         "publication_context": "Full publication context",
         "harmonization_targets": harmonization_targets,
-        "strategy": "identity",
+        "strategy": "websearch",
         "target_paths": ["/sample"],
     }
 
@@ -1804,7 +1804,7 @@ def test_harmonize_accepts_single_target() -> None:
     assert result == {
         "publication_context": None,
         "harmonization_targets": [target],
-        "strategy": "identity",
+        "strategy": "websearch",
         "target_paths": None,
     }
 
@@ -1830,22 +1830,20 @@ def test_harmonize_rejects_target_and_targets_together() -> None:
         )
 
 
-def test_harmonize_accepts_noop_strategy_alias_as_identity() -> None:
-    result = OntologyHarmonizer().harmonize(
-        harmonization_targets=[],
-        strategy="noop",
-    )
+def test_harmonize_rejects_noop_strategy() -> None:
+    with pytest.raises(ValueError, match="strategy"):
+        OntologyHarmonizer().harmonize(
+            harmonization_targets=[],
+            strategy="noop",
+        )
 
-    assert result["strategy"] == "identity"
 
-
-def test_harmonize_accepts_identity_strategy() -> None:
-    result = OntologyHarmonizer().harmonize(
-        harmonization_targets=[],
-        strategy="identity",
-    )
-
-    assert result["strategy"] == "identity"
+def test_harmonize_rejects_identity_strategy() -> None:
+    with pytest.raises(ValueError, match="strategy"):
+        OntologyHarmonizer().harmonize(
+            harmonization_targets=[],
+            strategy="identity",
+        )
 
 
 def test_harmonize_accepts_websearch_and_rag_strategies() -> None:
@@ -1882,7 +1880,7 @@ def test_harmonize_defaults_to_empty_targets() -> None:
     assert result == {
         "publication_context": None,
         "harmonization_targets": [],
-        "strategy": "identity",
+        "strategy": "websearch",
         "target_paths": None,
     }
 
@@ -1937,7 +1935,7 @@ def test_harmonize_accepts_ontostore_override() -> None:
     assert result == {
         "publication_context": None,
         "harmonization_targets": [],
-        "strategy": "identity",
+        "strategy": "websearch",
         "target_paths": None,
     }
 
@@ -1973,7 +1971,6 @@ def test_harmonize_calls_assign_onto_framework_for_each_target() -> None:
     result = RecordingHarmonizer(ontostore=store).harmonize(
         publication_context="context",
         harmonization_targets=targets,
-        strategy="noop",
     )
 
     assert result["harmonization_targets"] == targets
@@ -2026,11 +2023,10 @@ def test_harmonize_calls_lookup_label_before_assign_onto_framework() -> None:
     RecordingHarmonizer().harmonize(
         publication_context="context",
         target=target,
-        strategy="noop",
     )
 
     assert calls == [
-        ("lookup", "target-0", "context", "identity"),
+        ("lookup", "target-0", "context", "websearch"),
         ("assign", "target-0", "context"),
     ]
 
@@ -2567,15 +2563,23 @@ def test_rag_placeholder_strategy_handler_mutates_target() -> None:
     }
 
 
-def test_harmonize_identity_assignment_does_not_route_to_strategy_handler() -> None:
-    target = {"id": "target-identity", "pre_hz_label": "lung"}
+def test_harmonize_default_strategy_routes_to_websearch_handler() -> None:
+    target = {"id": "target-websearch", "pre_hz_label": "lung"}
 
     result = OntologyHarmonizer(llm=FakeLLM()).harmonize(target=target)
 
-    assert result["strategy"] == "identity"
+    assert result["strategy"] == "websearch"
     assert target["ontology_match"] is False
     assert "ontology_framework_assignment" in target
-    assert "ontology_strategy_result" not in target
+    assert target["ontology_strategy_result"] == {
+        "strategy": "websearch",
+        "status": "not_harmonized",
+        "decision": "false",
+        "confidence": "none",
+        "reason": "No assigned ontology framework is available for websearch.",
+        "ols_hits": [],
+        "web_hits": [],
+    }
 
 
 def test_harmonize_skips_strategy_handler_when_lookup_label_succeeds() -> None:
@@ -3090,9 +3094,21 @@ def test_harmonize_miniml_json_accepts_explicit_target_paths() -> None:
                         "reason": "No clear field match.",
                         "new_field": True,
                     },
+                    "ontology_strategy_result": {
+                        "strategy": "websearch",
+                        "status": "not_harmonized",
+                        "decision": "false",
+                        "confidence": "none",
+                        "reason": (
+                            "No assigned ontology framework is available for "
+                            "websearch."
+                        ),
+                        "ols_hits": [],
+                        "web_hits": [],
+                    },
                 }
             ],
-        "strategy": "identity",
+        "strategy": "websearch",
         "target_paths": ["/sample"],
         "miniml_json": {
             "sample": {
@@ -3119,7 +3135,7 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
             publication_context=None,
             harmonization_targets=None,
             target=None,
-            strategy="identity",
+            strategy="websearch",
             ontostore=None,
             target_paths=None,
             lookup_llm_judge=False,
@@ -3149,7 +3165,6 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
     result = RecordingHarmonizer().harmonize_miniml_json(
         publication_context="context",
         miniml_json=miniml_json,
-        strategy="noop",
         ontostore=store,
         target_paths=["/sample"],
     )
@@ -3200,7 +3215,7 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
                 }
             ],
             "target": None,
-            "strategy": "noop",
+            "strategy": "websearch",
             "ontostore": store,
             "target_paths": ["/sample"],
             "lookup_llm_judge": False,
@@ -3351,7 +3366,7 @@ def test_harmonize_accepts_target_paths() -> None:
     assert result == {
         "publication_context": None,
         "harmonization_targets": [],
-        "strategy": "identity",
+        "strategy": "websearch",
         "target_paths": [],
     }
 

@@ -129,7 +129,7 @@ framework assignment:
 {
     "publication_context": publication_context,
     "harmonization_targets": harmonization_targets,
-    "strategy": "identity",
+    "strategy": "websearch",
     "target_paths": target_paths,
 }
 ```
@@ -325,7 +325,7 @@ print(result)
 ```
 
 `harmonize_miniml_json(publication_context=None, miniml_json=None,
-ontostore=None, target_paths=None, strategy="identity")` extracts targets from
+ontostore=None, target_paths=None, strategy="websearch")` extracts targets from
 MINiML-style JSON, then calls the lower-level target-based `harmonize(...)`.
 When `target_paths` is omitted it builds paths for every
 `sample[*].channel[*]`, extracts meaningful sample metadata (`source`,
@@ -334,12 +334,12 @@ When `target_paths` is omitted it builds paths for every
 `occurrences` list.
 
 `harmonize(publication_context=None, harmonization_targets=None, target=None,
-strategy="identity", ontostore=None, target_paths=None, lookup_llm_judge=False,
+strategy="websearch", ontostore=None, target_paths=None, lookup_llm_judge=False,
 lookup_llm_threshold=2, llm=True)` accepts either a list of targets, a single
 target dictionary via `target=`, or a single dictionary in
 `harmonization_targets`. Passing both `target` and `harmonization_targets`
-raises `ValueError`. Supported strategies are `identity`, `websearch`, and
-`rag`; `noop` is a compatibility alias for `identity`. Before returning,
+raises `ValueError`. Supported strategies are `websearch` and `rag`; the
+default strategy is `websearch`. Before returning,
 `harmonize(...)` calls
 `lookup_label(...)` once for each normalized target. The harmonizer first
 normalizes working `hz_field` and `hz_label` values from existing `hz_*` values
@@ -367,13 +367,13 @@ It routes only `websearch` and `rag` targets to strategy handlers. `websearch`
 uses OLS4 restricted to the assigned `ontology_id`, then falls back to
 unrestricted OLS plus an injected web search client. Strategy results always
 include `strategy`, `status`, `decision`, `confidence`, and `reason`; the
-default `identity` strategy does not call a handler. It returns:
+`rag` strategy currently routes to a placeholder handler. It returns:
 
 ```python
 {
     "publication_context": publication_context,
     "harmonization_targets": normalized_targets,
-    "strategy": "identity",
+    "strategy": "websearch",
     "target_paths": target_paths,
 }
 ```
@@ -600,7 +600,7 @@ class OntologyHarmonizer:
         miniml_json,
         ontostore,
         target_paths,
-        strategy="identity",
+        strategy="websearch",
     ):
         effective_paths = target_paths or target_extractor.build_miniml_sample_target_paths(miniml_json)
         targets = self.target_extractor.extract(miniml_json, start_paths=effective_paths)
@@ -618,7 +618,7 @@ class OntologyHarmonizer:
         publication_context,
         harmonization_targets=None,
         target=None,
-        strategy="identity",
+        strategy="websearch",
         ontostore=None,
         target_paths=None,
         lookup_llm_judge=False,

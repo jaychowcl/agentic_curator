@@ -121,8 +121,8 @@ Public methods:
 - `apply_targets(miniml_json, harmonization_targets) -> dict | list | None`
 - `assign_field(target, *, publication_context, ontostore) -> dict`
 - `assign_onto_framework(target, *, publication_context, ontostore) -> dict`
-- `harmonize_miniml_json(publication_context=None, miniml_json=None, ontostore=None, target_paths=None, strategy="identity", lookup_llm_judge=False, lookup_llm_threshold=2, llm=True) -> dict`
-- `harmonize(publication_context=None, harmonization_targets=None, target=None, strategy="identity", ontostore=None, target_paths=None, lookup_llm_judge=False, lookup_llm_threshold=2, llm=True) -> dict`
+- `harmonize_miniml_json(publication_context=None, miniml_json=None, ontostore=None, target_paths=None, strategy="websearch", lookup_llm_judge=False, lookup_llm_threshold=2, llm=True) -> dict`
+- `harmonize(publication_context=None, harmonization_targets=None, target=None, strategy="websearch", ontostore=None, target_paths=None, lookup_llm_judge=False, lookup_llm_threshold=2, llm=True) -> dict`
 - `harmonize_field(target, *, publication_context, ontostore) -> Any`
 - `harmonize_label(target, *, publication_context, ontostore, strategy) -> dict`
 - `judge_lookup(target, *, publication_context, hits) -> dict`
@@ -145,7 +145,7 @@ The lower-level `harmonize(...)` returns a target wrapper:
 {
     "publication_context": publication_context,
     "harmonization_targets": normalized_targets,
-    "strategy": "identity",
+    "strategy": "websearch",
     "target_paths": target_paths,
 }
 ```
@@ -164,9 +164,9 @@ skipped.
 dictionary, list, or `None`, `harmonization_targets` may be a list of extracted
 target dictionaries, a single target dictionary, or `None`, and `target` may be
 a single target dictionary. Passing both `target` and `harmonization_targets`
-raises `ValueError`. Supported strategies are `identity`, `websearch`, and
-`rag`; `noop` is a compatibility alias for `identity`. A per-call `ontostore`
-override must be an `OntoStore`.
+raises `ValueError`. Supported strategies are `websearch` and `rag`; the
+default strategy is `websearch`. A per-call `ontostore` override must be an
+`OntoStore`.
 `harmonize(...)` calls `lookup_label(...)` once for each normalized target. On a
 match, `lookup_label(...)` mutates the target with `ontology_match=True`,
 `ontology_id`, selected `ontology_lookup`, and all `ontology_lookup_hits`.
@@ -202,7 +202,7 @@ response at `last_response`, and records quota or provider failures at
 unbounded requests against Gemini project-level RPM/TPM/RPD quotas. Strategy
 results always include `strategy`, `status`, `decision`, `confidence`, and
 `reason`, and include `web_search_error` when the search client reports one.
-The default `identity` strategy does not call a handler.
+The `rag` strategy currently routes to a placeholder handler.
 
 `OntologyHarmonizer(ontostore=None, llm=None)` creates a default `OntoStore`
 when no store is supplied and lazily creates `LLM()` only when framework
@@ -646,7 +646,7 @@ class OntologyHarmonizer:
         publication_context=None,
         harmonization_targets=None,
         target=None,
-        strategy="identity",
+        strategy="websearch",
         ontostore=None,
         target_paths=None,
         lookup_llm_judge=False,
@@ -868,7 +868,7 @@ class OntologyHarmonizer:
         miniml_json=None,
         ontostore=None,
         target_paths=None,
-        strategy="identity",
+        strategy="websearch",
     ):
         should_dedupe_targets = target_paths is None
         effective_target_paths = target_paths
