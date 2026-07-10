@@ -3247,9 +3247,83 @@ def test_apply_targets_adds_scalar_field_alternatives() -> None:
     assert miniml_json["sample"][0]["channel"][0]["source"] == "lung"
     assert miniml_json["sample"][0]["channel"][0]["source_hz_alternatives"] == [
         {
-            "hz_field": "sample_source",
+            "hz_field": "hz_sample_source",
             "hz_label": "lung tissue",
             "target_id": "target-0",
+        }
+    ]
+
+
+def test_apply_targets_adds_dynamic_ontology_metadata_fields() -> None:
+    miniml_json = {"sample": [{"channel": [{"organism": "Homo sapiens"}]}]}
+    targets = [
+        {
+            "id": "target-0",
+            "hz_field": "organism",
+            "hz_label": "homo_sapiens",
+            "ontology_id": "ncbitaxon",
+            "ontology_lookup": {
+                "id": "NCBITaxon_9606",
+                "accession": "NCBITaxon:9606",
+                "iri": "http://purl.obolibrary.org/obo/NCBITaxon_9606",
+                "ontology_id": "ncbitaxon",
+            },
+            "occurrences": [
+                {
+                    "pre_hz_field_path": "/sample/0/channel/0/organism",
+                    "pre_hz_label_path": "/sample/0/channel/0/organism",
+                    "parent_path": "/sample/0/channel/0",
+                }
+            ],
+        }
+    ]
+
+    OntologyHarmonizer().apply_targets(miniml_json, targets)
+
+    assert miniml_json["sample"][0]["channel"][0]["organism_hz_alternatives"] == [
+        {
+            "hz_field": "hz_organism",
+            "hz_label": "homo_sapiens",
+            "target_id": "target-0",
+            "hz_organism_id": "NCBITaxon_9606",
+            "hz_organism_onto": "ncbitaxon",
+        }
+    ]
+    assert "hz_organism_iri" not in miniml_json["sample"][0]["channel"][0][
+        "organism_hz_alternatives"
+    ][0]
+
+
+def test_apply_targets_falls_back_to_accession_and_lookup_ontology_id() -> None:
+    miniml_json = {"sample": {"cell_type": "fibroblast"}}
+    targets = [
+        {
+            "id": "target-0",
+            "hz_field": "cell_type",
+            "hz_label": "fibroblast",
+            "ontology_lookup": {
+                "accession": "CL:0000057",
+                "ontology_id": "cl",
+            },
+            "occurrences": [
+                {
+                    "pre_hz_field_path": "/sample/cell_type",
+                    "pre_hz_label_path": "/sample/cell_type",
+                    "parent_path": "/sample",
+                }
+            ],
+        }
+    ]
+
+    OntologyHarmonizer().apply_targets(miniml_json, targets)
+
+    assert miniml_json["sample"]["cell_type_hz_alternatives"] == [
+        {
+            "hz_field": "hz_cell_type",
+            "hz_label": "fibroblast",
+            "target_id": "target-0",
+            "hz_cell_type_id": "CL:0000057",
+            "hz_cell_type_onto": "cl",
         }
     ]
 
@@ -3286,11 +3360,11 @@ def test_apply_targets_adds_tag_value_object_alternatives() -> None:
     OntologyHarmonizer().apply_targets(miniml_json, targets)
 
     characteristic = miniml_json["sample"][0]["channel"][0]["characteristics"][0]
-    assert characteristic["hz_field"] == "disease_state"
+    assert characteristic["hz_field"] == "hz_disease_state"
     assert characteristic["hz_label"] == "normal"
     assert characteristic["hz_alternatives"] == [
         {
-            "hz_field": "disease_state",
+            "hz_field": "hz_disease_state",
             "hz_label": "normal",
             "target_id": "target-0",
         }
@@ -3325,11 +3399,11 @@ def test_apply_targets_adds_container_value_object_alternatives() -> None:
     OntologyHarmonizer().apply_targets(miniml_json, targets)
 
     organism = miniml_json["sample"][0]["channel"][0]["organism"][0]
-    assert organism["hz_field"] == "organism"
+    assert organism["hz_field"] == "hz_organism"
     assert organism["hz_label"] == "homo_sapiens"
     assert organism["hz_alternatives"] == [
         {
-            "hz_field": "organism",
+            "hz_field": "hz_organism",
             "hz_label": "homo_sapiens",
             "target_id": "target-0",
         }
@@ -3380,9 +3454,9 @@ def test_apply_targets_appends_colliding_scalar_alternatives_without_duplicates(
     OntologyHarmonizer().apply_targets(miniml_json, targets)
 
     assert miniml_json["sample"]["tissue_hz_alternatives"] == [
-        {"hz_field": "tissue", "hz_label": "lung", "target_id": "target-0"},
+        {"hz_field": "hz_tissue", "hz_label": "lung", "target_id": "target-0"},
         {
-            "hz_field": "anatomical_structure",
+            "hz_field": "hz_anatomical_structure",
             "hz_label": "lung",
             "target_id": "target-1",
         },
@@ -3419,10 +3493,10 @@ def test_apply_targets_applies_deduped_target_to_all_occurrences() -> None:
     OntologyHarmonizer().apply_targets(miniml_json, targets)
 
     assert miniml_json["sample"][0]["channel"][0]["source_hz_alternatives"] == [
-        {"hz_field": "sample_source", "hz_label": "lung", "target_id": "target-0"}
+        {"hz_field": "hz_sample_source", "hz_label": "lung", "target_id": "target-0"}
     ]
     assert miniml_json["sample"][1]["channel"][0]["source_hz_alternatives"] == [
-        {"hz_field": "sample_source", "hz_label": "lung", "target_id": "target-0"}
+        {"hz_field": "hz_sample_source", "hz_label": "lung", "target_id": "target-0"}
     ]
 
 
@@ -3451,7 +3525,7 @@ def test_apply_targets_resolves_escaped_paths_and_skips_missing_paths() -> None:
     OntologyHarmonizer().apply_targets(miniml_json, targets)
 
     assert miniml_json["sample/type"]["label~name_hz_alternatives"] == [
-        {"hz_field": "label_name", "hz_label": "lung", "target_id": "target-0"}
+        {"hz_field": "hz_label_name", "hz_label": "lung", "target_id": "target-0"}
     ]
     assert "missing_hz_alternatives" not in miniml_json["sample/type"]
 
@@ -3511,19 +3585,19 @@ def test_harmonize_miniml_json_extracts_default_targets() -> None:
     assert ("extract_protocol", "Long protocol text is not a target.") not in by_pre_hz_field_label
     first_channel = miniml_json["sample"][0]["channel"][0]
     assert first_channel["source_hz_alternatives"] == [
-        {"hz_field": "source", "hz_label": "oral_buccal_mucosa", "target_id": "target-0"}
+        {"hz_field": "hz_source", "hz_label": "oral_buccal_mucosa", "target_id": "target-0"}
     ]
     assert first_channel["molecule_hz_alternatives"] == [
-        {"hz_field": "molecule", "hz_label": "total_rna", "target_id": "target-1"}
+        {"hz_field": "hz_molecule", "hz_label": "total_rna", "target_id": "target-1"}
     ]
     assert first_channel["organism"][0]["hz_alternatives"] == [
-        {"hz_field": "organism", "hz_label": "homo_sapiens", "target_id": "target-2"}
+        {"hz_field": "hz_organism", "hz_label": "homo_sapiens", "target_id": "target-2"}
     ]
     assert first_channel["characteristics"][0]["hz_alternatives"] == [
-        {"hz_field": "disease_state", "hz_label": "normal", "target_id": "target-3"}
+        {"hz_field": "hz_disease_state", "hz_label": "normal", "target_id": "target-3"}
     ]
     assert first_channel["characteristics"][1]["hz_alternatives"] == [
-        {"hz_field": "tissue", "hz_label": "oral_buccal_mucosa", "target_id": "target-4"}
+        {"hz_field": "hz_tissue", "hz_label": "oral_buccal_mucosa", "target_id": "target-4"}
     ]
 
 
@@ -3580,7 +3654,7 @@ def test_harmonize_miniml_json_accepts_explicit_target_paths() -> None:
                 "tissue": "lung",
                 "tissue_hz_alternatives": [
                     {
-                        "hz_field": "tissue",
+                        "hz_field": "hz_tissue",
                         "hz_label": "lung",
                         "target_id": "target-0",
                     }
@@ -3654,7 +3728,7 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
                 "tissue": "lung",
                 "tissue_hz_alternatives": [
                     {
-                        "hz_field": "tissue",
+                        "hz_field": "hz_tissue",
                         "hz_label": "lung",
                         "target_id": "target-0",
                     }

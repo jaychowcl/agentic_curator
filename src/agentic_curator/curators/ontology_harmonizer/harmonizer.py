@@ -310,11 +310,42 @@ class OntologyHarmonizer:
         if hz_field is None or hz_label is None or target_id is None:
             return None
 
-        return {
-            "hz_field": hz_field,
+        field_key = str(hz_field)
+        alternative = {
+            "hz_field": f"hz_{field_key}",
             "hz_label": hz_label,
             "target_id": target_id,
         }
+        ontology_term_id = self._target_ontology_term_id(target)
+        if ontology_term_id is not None:
+            alternative[f"hz_{field_key}_id"] = ontology_term_id
+        ontology_id = self._target_ontology_id(target)
+        if ontology_id is not None:
+            alternative[f"hz_{field_key}_onto"] = ontology_id
+
+        return alternative
+
+    @staticmethod
+    def _target_ontology_term_id(target: dict[str, Any]) -> Any:
+        lookup = target.get("ontology_lookup")
+        if not isinstance(lookup, dict):
+            return None
+
+        term_id = lookup.get("id")
+        if term_id is not None:
+            return term_id
+        return lookup.get("accession")
+
+    @staticmethod
+    def _target_ontology_id(target: dict[str, Any]) -> Any:
+        ontology_id = target.get("ontology_id")
+        if ontology_id is not None:
+            return ontology_id
+
+        lookup = target.get("ontology_lookup")
+        if isinstance(lookup, dict):
+            return lookup.get("ontology_id")
+        return None
 
     def _alternatives_list(
         self,

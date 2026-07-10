@@ -198,7 +198,13 @@ The lower-level `harmonize(...)` returns a target wrapper:
 `apply_targets(miniml_json, harmonization_targets)` applies target-level
 `hz_field` and `hz_label` to each occurrence path. Scalar `field_value` and
 `scalar` occurrences keep the original scalar and add a sibling
-`<field>_hz_alternatives` list containing `{hz_field, hz_label, target_id}`.
+`<field>_hz_alternatives` list containing `hz_field`, `hz_label`, and
+`target_id`. The applied `hz_field` value is prefixed as
+`hz_<harmonized_field>`. When ontology lookup metadata exists, the alternative
+also includes dynamic `hz_<harmonized_field>_id` and
+`hz_<harmonized_field>_onto` entries. `id` falls back to the lookup accession
+when no lookup `id` exists; `onto` is the ontology framework ID. IRI values stay
+in `harmonization_targets` and are not copied into the MINiML JSON.
 Object-shaped `tag_value` and `container_value` occurrences add `hz_field`,
 `hz_label`, and `hz_alternatives` to the occurrence parent object. Multiple
 hits for the same field are appended as alternatives, exact duplicate
@@ -987,10 +993,14 @@ class OntologyHarmonizer:
         for target in harmonization_targets:
             for occurrence in target["occurrences"] or [target]:
                 alternative = {
-                    "hz_field": target["hz_field"],
+                    "hz_field": "hz_" + target["hz_field"],
                     "hz_label": target["hz_label"],
                     "target_id": target["id"],
                 }
+                if target["ontology_lookup"] has id or accession:
+                    alternative["hz_{target['hz_field']}_id"] = lookup id or accession
+                if target has ontology_id or lookup ontology_id:
+                    alternative["hz_{target['hz_field']}_onto"] = ontology_id
                 parent = resolve_json_pointer(miniml_json, occurrence["parent_path"])
                 if parent is not dict:
                     continue
