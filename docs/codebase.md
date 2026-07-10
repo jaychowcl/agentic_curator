@@ -196,20 +196,20 @@ The lower-level `harmonize(...)` returns a target wrapper:
 ```
 
 `apply_targets(miniml_json, harmonization_targets)` applies target-level
-`hz_field` and `hz_label` to each occurrence path. Scalar `field_value` and
-`scalar` occurrences keep the original scalar and add a sibling
-`<field>_hz_alternatives` list containing `hz_field`, `hz_label`, and
-`target_id`. The applied `hz_field` value is prefixed as
-`hz_<harmonized_field>`. When ontology lookup metadata exists, the alternative
-also includes dynamic `hz_<harmonized_field>_id` and
-`hz_<harmonized_field>_onto` entries. `id` falls back to the lookup accession
-when no lookup `id` exists; `onto` is the ontology framework ID. IRI values stay
-in `harmonization_targets` and are not copied into the MINiML JSON.
-Object-shaped `tag_value` and `container_value` occurrences add `hz_field`,
-`hz_label`, and `hz_alternatives` to the occurrence parent object. Multiple
-hits for the same field are appended as alternatives, exact duplicate
-alternatives are ignored, and malformed or unresolved occurrence paths are
-skipped.
+`hz_field` and `hz_label` to each occurrence path without creating
+`hz_alternatives` objects. Scalar `field_value` and `scalar` occurrences keep
+the original scalar and add direct sibling keys such as `hz_source`,
+`hz_source_id`, and `hz_source_onto`. If the same scalar key receives multiple
+distinct values, the first value keeps the base key and later values use
+numeric suffixes such as `hz_source_1`, `hz_source_id_1`, and
+`hz_source_onto_1`. Object-shaped `tag_value` occurrences append generated
+`{"tag": ..., "value": ...}` rows to the same list that contains the original
+tag/value object. `container_value` occurrences keep the original container and
+add a sibling `hz_<field>` list containing objects with `value`, optional `id`,
+and optional `onto`. Term `id` comes from lookup `id` with an accession
+fallback; `onto` is the ontology framework ID. IRI values stay in
+`harmonization_targets` and are not copied into the MINiML JSON. Malformed or
+unresolved occurrence paths are skipped.
 
 `publication_context` may be a string or `None`, `miniml_json` may be a
 dictionary, list, or `None`, `harmonization_targets` may be a list of extracted
@@ -992,24 +992,24 @@ class OntologyHarmonizer:
     def apply_targets(miniml_json, harmonization_targets):
         for target in harmonization_targets:
             for occurrence in target["occurrences"] or [target]:
-                alternative = {
-                    "hz_field": "hz_" + target["hz_field"],
-                    "hz_label": target["hz_label"],
-                    "target_id": target["id"],
-                }
-                if target["ontology_lookup"] has id or accession:
-                    alternative["hz_{target['hz_field']}_id"] = lookup id or accession
-                if target has ontology_id or lookup ontology_id:
-                    alternative["hz_{target['hz_field']}_onto"] = ontology_id
+                field = target["hz_field"]
+                label = target["hz_label"]
+                term_id = target ontology lookup id or accession
+                ontology_id = target ontology_id or lookup ontology_id
                 parent = resolve_json_pointer(miniml_json, occurrence["parent_path"])
                 if parent is not dict:
                     continue
                 if occurrence field path equals label path:
-                    key = unescaped final field path segment + "_hz_alternatives"
-                    append alternative to parent[key] unless already present
+                    set parent["hz_{field}"] = label
+                    set optional parent["hz_{field}_id"] = term_id
+                    set optional parent["hz_{field}_onto"] = ontology_id
+                    use suffixes like "_1" for scalar key collisions
+                elif occurrence parent is a tag/value object:
+                    append {"tag": "hz_{field}", "value": label} to the same list
+                    append optional id and onto tag/value rows
                 else:
-                    append alternative to parent["hz_alternatives"] unless duplicate
-                    set parent["hz_field"] and parent["hz_label"] if absent
+                    append {"value": label, "id": term_id, "onto": ontology_id}
+                    to sibling parent["hz_{field}"] list
         return miniml_json
 ```
 

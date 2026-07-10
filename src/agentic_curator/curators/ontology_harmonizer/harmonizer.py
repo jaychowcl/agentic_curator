@@ -268,8 +268,8 @@ class OntologyHarmonizer:
         target: dict[str, Any],
         occurrence: dict[str, Any],
     ) -> None:
-        alternative = self._target_alternative(target, occurrence)
-        if alternative is None:
+        applied = self._target_applied_values(target, occurrence)
+        if applied is None:
             return
 
         field_path = occurrence.get("pre_hz_field_path")
@@ -286,44 +286,149 @@ class OntologyHarmonizer:
             return
 
         if field_path == label_path:
-            field_name = self._field_name_from_path(field_path)
-            if field_name is None or field_name not in parent:
+            original_field = self._field_name_from_path(field_path)
+            if original_field is None or original_field not in parent:
                 return
-            alternatives_key = f"{field_name}_hz_alternatives"
-            alternatives = self._alternatives_list(parent, alternatives_key)
-            self._append_alternative(alternatives, alternative)
+            self._apply_scalar_fields(parent, applied)
             return
 
-        alternatives = self._alternatives_list(parent, "hz_alternatives")
-        if self._append_alternative(alternatives, alternative):
-            parent.setdefault("hz_field", alternative["hz_field"])
-            parent.setdefault("hz_label", alternative["hz_label"])
+        if self._is_tag_value_occurrence(parent, field_path, label_path):
+            self._apply_tag_value_rows(miniml_json, parent_path, applied)
+            return
 
-    def _target_alternative(
+        self._apply_container_value(miniml_json, field_path, applied)
+
+    def _target_applied_values(
         self,
         target: dict[str, Any],
         occurrence: dict[str, Any],
     ) -> dict[str, Any] | None:
         hz_field = target.get("hz_field", occurrence.get("hz_field"))
         hz_label = target.get("hz_label", occurrence.get("hz_label"))
-        target_id = target.get("id")
-        if hz_field is None or hz_label is None or target_id is None:
+        if hz_field is None or hz_label is None:
             return None
 
         field_key = str(hz_field)
-        alternative = {
-            "hz_field": f"hz_{field_key}",
-            "hz_label": hz_label,
-            "target_id": target_id,
+        applied = {
+            "field_key": field_key,
+            "label": hz_label,
         }
         ontology_term_id = self._target_ontology_term_id(target)
         if ontology_term_id is not None:
-            alternative[f"hz_{field_key}_id"] = ontology_term_id
+            applied["id"] = ontology_term_id
         ontology_id = self._target_ontology_id(target)
         if ontology_id is not None:
-            alternative[f"hz_{field_key}_onto"] = ontology_id
+            applied["onto"] = ontology_id
 
-        return alternative
+        return applied
+
+    @classmethod
+    def _apply_scalar_fields(
+        cls,
+        parent: dict[str, Any],
+        applied: dict[str, Any],
+    ) -> None:
+        for suffix in cls._scalar_suffixes():
+            entries = cls._scalar_entries(applied, suffix=suffix)
+            if all(parent.get(key) == value for key, value in entries.items()):
+                return
+            if any(key in parent for key in entries):
+                continue
+            parent.update(entries)
+            return
+
+    @staticmethod
+    def _scalar_suffixes() -> Any:
+        yield ""
+        index = 1
+        while True:
+            yield f"_{index}"
+            index += 1
+
+    @staticmethod
+    def _scalar_entries(
+        applied: dict[str, Any],
+        *,
+        suffix: str,
+    ) -> dict[str, Any]:
+        field_key = applied["field_key"]
+        entries = {f"hz_{field_key}{suffix}": applied["label"]}
+        if "id" in applied:
+            entries[f"hz_{field_key}_id{suffix}"] = applied["id"]
+        if "onto" in applied:
+            entries[f"hz_{field_key}_onto{suffix}"] = applied["onto"]
+        return entries
+
+    @staticmethod
+    def _is_tag_value_occurrence(
+        parent: dict[str, Any],
+        field_path: str,
+        label_path: str,
+    ) -> bool:
+        return (
+            field_path.endswith("/tag")
+            and label_path.endswith("/value")
+            and "tag" in parent
+            and "value" in parent
+        )
+
+    def _apply_tag_value_rows(
+        self,
+        miniml_json: dict[str, Any] | list[Any],
+        parent_path: str,
+        applied: dict[str, Any],
+    ) -> None:
+        list_path = self._parent_path(parent_path)
+        container = self._resolve_json_pointer(miniml_json, list_path)
+        if not isinstance(container, list):
+            return
+
+        for row in self._tag_value_rows(applied):
+            if row not in container:
+                container.append(row)
+
+    @staticmethod
+    def _tag_value_rows(applied: dict[str, Any]) -> list[dict[str, Any]]:
+        field_key = applied["field_key"]
+        rows = [{"tag": f"hz_{field_key}", "value": applied["label"]}]
+        if "id" in applied:
+            rows.append({"tag": f"hz_{field_key}_id", "value": applied["id"]})
+        if "onto" in applied:
+            rows.append({"tag": f"hz_{field_key}_onto", "value": applied["onto"]})
+        return rows
+
+    def _apply_container_value(
+        self,
+        miniml_json: dict[str, Any] | list[Any],
+        field_path: str,
+        applied: dict[str, Any],
+    ) -> None:
+        container_parent_path = self._parent_path(field_path)
+        container_parent = self._resolve_json_pointer(
+            miniml_json,
+            container_parent_path,
+        )
+        if not isinstance(container_parent, dict):
+            return
+
+        key = f"hz_{applied['field_key']}"
+        container = container_parent.get(key)
+        if not isinstance(container, list):
+            container = []
+            container_parent[key] = container
+
+        entry = self._container_value_entry(applied)
+        if entry not in container:
+            container.append(entry)
+
+    @staticmethod
+    def _container_value_entry(applied: dict[str, Any]) -> dict[str, Any]:
+        entry = {"value": applied["label"]}
+        if "id" in applied:
+            entry["id"] = applied["id"]
+        if "onto" in applied:
+            entry["onto"] = applied["onto"]
+        return entry
 
     @staticmethod
     def _target_ontology_term_id(target: dict[str, Any]) -> Any:
@@ -347,34 +452,17 @@ class OntologyHarmonizer:
             return lookup.get("ontology_id")
         return None
 
-    def _alternatives_list(
-        self,
-        parent: dict[str, Any],
-        key: str,
-    ) -> list[dict[str, Any]]:
-        alternatives = parent.get(key)
-        if isinstance(alternatives, list):
-            return alternatives
-
-        alternatives = []
-        parent[key] = alternatives
-        return alternatives
-
-    @staticmethod
-    def _append_alternative(
-        alternatives: list[dict[str, Any]],
-        alternative: dict[str, Any],
-    ) -> bool:
-        if alternative in alternatives:
-            return False
-        alternatives.append(alternative)
-        return True
-
     @classmethod
     def _field_name_from_path(cls, path: str) -> str | None:
         if path == "":
             return None
         return cls._unescape_json_pointer_segment(path.rsplit("/", 1)[-1])
+
+    @staticmethod
+    def _parent_path(path: str) -> str:
+        if "/" not in path.strip("/"):
+            return ""
+        return path.rsplit("/", 1)[0]
 
     @classmethod
     def _resolve_json_pointer(
