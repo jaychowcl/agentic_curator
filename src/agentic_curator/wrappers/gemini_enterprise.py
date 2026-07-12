@@ -165,7 +165,7 @@ class GeminiEnterprisePlatform:
         generation_config = self._clean_options(self._generation_config(config))
         generation_tools = self.tools_template if tools is None else tools
         if generation_tools:
-            generation_config["tools"] = generation_tools
+            generation_config["tools"] = self._gemini_tools(generation_tools)
         request = {
             "model": effective_model,
             "contents": prompt,
@@ -183,6 +183,15 @@ class GeminiEnterprisePlatform:
             "tool_calls": self._tool_calls(raw_response),
             "provider": "gemini_enterprise",
         }
+
+    @staticmethod
+    def _gemini_tools(tools: list[Any]) -> list[Any]:
+        return [
+            {"google_search": {}}
+            if isinstance(tool, dict) and tool.get("type") == "google_search"
+            else tool
+            for tool in tools
+        ]
 
     def _client(self) -> Any:
         if self.client is None:

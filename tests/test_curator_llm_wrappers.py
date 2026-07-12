@@ -122,7 +122,7 @@ def test_llm_generate_response_with_metadata_delegates_to_platform() -> None:
                 "temperature": 0.2,
                 "max_output_tokens": 8192,
                 "candidate_count": 1,
-                "tools": [{"type": "google_search"}],
+                "tools": [{"google_search": {}}],
             },
         }
     ]
@@ -299,7 +299,7 @@ def test_gemini_enterprise_generate_response_with_metadata_extracts_citations() 
         "provider": "gemini_enterprise",
     }
     assert client.models.calls[0]["config"]["tools"] == [
-        {"type": "google_search"}
+        {"google_search": {}}
     ]
     assert "tools" not in client.models.calls[0]
 

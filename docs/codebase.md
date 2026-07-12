@@ -1490,7 +1490,9 @@ Internal calls from `generate_response_with_metadata()`:
 
 Generation tools are nested under `config["tools"]`, matching the Google Gen AI
 SDK `generate_content(model=..., contents=..., config=...)` signature. They are
-not sent as an unsupported top-level request keyword.
+not sent as an unsupported top-level request keyword. The provider-neutral
+`{"type": "google_search"}` descriptor is translated at this adapter boundary
+to the SDK's `{"google_search": {}}` tool shape.
 
 - `_generation_config(...)`
 - `_clean_options(...)`
