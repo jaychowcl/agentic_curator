@@ -62,3 +62,54 @@ def test_prompt_markdown_and_license_do_not_have_authors_header() -> None:
     ]
 
     assert unexpected == []
+
+
+def test_readme_has_required_guide_structure_and_links() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    required_headings = [
+        "# agentic-curator",
+        "## Description",
+        "## Installation",
+        "### Requirements",
+        "## Quickstart",
+        "### Inputs & Outputs",
+        "## Guide",
+        "### Code flow",
+        "## Docs",
+        "## Authors",
+    ]
+
+    positions = [readme.index(heading) for heading in required_headings]
+    assert positions == sorted(positions)
+    assert "[Codebase handoff](docs/codebase.md)" in readme
+    assert "[Documentation index](docs/index.md)" in readme
+    assert "Created by [jaychowcl](https://github.com/jaychowcl) on June 2026" in readme
+
+
+def test_readme_covers_supported_interfaces_and_current_controls() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    for interface in (
+        "Python Thematic Review",
+        "CLI Thematic Review",
+        "Python Ontology Harmonization",
+        "CLI Ontology Harmonization",
+        "Ontology Cache Builder",
+        "Python LLM Facade",
+        "Docker",
+    ):
+        assert interface in readme
+
+    for option in (
+        "--no-lookup-llm-judge",
+        "--no-search-llm-judge",
+        "--request-timeout",
+        "--request-max-attempts",
+        "--request-backoff",
+        "--cache-ttl-seconds",
+        "--force-refresh",
+        "--force-framework",
+    ):
+        assert option in readme
+
+    assert "does not currently provide a Dockerfile" in readme

@@ -668,11 +668,11 @@ The CLI configures standard-library logging to stderr. Curator workflows emit
 INFO logs for orchestration boundaries and DEBUG logs for detailed internal
 choices. Provider exceptions are not wrapped; they propagate to callers.
 
-`OntologyHarmonizer.harmonize(...)` normalizes single-target input, validates
-the selected strategy, first assigns ontology metadata through
-`OntoStore.lookup(...)`, then always calls `harmonize_field(...)`.
-`assign_onto_framework(...)`, label strategy routing, and post-strategy
-`OntoStore.lookup(...)` enrichment run only when the first exact lookup fails.
+`OntologyHarmonizer.harmonize(...)` normalizes target input, validates the
+strategy, runs exact-then-FTS SQLite lookup, and always calls
+`harmonize_field(...)`. Framework assignment and label strategy routing run
+only when local lookup has no accepted match. Post-strategy enrichment uses
+exact selected-term identifiers and cannot replace the judged identity.
 
 <a id="method-orchestrator-pseudocode"></a>
 ## Method Orchestrator Pseudocode
@@ -812,8 +812,9 @@ injected `OntoStore`.
 class OntologyHarmonizer:
     DEFAULT_TARGET_PATHS = HarmonizationTargetExtractor.DEFAULT_TARGET_PATHS
 
-    def __init__(ontostore=None, llm=None):
-        self.ontostore = OntoStore() if ontostore is None else ontostore
+    def __init__(ontostore=None, llm=None, request_policy=None):
+        self.request_policy = request_policy or store policy or RequestPolicy()
+        self.ontostore = OntoStore(request_policy=self.request_policy) if ontostore is None else ontostore
         self.llm = llm
         self.target_extractor = HarmonizationTargetExtractor()
 
@@ -824,7 +825,7 @@ class OntologyHarmonizer:
         strategy="websearch",
         ontostore=None,
         target_paths=None,
-        lookup_llm_judge=False,
+        lookup_llm_judge=True,
         lookup_llm_threshold=2,
         search_llm_judge=True,
         llm=True,
@@ -884,7 +885,7 @@ class OntologyHarmonizer:
         publication_context,
         ontostore,
         strategy,
-        lookup_llm_judge=False,
+        lookup_llm_judge=True,
         lookup_llm_threshold=2,
     ):
         self._harmonize_target(target, ontostore)
@@ -892,12 +893,17 @@ class OntologyHarmonizer:
         if label is None:
             return False
 
-        hits = []
+        exact_hits = []
+        fts_hits = []
         for ontology_id in self._candidate_ontology_ids(target, ontostore):
-            hits.extend(ontostore.lookup(str(label), ontology_id))
+            details = ontostore.lookup_with_metadata(str(label), ontology_id)
+            collect details["hits"] by details["match_type"]
+        hits = exact_hits or fts_hits
         if hits:
+            if hits are FTS and lookup judging is disabled:
+                retain candidates and return False
             selected = hits[0]
-            if lookup_llm_judge and len(hits) >= lookup_llm_threshold:
+            if hits are FTS or len(hits) >= lookup_llm_threshold:
                 judgement = self.judge_lookup(target, publication_context, hits)
                 selected = hit whose id equals judgement["decision"]
                 target["ontology_lookup_judgement"] = judgement
@@ -980,7 +986,11 @@ class OntologyHarmonizer:
         target["field_assignment"] = assignment
         target["hz_field"] = normalized assignment decision
         if assignment["new_field"]:
-            ontostore.fields[target["hz_field"]] = assignment metadata
+            ontostore.add_field(
+                target["hz_field"],
+                assignment metadata with source="llm" and review_status="unreviewed",
+                replace=True,
+            )
         return assignment
 
     def harmonize_label(
@@ -1012,9 +1022,11 @@ class OntologyHarmonizer:
 
         unrestricted_hits = OLS search(label, rows=25)
         web_hits = search_client.search(f"{pre_hz_field}: {pre_hz_label} ontology", max_results=25)
+        extract IDs from grounded web evidence and retain only IDs resolved through OLS
         web_search_error = search_client.last_error if available
-        if unrestricted_hits:
-            judgement = judge top 10 compact unrestricted hits plus compact web evidence
+        expanded_hits = dedupe unrestricted hits plus resolved web candidates
+        if expanded_hits:
+            judgement = judge top 10 compact expanded hits plus compact web evidence
             if judgement selects a supplied id, accession, or iri:
                 require complete framework metadata, configure store, and accept hit
             otherwise return not_harmonized with judgement trace
@@ -1109,19 +1121,18 @@ class OntologyHarmonizer:
         return miniml_json
 ```
 
-`lookup_label()` calls `OntoStore.lookup(...)`, which calls
-`OntoStore.get(...)`. For unconstrained targets it only considers path-backed
-local frameworks, so no external API call is made. If a target explicitly
-selects a URL-backed framework whose configured JSON/OWL files are missing,
-lookup may reach `requests.get(...)` through `OntoStore.download(...)`.
+`lookup_label()` calls `OntoStore.lookup_with_metadata(...)`, which refreshes a
+framework's SQLite index from its JSON cache when needed. For unconstrained
+targets it only considers path-backed local frameworks. Explicit URL-backed
+frameworks may reach `requests.get(...)` through `OntoStore.download(...)`.
 When `lookup_label()` returns `False`, `harmonize(...)` marks the target
 unmatched. With `llm=True`, it calls `assign_onto_framework()` with the packaged
 `assign_onto_framework.md` prompt and returns the parsed assignment JSON.
 `harmonize()` then runs `harmonize_field()` regardless of first lookup outcome.
-When the first lookup missed, strategy handling may update the label and
-`_lookup_harmonized_label()` tries to enrich the strategy-harmonized label from
-`OntoStore`, preferring the current `target["ontology_id"]` and falling back to
-configured candidate ontology IDs only when earlier IDs do not produce hits.
+When local lookup misses, strategy handling may select a term and
+`_lookup_harmonized_label()` resolves that selected term's `id`, `accession`,
+or `iri` through `OntoStore.lookup_exact(...)`. Local metadata may enrich the
+selected term but cannot replace it with another same-label term.
 Ontology prompt builders use purpose-specific sanitized target context instead
 of serializing the whole mutable target, so lookup hits, strategy results,
 match flags, and previous assignments do not leak into later LLM calls.
@@ -1241,19 +1252,24 @@ Collector behavior:
 
 ### `OntoStore`
 
-Role: ontology framework configuration store and download helper.
+Role: ontology framework/configuration store, SQLite lookup engine, persistent
+field registry, and external-response cache.
 
 ```python
 class OntoStore:
     DEFAULT_ONTOLOGY_FRAMEWORKS = {...}
     DEFAULT_STORAGE_DIR = package_dir / "ontology_frameworks"
 
-    def __init__(ontology_frameworks=None, storage_dir=None, sqlite_path=None):
+    def __init__(ontology_frameworks=None, fields=None, storage_dir=None,
+                 sqlite_path=None, request_policy=None):
         self.storage_dir = DEFAULT_STORAGE_DIR if storage_dir is None else Path(storage_dir)
         self.sqlite_path = sqlite_path or self.storage_dir / "sqlite" / "ontologies.sqlite3"
         self.ontology_frameworks = self._normalize_frameworks(
             DEFAULT_ONTOLOGY_FRAMEWORKS plus ontology_frameworks
         )
+        self.request_policy = request_policy or RequestPolicy()
+        initialize or migrate SQLite schema
+        self.fields = persisted fields plus normalized constructor fields
 
     def add_url(name, url, owl_path=None, json_path=None, version=None,
                 title=None, description=None):
@@ -1307,10 +1323,16 @@ def get(name, force=False):
     return Owl2json(owl_path).write_json(json_path, ontology_id=name)
 
 def lookup(label, ontology_id):
+    return lookup_with_metadata(label, ontology_id)["hits"]
+
+def lookup_with_metadata(label, ontology_id):
     index_framework(ontology_id)
-    lookup_label = self.harmonize_key(label)
-    hits = query SQLite by ontology and lookup key in index/source order
-    return deduped hits with ontology_id added to each term dict
+    exact = lookup_exact(label, ontology_id, ensure_index=False)
+    if exact:
+        return {"match_type": "exact", "hits": exact, "ranking": []}
+    ensure FTS rows exist for legacy indexes
+    fts_hits, ranking = query FTS5 over labels, synonyms, descriptions, and identifiers
+    return {"match_type": "fts" or "none", "hits": fts_hits, "ranking": ranking}
 
 def index_framework(ontology_id, force=False):
     transactionally add or refresh one stale JSON cache in SQLite
@@ -1320,6 +1342,12 @@ def remove_indexed_framework(ontology_id):
 
 def sync_sqlite(frameworks=None, force=False):
     index selected or all existing framework JSON caches and return counts
+
+def add_field/update_field/remove_field/get_field/list_fields/set_field_review_status(...):
+    validate metadata and aliases, persist registry rows, and refresh active fields
+
+def get_cached_response/set_cached_response/clear_cached_responses(...):
+    read or mutate normalized provider/operation/request cache entries with TTL
 
 def harmonize_key(value):
     return lowercase, trimmed string with edge punctuation stripped and spaces collapsed to "_"
@@ -1339,8 +1367,10 @@ def download(name):
 def _download_to_path(name, target):
     self.storage_dir.mkdir(parents=True, exist_ok=True)
     url = self._framework_url(name)
-    response = requests.get(url, timeout=30)
-    response.raise_for_status()
+    response = request_with_retry(
+        lambda: requests.get(url, timeout=self.request_policy.timeout_seconds),
+        self.request_policy,
+    )
     target.write_bytes(response.content)
     return target
 
@@ -1373,7 +1403,8 @@ Internal calls from `download()`:
 
 External API call:
 
-- `requests.get(url, timeout=30)`
+- `requests.get(url, timeout=request_policy.timeout_seconds)`, wrapped by
+  transient retry/backoff policy
 
 ### `Owl2json`
 
@@ -1667,35 +1698,34 @@ class ClaudeModelAdapter(BaseModelAdapter):
         return super().parse_response(response)
 ```
 
-### CLI Entry Point
+### CLI Entry Points
 
-Role: parse command-line input, call the thematic reviewer, and write JSON.
+Role: parse command-line input, dispatch to reviewer or ontology orchestrators,
+and write JSON.
 
 ```python
 def main(argv=None):
     parser = _build_parser()
     args = parser.parse_args(argv)
-
-    result = ThematicReviewer().review_relevancy(
-        publication_text=_input_value(args.publication_text, args.publication_text_file),
-        theme=_input_value(args.theme, args.theme_file),
-        metadata=_input_value(args.metadata, args.metadata_file),
-        title=_input_value(args.title, args.title_file),
-    )
-
-    if args.out is not None:
-        open(args.out, "w").json_dump(result, indent=2)
-    else:
-        json.dump(result, sys.stdout, indent=2)
-        sys.stdout.write("\n")
+    configure_logging(args.verbosity)
+    direct/file inputs = input_value(...) or json_input(...)
+    if thematic command:
+        result = dispatch to review_relevancy/extract_evidence/judge_evidence
+    if ontology command:
+        policy = RequestPolicy(from timeout/retry/cache flags)
+        store = OntoStore(from framework/field/storage flags, policy)
+        result = dispatch to harmonize/harmonize_miniml_json
+    write_json_output(result, args.out)
     return 0
 ```
 
 Internal calls:
 
 - `_build_parser()`
-- `_input_value(value, file)` for each input
-- `ThematicReviewer.review_relevancy(...)`
+- `input_value(...)` for text inputs and `json_input(...)` for structured input.
+- `ThematicReviewer` method selected by reviewer subcommand.
+- `OntologyHarmonizer` method selected by ontology subcommand.
+- `RequestPolicy(...)` and `OntoStore(...)` construction for ontology commands.
 
 File-system calls:
 
