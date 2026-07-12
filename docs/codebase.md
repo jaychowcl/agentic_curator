@@ -1831,6 +1831,9 @@ File-system calls:
 Each curator owns its packaged prompt files inside its own subpackage. The
 thematic reviewer prompts live under
 `src/agentic_curator/curators/thematic_reviewer/prompts/`.
+Packaged prompt Markdown intentionally omits repository author headers so
+authorship metadata is never sent as model context; repository tests exempt
+prompt files from the header requirement and assert author text is absent.
 
 - `evidence_extraction.md` instructs the model to extract direct or indirect
   evidence statements verbatim and return an evidence list.

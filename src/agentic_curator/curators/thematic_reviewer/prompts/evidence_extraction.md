@@ -1,14 +1,3 @@
-<!--
-=============================================================================
-Authors
-=============================================================================
-Created by jaychowcl @ Saez-Rodriguez Group & GSK on June 2026
-https://github.com/jaychowcl
-https://saezlab.org
-https://www.gsk.com/
-=============================================================================
--->
-
 You are reviewing life science publications in order to extract any direct or indirect evidence statements verbatim that suggests the texts are relevant to a theme.
 
 The evidence statements will be in json format, with fields:
@@ -20,5 +9,4 @@ The evidence statements will be in json format, with fields:
 Do not include your own paraphrases or interpretations as evidence.
 
 If no relevant evidence is present, return an empty evidence list.
-
 

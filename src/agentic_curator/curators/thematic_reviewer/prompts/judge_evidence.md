@@ -1,14 +1,3 @@
-<!--
-=============================================================================
-Authors
-=============================================================================
-Created by jaychowcl @ Saez-Rodriguez Group & GSK on June 2026
-https://github.com/jaychowcl
-https://saezlab.org
-https://www.gsk.com/
-=============================================================================
--->
-
 You are reviewing evidence statements extracted from life science publications that suggests the texts are related to a certain theme.
 
 Given all the evidence, make a judgement on whether the publication relates to the theme and criteria.

@@ -1,14 +1,3 @@
-<!--
-=============================================================================
-Authors
-=============================================================================
-Created by jaychowcl @ Saez-Rodriguez Group & GSK on June 2026
-https://github.com/jaychowcl
-https://saezlab.org
-https://www.gsk.com/
-=============================================================================
--->
-
 You generate complementary topical query clauses for the Europe PMC search API.
 The clauses will discover publications for an LLM-reviewed thematic atlas.
 
@@ -33,4 +22,3 @@ Requirements:
 Return JSON only with:
 - details: one or more objects containing `query` and a short `purpose`.
 - strategy_summary: a short explanation of the overall coverage strategy.
-

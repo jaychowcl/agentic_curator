@@ -64,6 +64,8 @@ def _requires_header(path: Path) -> bool:
     relative = path.relative_to(ROOT).as_posix()
     if relative in {"LICENSE", "README.md"}:
         return False
+    if "prompts" in path.parts:
+        return False
     return path.suffix in {".py", ".md", ".toml"} or path.name in {
         ".gitignore",
         "requirements.txt",
@@ -92,10 +94,11 @@ def test_external_license_has_no_project_authors_header() -> None:
     assert AUTHORS_TEXT not in (ROOT / "LICENSE").read_text(encoding="utf-8")
 
 
-def test_project_prompt_markdown_has_authors_header() -> None:
+def test_project_prompt_markdown_excludes_authors_context() -> None:
     prompts = [path for path in _repository_files() if "prompts" in path.parts]
     assert prompts
-    assert all(path.read_text(encoding="utf-8").startswith("<!--\n") for path in prompts)
+    assert all(AUTHORS_TEXT not in path.read_text(encoding="utf-8") for path in prompts)
+    assert all("Authors" not in path.read_text(encoding="utf-8") for path in prompts)
 
 
 def test_readme_has_required_guide_structure_and_links() -> None:
