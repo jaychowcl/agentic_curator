@@ -289,8 +289,8 @@ SQLite database.
 | `lookup(value, ontology_id)` | Compatible exact-then-FTS term lookup |
 | `lookup_with_metadata(value, ontology_id)` | Return `match_type`, hits, and FTS ranking |
 | `lookup_exact(value, ontology_id, ensure_index=True)` | Exact normalized lookup only |
-| `index_framework(...)`, `sync_sqlite(...)`, `remove_indexed_framework(...)` | Maintain SQLite term indexes |
-| `cache_all(...)` | Materialize and SQLite-index every selected active framework |
+| `index_framework(...)`, `index_owl_framework(...)`, `sync_sqlite(...)`, `remove_indexed_framework(...)` | Import legacy JSON or stream OWL into SQLite term indexes |
+| `cache_all(..., force_frameworks=())` | Stream-cache every selected active framework, optionally forcing named downloads |
 | `lookup_fields(field)` | Resolve a canonical field or alias |
 | `add_field(...)`, `update_field(...)`, `remove_field(...)` | Persistent field-registry mutation |
 | `get_field(...)`, `list_fields(...)`, `set_field_review_status(...)` | Retrieve and review fields |
@@ -364,10 +364,16 @@ Programmatic callers can eagerly prepare one configured store before a workflow:
 ```python
 store = OntoStore(storage_dir=".cache/ontologies")
 store.configure_framework("snomed", remove=True)
-manifest = store.cache_all()
+manifest = store.cache_all(force_frameworks=["ncbitaxon"])
 ```
 
-`cache_all()` attempts active frameworks in configuration order before raising `OntologyCacheError` for aggregate failures. The exception exposes the complete manifest through `.results`; pass `fail_on_error=False` to continue with a partial cache.
+`cache_all()` directly streams OWL through a temporary SQLite triple store and
+does not create new JSON caches. Existing JSON remains readable, and
+`Owl2json.write_json()` remains available for explicit conversion. The method
+attempts active frameworks in configuration order before raising
+`OntologyCacheError` for aggregate failures. The exception exposes the complete
+manifest through `.results`; pass `fail_on_error=False` to continue with a
+partial cache.
 
 | Option | Behavior |
 | --- | --- |
@@ -442,9 +448,13 @@ deduplication, delegates to `harmonize(...)`, then calls `apply_targets(...)`.
 ```python
 def get(framework):
     owl = existing_file_or_requests_download(framework.url)
-    json_cache = Owl2json(owl).write_json(framework.json_path)
-    index_framework_in_sqlite(json_cache)
-    return json_cache
+    return Owl2json(owl).write_json(framework.json_path)  # explicit JSON API
+
+def index_owl_framework(framework):
+    owl = existing_file_or_requests_download(framework.url)
+    staging = stream_rdfxml_triples_to_temporary_sqlite(owl)
+    atomically_stream_class_terms_into_shared_sqlite(staging)
+    delete_staging_sqlite(staging)
 
 def lookup(value, framework):
     exact = lookup_exact(normalize(value), framework)

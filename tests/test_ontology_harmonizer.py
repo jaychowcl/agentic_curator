@@ -1107,7 +1107,7 @@ def test_sqlite_framework_helpers_add_remove_and_sync(tmp_path: Path) -> None:
     assert indexed == [("alpha",), ("beta",)]
 
 
-def test_cache_all_materializes_and_indexes_active_frameworks_in_order(
+def test_cache_all_stream_indexes_active_frameworks_in_order(
     tmp_path: Path, monkeypatch
 ) -> None:
     store = OntoStore(ontology_frameworks={}, storage_dir=tmp_path)
@@ -1117,32 +1117,24 @@ def test_cache_all_materializes_and_indexes_active_frameworks_in_order(
     }
     calls = []
 
-    def get(name, force=False):
-        calls.append(("get", name, force))
-        path = tmp_path / f"{name}.json"
-        path.write_text('{"ontology": {}, "terms": {}}', encoding="utf-8")
-        return path
-
-    def index_framework(name, force=False):
-        calls.append(("index", name, force))
+    def index_owl_framework(name, force=False, batch_size=1000):
+        calls.append(("index_owl", name, force))
+        (tmp_path / f"{name}.owl").write_text("owl", encoding="utf-8")
         return store.sqlite_path
 
-    monkeypatch.setattr(store, "get", get)
-    monkeypatch.setattr(store, "index_framework", index_framework)
+    monkeypatch.setattr(store, "index_owl_framework", index_owl_framework)
 
     result = store.cache_all()
 
     assert calls == [
-        ("get", "alpha", False),
-        ("index", "alpha", False),
-        ("get", "beta", False),
-        ("index", "beta", False),
+        ("index_owl", "alpha", False),
+        ("index_owl", "beta", False),
     ]
     assert result["successful"] == ["alpha", "beta"]
     assert result["failed"] == []
     assert list(result["frameworks"]) == ["alpha", "beta"]
     assert all(
-        item["status"] == "downloaded_parsed_indexed"
+        item["status"] == "downloaded_stream_indexed"
         for item in result["frameworks"].values()
     )
 
@@ -1157,16 +1149,14 @@ def test_cache_all_attempts_every_framework_then_raises_aggregate_error(
     }
     calls = []
 
-    def get(name, force=False):
+    def index_owl_framework(name, force=False, batch_size=1000):
         calls.append(name)
         if name in {"alpha", "gamma"}:
             raise RuntimeError(f"failed {name}")
-        path = tmp_path / f"{name}.json"
-        path.write_text('{"ontology": {}, "terms": {}}', encoding="utf-8")
-        return path
+        (tmp_path / f"{name}.owl").write_text("owl", encoding="utf-8")
+        return store.sqlite_path
 
-    monkeypatch.setattr(store, "get", get)
-    monkeypatch.setattr(store, "index_framework", lambda *args, **kwargs: store.sqlite_path)
+    monkeypatch.setattr(store, "index_owl_framework", index_owl_framework)
 
     with pytest.raises(OntologyCacheError) as caught:
         store.cache_all()
@@ -1187,11 +1177,11 @@ def test_cache_all_can_return_partial_results_and_respects_removed_frameworks(
     store.configure_framework("snomed", remove=True)
     calls = []
 
-    def fail(name, force=False):
+    def fail(name, force=False, batch_size=1000):
         calls.append(name)
         raise RuntimeError("unavailable")
 
-    monkeypatch.setattr(store, "get", fail)
+    monkeypatch.setattr(store, "index_owl_framework", fail)
 
     result = store.cache_all(fail_on_error=False)
 

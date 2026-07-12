@@ -383,9 +383,9 @@ avoiding implicit downloads of every built-in URL-backed framework.
 
 `OntoStore`, `Owl2json`, and `Owl2jsonParseError` are exported from
 `agentic_curator.curators.ontology_harmonizer`. `OntoStore` stores ontology
-framework config, downloads named frameworks, parses OWL into JSON, and looks up
-terms. `Owl2json` parses RDF/XML `.owl` files into a term-centric JSON
-dictionary.
+framework config, downloads named frameworks, directly indexes OWL in bounded
+memory, imports legacy JSON caches, and looks up terms. `Owl2json` remains the
+explicit RDF/XML-to-JSON conversion API and is not used by eager direct caching.
 
 `OntoStore(fields=...)` also stores a normalized field dictionary used before
 strategy routing. `lookup_fields(field)` normalizes the incoming field and
@@ -450,22 +450,46 @@ frameworks reparse the configured local `owl_path` without network I/O.
 `OntoStore.lookup(label, ontology_id)` keeps its two-argument API but serves
 lookups from a shared SQLite index. The default database is
 `storage_dir/sqlite/ontologies.sqlite3`; callers may override it with
-`sqlite_path`. On first lookup, the store imports that framework's JSON cache.
-Later calls compare its resolved path, size, and nanosecond modification time
-and rebuild only that framework when stale. Lookup searches `label`, `id`,
+`sqlite_path`. On first lookup, the store imports an existing legacy JSON cache,
+or calls `index_owl_framework(...)` when JSON is absent. Later calls compare the
+source kind, resolved path, size, and nanosecond modification time and rebuild
+only that framework when stale. Lookup searches `label`, `id`,
 `accession`, and `iri` in the existing order and returns the same deduped term
 dictionaries with `ontology_id` added. Normalized JSON keys remain required.
 
 `index_framework(ontology_id, force=False)` explicitly adds or refreshes one
-framework. `remove_indexed_framework(ontology_id)` removes its SQLite rows
+framework, preferring an existing legacy JSON cache and otherwise delegating to
+`index_owl_framework(ontology_id, force=False, batch_size=1000)`. The direct OWL
+path uses RDFLib's RDF/XML parser with a lightweight SQLite triple sink instead
+of an in-memory `Graph`. It batches triples into
+`sqlite/staging/<ontology_id>.sqlite3`, streams URI-backed `owl:Class` subjects
+in deterministic order into the final term, lookup, and FTS tables, and removes
+the staging database in both success and failure cases. Only the current term
+and bounded insert batches reside in Python memory. Final framework replacement
+is one transaction, so a failed refresh rolls back to the previous usable
+index. Framework metadata records `source_kind` (`json` or `owl`) and source
+path/size/mtime; schema-v2 databases migrate in place with existing rows marked
+as JSON sources. `remove_indexed_framework(ontology_id)` removes its SQLite rows
 without deleting OWL or JSON caches. `sync_sqlite(frameworks=None, force=False)`
-indexes selected frameworks, or all configured frameworks with existing JSON,
+indexes selected frameworks, or all configured frameworks with existing JSON
+or OWL caches,
 and reports status plus term and lookup counts. Imports use batched inserts in
 a framework-scoped transaction. The normalized schema stores each term payload
 once and maps lookup keys to it; WAL mode and a busy timeout support concurrent
 readers.
 
-`cache_all(frameworks=None, force=False, fail_on_error=True)` eagerly materializes and indexes every selected active framework in configuration order. It calls `get()` and `index_framework()` per framework, records cache status, paths, sizes, elapsed time, and index success, and continues after individual failures. The manifest includes the SQLite path and ordered successful/failed lists. After all attempts, the default policy raises `OntologyCacheError` with the manifest attached at `.results`; `fail_on_error=False` returns partial results. Removed frameworks are not processed.
+`cache_all(frameworks=None, force=False, force_frameworks=(),
+fail_on_error=True)` eagerly downloads and indexes every selected active
+framework in configuration order without creating new JSON files. Existing JSON
+caches remain compatible and are imported unless that framework is forced.
+`force=True` redownloads/reindexes every URL-backed framework;
+`force_frameworks` selectively forces named frameworks. It records cache status,
+source kind, paths, sizes, elapsed time, and index success, and continues after
+individual failures. The manifest includes the SQLite path and ordered
+successful/failed lists. After all attempts, the default policy raises
+`OntologyCacheError` with the manifest attached at `.results`;
+`fail_on_error=False` returns partial results. Removed frameworks are not
+processed.
 `OntoStore.download(name)` downloads only URL-backed frameworks with
 `requests.get(url, timeout=30)`, calls `raise_for_status()`, and returns the
 configured `owl_path`. Path-backed frameworks validate and return the configured

@@ -26,6 +26,7 @@ from agentic_curator.curators.ontology_harmonizer.normalization import (
     harmonize_key as normalize_key,
 )
 from agentic_curator.curators.ontology_harmonizer.owl2json import Owl2json
+from agentic_curator.curators.ontology_harmonizer.owl2sqlite import Owl2SqliteTerms
 from agentic_curator.curators.ontology_harmonizer.request_policy import RequestPolicy, request_with_retry
 
 
@@ -114,7 +115,7 @@ class OntoStore:
         },
     }
     DEFAULT_STORAGE_DIR = Path(__file__).resolve().parent / "ontology_frameworks"
-    SQLITE_SCHEMA_VERSION = "2"
+    SQLITE_SCHEMA_VERSION = "3"
     LOOKUP_INDEXES = ("label", "id", "accession", "iri")
 
     def __init__(
@@ -394,12 +395,12 @@ class OntoStore:
         """Add or refresh one configured framework in the shared SQLite index."""
         json_path = self._json_target_path(ontology_id)
         if not json_path.exists():
-            json_path = self.get(ontology_id)
+            return self.index_owl_framework(ontology_id, force=force)
         stat = json_path.stat()
 
         with self._sqlite_connection() as connection:
             if not force and self._sqlite_framework_is_current(
-                connection, ontology_id, json_path, stat
+                connection, ontology_id, json_path, stat, source_kind="json"
             ):
                 return self.sqlite_path
 
@@ -420,8 +421,9 @@ class OntoStore:
                 connection.execute(
                     """
                     INSERT INTO frameworks(
-                        ontology_id, json_path, json_size, json_mtime_ns, indexed_at
-                    ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        ontology_id, json_path, json_size, json_mtime_ns,
+                        indexed_at, source_kind
+                    ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, 'json')
                     """,
                     (
                         ontology_id,
@@ -439,6 +441,71 @@ class OntoStore:
         LOGGER.info("Indexed ontology framework %s in SQLite.", ontology_id)
         return self.sqlite_path
 
+    def index_owl_framework(
+        self,
+        ontology_id: str,
+        force: bool = False,
+        batch_size: int = 1_000,
+    ) -> Path:
+        """Stream one OWL framework through staging SQLite into the shared index."""
+        owl_path = self._target_path(ontology_id)
+        if force and self._is_url_framework(ontology_id):
+            self._download_to_path(ontology_id, owl_path)
+        elif not owl_path.exists():
+            owl_path = self.download(ontology_id)
+        stat = owl_path.stat()
+
+        with self._sqlite_connection() as connection:
+            if not force and self._sqlite_framework_is_current(
+                connection, ontology_id, owl_path, stat, source_kind="owl"
+            ):
+                return self.sqlite_path
+
+        staging_path = (
+            self.storage_dir / "sqlite" / "staging" / f"{ontology_id}.sqlite3"
+        )
+        parser = Owl2SqliteTerms(owl_path, staging_path)
+        try:
+            parser.stage(batch_size=max(batch_size, 1))
+            with self._sqlite_connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    connection.execute(
+                        "DELETE FROM frameworks WHERE ontology_id = ?", (ontology_id,)
+                    )
+                    connection.execute(
+                        "DELETE FROM term_search WHERE ontology_id = ?", (ontology_id,)
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO frameworks(
+                            ontology_id, json_path, json_size, json_mtime_ns,
+                            indexed_at, source_kind
+                        ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, 'owl')
+                        """,
+                        (
+                            ontology_id,
+                            str(owl_path.resolve()),
+                            stat.st_size,
+                            stat.st_mtime_ns,
+                        ),
+                    )
+                    self._insert_streamed_terms(
+                        connection,
+                        ontology_id,
+                        parser.iter_terms(),
+                        batch_size=max(batch_size, 1),
+                    )
+                    connection.commit()
+                except Exception:
+                    connection.rollback()
+                    raise
+        finally:
+            parser.cleanup()
+
+        LOGGER.info("Stream-indexed ontology framework %s in SQLite.", ontology_id)
+        return self.sqlite_path
+
     def remove_indexed_framework(self, ontology_id: str) -> bool:
         """Remove one framework from SQLite while retaining its source caches."""
         with self._sqlite_connection() as connection:
@@ -453,17 +520,20 @@ class OntoStore:
         frameworks: Iterable[str] | None = None,
         force: bool = False,
     ) -> dict[str, dict[str, Any]]:
-        """Index configured frameworks that currently have JSON caches."""
+        """Index configured frameworks that currently have JSON or OWL caches."""
         names = list(self.ontology_frameworks if frameworks is None else frameworks)
         results: dict[str, dict[str, Any]] = {}
         for ontology_id in names:
             json_path = self._json_target_path(ontology_id)
-            if not json_path.exists():
+            owl_path = self._target_path(ontology_id)
+            if not json_path.exists() and not owl_path.exists():
                 continue
+            source_path = json_path if json_path.exists() else owl_path
+            source_kind = "json" if json_path.exists() else "owl"
             was_current = False
             with self._sqlite_connection() as connection:
                 was_current = self._sqlite_framework_is_current(
-                    connection, ontology_id, json_path, json_path.stat()
+                    connection, ontology_id, source_path, source_path.stat(), source_kind
                 )
             self.index_framework(ontology_id, force=force)
             with self._sqlite_connection() as connection:
@@ -487,6 +557,7 @@ class OntoStore:
         frameworks: Iterable[str] | None = None,
         *,
         force: bool = False,
+        force_frameworks: Iterable[str] = (),
         fail_on_error: bool = True,
     ) -> dict[str, Any]:
         """Materialize and index every selected active ontology framework."""
@@ -498,6 +569,11 @@ class OntoStore:
             "failed": [],
         }
 
+        selectively_forced = set(force_frameworks)
+        unknown = selectively_forced.difference(names)
+        if unknown:
+            raise KeyError(f"Unknown selected ontology frameworks: {sorted(unknown)}")
+
         for name in names:
             started = time.monotonic()
             framework_result: dict[str, Any] = {"framework": name}
@@ -506,24 +582,30 @@ class OntoStore:
                 json_path = self._json_target_path(name)
                 had_owl = owl_path.exists()
                 had_json = json_path.exists()
-                materialized_json = self.get(name, force=force)
-                self.index_framework(name, force=force)
+                force_this = force or name in selectively_forced
+                if had_json and not force_this:
+                    self.index_framework(name)
+                    source_kind = "json"
+                else:
+                    self.index_owl_framework(name, force=force_this)
+                    source_kind = "owl"
                 status = (
                     "force_rebuilt"
-                    if force
+                    if force_this
                     else "cached_indexed"
                     if had_json
-                    else "parsed_indexed"
+                    else "stream_indexed"
                     if had_owl
-                    else "downloaded_parsed_indexed"
+                    else "downloaded_stream_indexed"
                 )
                 framework_result.update(
                     {
                         "status": status,
                         "owl_path": str(owl_path),
-                        "json_path": str(materialized_json),
+                        "json_path": str(json_path) if json_path.exists() else None,
                         "owl_size": owl_path.stat().st_size if owl_path.exists() else None,
-                        "json_size": materialized_json.stat().st_size,
+                        "json_size": json_path.stat().st_size if json_path.exists() else None,
+                        "source_kind": source_kind,
                         "indexed": True,
                     }
                 )
@@ -570,7 +652,8 @@ class OntoStore:
                     json_path TEXT NOT NULL,
                     json_size INTEGER NOT NULL,
                     json_mtime_ns INTEGER NOT NULL,
-                    indexed_at TEXT NOT NULL
+                    indexed_at TEXT NOT NULL,
+                    source_kind TEXT NOT NULL DEFAULT 'json'
                 );
                 CREATE TABLE IF NOT EXISTS terms (
                     ontology_id TEXT NOT NULL,
@@ -627,6 +710,14 @@ class OntoStore:
                 );
                 """
             )
+            framework_columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(frameworks)")
+            }
+            if "source_kind" not in framework_columns:
+                connection.execute(
+                    "ALTER TABLE frameworks ADD COLUMN "
+                    "source_kind TEXT NOT NULL DEFAULT 'json'"
+                )
             connection.execute(
                 "INSERT OR REPLACE INTO schema_metadata(key, value) VALUES (?, ?)",
                 ("schema_version", self.SQLITE_SCHEMA_VERSION),
@@ -640,17 +731,78 @@ class OntoStore:
     def _sqlite_framework_is_current(
         connection: sqlite3.Connection,
         ontology_id: str,
-        json_path: Path,
+        source_path: Path,
         stat: Any,
+        source_kind: str = "json",
     ) -> bool:
         row = connection.execute(
             """
-            SELECT json_path, json_size, json_mtime_ns
+            SELECT json_path, json_size, json_mtime_ns, source_kind
             FROM frameworks WHERE ontology_id = ?
             """,
             (ontology_id,),
         ).fetchone()
-        return row == (str(json_path.resolve()), stat.st_size, stat.st_mtime_ns)
+        return row == (
+            str(source_path.resolve()), stat.st_size, stat.st_mtime_ns, source_kind
+        )
+
+    def _insert_streamed_terms(
+        self,
+        connection: sqlite3.Connection,
+        ontology_id: str,
+        terms: Iterable[dict[str, Any]],
+        *,
+        batch_size: int,
+    ) -> None:
+        term_rows: list[tuple[str, str, str]] = []
+        lookup_rows: list[tuple[str, str, int, str, str, int]] = []
+        fts_rows: list[tuple[str, str, str, str, str, str]] = []
+
+        def flush() -> None:
+            connection.executemany(
+                "INSERT INTO terms VALUES (?, ?, ?)", term_rows
+            )
+            connection.executemany(
+                "INSERT INTO lookup_entries VALUES (?, ?, ?, ?, ?, ?)", lookup_rows
+            )
+            connection.executemany(
+                "INSERT INTO term_search VALUES (?, ?, ?, ?, ?, ?)", fts_rows
+            )
+            term_rows.clear()
+            lookup_rows.clear()
+            fts_rows.clear()
+
+        for source_order, term in enumerate(terms):
+            payload = json.dumps(
+                term, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+            )
+            term_key = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+            term_rows.append((ontology_id, term_key, payload))
+            fts_rows.append(self._fts_row(ontology_id, term_key, term))
+            values = {
+                "label": term.get("title"),
+                "id": term.get("accession"),
+                "accession": term.get("accession"),
+                "iri": term.get("iri"),
+            }
+            for index_rank, index_name in enumerate(self.LOOKUP_INDEXES):
+                value = values[index_name]
+                if value is None:
+                    continue
+                lookup_rows.append(
+                    (
+                        ontology_id,
+                        index_name,
+                        index_rank,
+                        self.harmonize_key(value),
+                        term_key,
+                        source_order,
+                    )
+                )
+            if len(term_rows) >= batch_size:
+                flush()
+        if term_rows:
+            flush()
 
     def _insert_lookup_terms(
         self,
