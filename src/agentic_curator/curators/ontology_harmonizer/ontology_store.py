@@ -33,6 +33,15 @@ OntologyFrameworkConfig = dict[str, dict[str, Any]]
 LOGGER = logging.getLogger(__name__)
 
 
+class OntologyCacheError(RuntimeError):
+    """Raised after an eager ontology cache build has attempted every framework."""
+
+    def __init__(self, results: dict[str, Any]):
+        self.results = results
+        failed = ", ".join(results.get("failed", []))
+        super().__init__(f"Failed to cache ontology frameworks: {failed}")
+
+
 class OntoStore:
     """Store for downloading, parsing, and serving ontologies."""
 
@@ -471,6 +480,70 @@ class OntoStore:
                 "terms": term_count,
                 "lookups": lookup_count,
             }
+        return results
+
+    def cache_all(
+        self,
+        frameworks: Iterable[str] | None = None,
+        *,
+        force: bool = False,
+        fail_on_error: bool = True,
+    ) -> dict[str, Any]:
+        """Materialize and index every selected active ontology framework."""
+        names = list(self.ontology_frameworks if frameworks is None else frameworks)
+        results: dict[str, Any] = {
+            "sqlite_path": str(self.sqlite_path),
+            "frameworks": {},
+            "successful": [],
+            "failed": [],
+        }
+
+        for name in names:
+            started = time.monotonic()
+            framework_result: dict[str, Any] = {"framework": name}
+            try:
+                owl_path = self._target_path(name)
+                json_path = self._json_target_path(name)
+                had_owl = owl_path.exists()
+                had_json = json_path.exists()
+                materialized_json = self.get(name, force=force)
+                self.index_framework(name, force=force)
+                status = (
+                    "force_rebuilt"
+                    if force
+                    else "cached_indexed"
+                    if had_json
+                    else "parsed_indexed"
+                    if had_owl
+                    else "downloaded_parsed_indexed"
+                )
+                framework_result.update(
+                    {
+                        "status": status,
+                        "owl_path": str(owl_path),
+                        "json_path": str(materialized_json),
+                        "owl_size": owl_path.stat().st_size if owl_path.exists() else None,
+                        "json_size": materialized_json.stat().st_size,
+                        "indexed": True,
+                    }
+                )
+                results["successful"].append(name)
+            except Exception as error:  # Continue so callers get a complete manifest.
+                framework_result.update(
+                    {
+                        "status": "failed",
+                        "indexed": False,
+                        "error": repr(error),
+                    }
+                )
+                results["failed"].append(name)
+            framework_result["elapsed_seconds"] = round(
+                time.monotonic() - started, 3
+            )
+            results["frameworks"][name] = framework_result
+
+        if results["failed"] and fail_on_error:
+            raise OntologyCacheError(results)
         return results
 
     @staticmethod

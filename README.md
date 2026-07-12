@@ -290,6 +290,7 @@ SQLite database.
 | `lookup_with_metadata(value, ontology_id)` | Return `match_type`, hits, and FTS ranking |
 | `lookup_exact(value, ontology_id, ensure_index=True)` | Exact normalized lookup only |
 | `index_framework(...)`, `sync_sqlite(...)`, `remove_indexed_framework(...)` | Maintain SQLite term indexes |
+| `cache_all(...)` | Materialize and SQLite-index every selected active framework |
 | `lookup_fields(field)` | Resolve a canonical field or alias |
 | `add_field(...)`, `update_field(...)`, `remove_field(...)` | Persistent field-registry mutation |
 | `get_field(...)`, `list_fields(...)`, `set_field_review_status(...)` | Retrieve and review fields |
@@ -357,6 +358,16 @@ their `-file` counterparts are mutually substitutable; files take precedence.
 
 `build_ontology_cache` downloads and parses built-in frameworks concurrently,
 then synchronizes successful JSON caches into the shared SQLite database.
+
+Programmatic callers can eagerly prepare one configured store before a workflow:
+
+```python
+store = OntoStore(storage_dir=".cache/ontologies")
+store.configure_framework("snomed", remove=True)
+manifest = store.cache_all()
+```
+
+`cache_all()` attempts active frameworks in configuration order before raising `OntologyCacheError` for aggregate failures. The exception exposes the complete manifest through `.results`; pass `fail_on_error=False` to continue with a partial cache.
 
 | Option | Behavior |
 | --- | --- |

@@ -24,6 +24,7 @@ from agentic_curator.curators.ontology_harmonizer import (
     GeminiGroundedSearchClient,
     HarmonizationTargetExtractor,
     OntoStore,
+    OntologyCacheError,
     OntologyHarmonizer as SubpackageOntologyHarmonizer,
     Owl2jsonParseError,
     RagStrategyHandler,
@@ -1104,6 +1105,98 @@ def test_sqlite_framework_helpers_add_remove_and_sync(tmp_path: Path) -> None:
             "SELECT ontology_id FROM frameworks ORDER BY ontology_id"
         ).fetchall()
     assert indexed == [("alpha",), ("beta",)]
+
+
+def test_cache_all_materializes_and_indexes_active_frameworks_in_order(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = OntoStore(ontology_frameworks={}, storage_dir=tmp_path)
+    store.ontology_frameworks = {
+        "alpha": {"owl_path": tmp_path / "alpha.owl", "json_path": tmp_path / "alpha.json", "url": "https://example/alpha.owl"},
+        "beta": {"owl_path": tmp_path / "beta.owl", "json_path": tmp_path / "beta.json", "url": "https://example/beta.owl"},
+    }
+    calls = []
+
+    def get(name, force=False):
+        calls.append(("get", name, force))
+        path = tmp_path / f"{name}.json"
+        path.write_text('{"ontology": {}, "terms": {}}', encoding="utf-8")
+        return path
+
+    def index_framework(name, force=False):
+        calls.append(("index", name, force))
+        return store.sqlite_path
+
+    monkeypatch.setattr(store, "get", get)
+    monkeypatch.setattr(store, "index_framework", index_framework)
+
+    result = store.cache_all()
+
+    assert calls == [
+        ("get", "alpha", False),
+        ("index", "alpha", False),
+        ("get", "beta", False),
+        ("index", "beta", False),
+    ]
+    assert result["successful"] == ["alpha", "beta"]
+    assert result["failed"] == []
+    assert list(result["frameworks"]) == ["alpha", "beta"]
+    assert all(
+        item["status"] == "downloaded_parsed_indexed"
+        for item in result["frameworks"].values()
+    )
+
+
+def test_cache_all_attempts_every_framework_then_raises_aggregate_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = OntoStore(ontology_frameworks={}, storage_dir=tmp_path)
+    store.ontology_frameworks = {
+        name: {"owl_path": tmp_path / f"{name}.owl", "json_path": tmp_path / f"{name}.json", "url": f"https://example/{name}.owl"}
+        for name in ("alpha", "beta", "gamma")
+    }
+    calls = []
+
+    def get(name, force=False):
+        calls.append(name)
+        if name in {"alpha", "gamma"}:
+            raise RuntimeError(f"failed {name}")
+        path = tmp_path / f"{name}.json"
+        path.write_text('{"ontology": {}, "terms": {}}', encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(store, "get", get)
+    monkeypatch.setattr(store, "index_framework", lambda *args, **kwargs: store.sqlite_path)
+
+    with pytest.raises(OntologyCacheError) as caught:
+        store.cache_all()
+
+    assert calls == ["alpha", "beta", "gamma"]
+    assert caught.value.results["successful"] == ["beta"]
+    assert caught.value.results["failed"] == ["alpha", "gamma"]
+
+
+def test_cache_all_can_return_partial_results_and_respects_removed_frameworks(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = OntoStore(ontology_frameworks={}, storage_dir=tmp_path)
+    store.ontology_frameworks = {
+        "alpha": {"owl_path": tmp_path / "alpha.owl", "json_path": tmp_path / "alpha.json", "url": "https://example/alpha.owl"},
+        "snomed": {"owl_path": tmp_path / "snomed.owl", "json_path": tmp_path / "snomed.json", "url": "https://example/snomed.owl"},
+    }
+    store.configure_framework("snomed", remove=True)
+    calls = []
+
+    def fail(name, force=False):
+        calls.append(name)
+        raise RuntimeError("unavailable")
+
+    monkeypatch.setattr(store, "get", fail)
+
+    result = store.cache_all(fail_on_error=False)
+
+    assert calls == ["alpha"]
+    assert result["failed"] == ["alpha"]
 
 
 def test_lookup_matches_id_accession_and_iri_indexes(tmp_path: Path) -> None:

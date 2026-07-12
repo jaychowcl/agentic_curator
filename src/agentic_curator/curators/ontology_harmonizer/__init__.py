@@ -11,7 +11,10 @@ from agentic_curator.curators.ontology_harmonizer.harmonization_target_extractor
     HarmonizationTargetExtractor,
 )
 from agentic_curator.curators.ontology_harmonizer.harmonizer import OntologyHarmonizer
-from agentic_curator.curators.ontology_harmonizer.ontology_store import OntoStore
+from agentic_curator.curators.ontology_harmonizer.ontology_store import (
+    OntoStore,
+    OntologyCacheError,
+)
 from agentic_curator.curators.ontology_harmonizer.request_policy import RequestPolicy
 from agentic_curator.curators.ontology_harmonizer.owl2json import (
     Owl2json,
@@ -29,6 +32,7 @@ __all__ = [
     "HarmonizationTargetExtractor",
     "OntologyHarmonizer",
     "OntoStore",
+    "OntologyCacheError",
     "RequestPolicy",
     "Owl2json",
     "Owl2jsonParseError",

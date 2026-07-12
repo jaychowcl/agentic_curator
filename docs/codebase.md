@@ -464,6 +464,8 @@ and reports status plus term and lookup counts. Imports use batched inserts in
 a framework-scoped transaction. The normalized schema stores each term payload
 once and maps lookup keys to it; WAL mode and a busy timeout support concurrent
 readers.
+
+`cache_all(frameworks=None, force=False, fail_on_error=True)` eagerly materializes and indexes every selected active framework in configuration order. It calls `get()` and `index_framework()` per framework, records cache status, paths, sizes, elapsed time, and index success, and continues after individual failures. The manifest includes the SQLite path and ordered successful/failed lists. After all attempts, the default policy raises `OntologyCacheError` with the manifest attached at `.results`; `fail_on_error=False` returns partial results. Removed frameworks are not processed.
 `OntoStore.download(name)` downloads only URL-backed frameworks with
 `requests.get(url, timeout=30)`, calls `raise_for_status()`, and returns the
 configured `owl_path`. Path-backed frameworks validate and return the configured
