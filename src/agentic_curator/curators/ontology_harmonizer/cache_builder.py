@@ -190,6 +190,30 @@ def validate_successes(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return validations
 
 
+def sync_sqlite_cache(results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Index every successfully generated ontology JSON in the shared database."""
+    successful = [
+        result
+        for result in results
+        if result.get("status")
+        in {"cached", "parsed", "downloaded_parsed", "force_rebuilt"}
+        and result.get("json_path")
+    ]
+    store = OntoStore()
+    framework_names = []
+    for result in successful:
+        name = str(result["framework"])
+        if name not in store.ontology_frameworks:
+            continue
+        store.ontology_frameworks[name]["json_path"] = Path(result["json_path"])
+        framework_names.append(name)
+
+    return {
+        "path": str(store.sqlite_path),
+        "frameworks": store.sync_sqlite(framework_names),
+    }
+
+
 def build_ontology_cache(
     *,
     frameworks: Iterable[str] | None = None,
@@ -260,6 +284,7 @@ def build_ontology_cache(
 
     results = [results_by_name[name] for name in framework_names]
     validations = validate_successes(results)
+    sqlite_result = sync_sqlite_cache(results)
     manifest = {
         "started_at": timestamp,
         "elapsed_seconds": round(time.monotonic() - started, 3),
@@ -269,6 +294,7 @@ def build_ontology_cache(
         "frameworks": framework_names,
         "results": results,
         "validations": validations,
+        "sqlite": sqlite_result,
         "manifest_path": str(manifest_path),
         "log_path": str(log_path),
         "summary": {

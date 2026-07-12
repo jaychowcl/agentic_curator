@@ -66,6 +66,11 @@ def test_build_ontology_cache_collects_results_in_framework_order(
 
     monkeypatch.setattr(cache_builder, "run_framework", fake_run_framework)
     monkeypatch.setattr(cache_builder, "validate_successes", lambda results: [])
+    monkeypatch.setattr(
+        cache_builder,
+        "sync_sqlite_cache",
+        lambda results: {"path": "/tmp/ontologies.sqlite3", "frameworks": {}},
+    )
 
     manifest = cache_builder.build_ontology_cache(
         frameworks=["alpha", "beta", "gamma"],
@@ -84,6 +89,10 @@ def test_build_ontology_cache_collects_results_in_framework_order(
     ]
     assert manifest["summary"] == {"cached": 2, "failed": 1}
     assert manifest["max_workers"] == 2
+    assert manifest["sqlite"] == {
+        "path": "/tmp/ontologies.sqlite3",
+        "frameworks": {},
+    }
     assert (tmp_path / "manifest.json").exists()
     assert (tmp_path / "manifest.log").exists()
 
@@ -104,6 +113,7 @@ def test_build_ontology_cache_uses_default_max_workers(
         },
     )
     monkeypatch.setattr(cache_builder, "validate_successes", lambda results: [])
+    monkeypatch.setattr(cache_builder, "sync_sqlite_cache", lambda results: {})
 
     manifest = cache_builder.build_ontology_cache(
         frameworks=["alpha"],
@@ -131,6 +141,7 @@ def test_main_writes_manifest_and_returns_zero(
         },
     )
     monkeypatch.setattr(cache_builder, "validate_successes", lambda results: [])
+    monkeypatch.setattr(cache_builder, "sync_sqlite_cache", lambda results: {})
 
     assert (
         cache_builder.main(

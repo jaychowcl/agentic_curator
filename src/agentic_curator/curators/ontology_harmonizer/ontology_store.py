@@ -9,10 +9,13 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+import hashlib
 import json
 import logging
 from pathlib import Path
-from typing import Any
+import sqlite3
+from typing import Any, Iterable, Iterator
 from urllib.parse import urlparse
 
 import requests
@@ -99,12 +102,15 @@ class OntoStore:
         },
     }
     DEFAULT_STORAGE_DIR = Path(__file__).resolve().parent / "ontology_frameworks"
+    SQLITE_SCHEMA_VERSION = "1"
+    LOOKUP_INDEXES = ("label", "id", "accession", "iri")
 
     def __init__(
         self,
         ontology_frameworks: OntologyFrameworkConfig | None = None,
         fields: dict[str, dict[str, Any]] | None = None,
         storage_dir: str | Path | None = None,
+        sqlite_path: str | Path | None = None,
     ) -> None:
         self.storage_dir = (
             self.DEFAULT_STORAGE_DIR if storage_dir is None else Path(storage_dir)
@@ -116,6 +122,11 @@ class OntoStore:
             }
         )
         self.fields = self._normalize_fields(fields or {})
+        self.sqlite_path = (
+            self.storage_dir / "sqlite" / "ontologies.sqlite3"
+            if sqlite_path is None
+            else Path(sqlite_path)
+        )
 
     def configure_framework(
         self,
@@ -282,19 +293,23 @@ class OntoStore:
 
     def lookup(self, label: str, ontology_id: str) -> list[dict[str, Any]]:
         LOGGER.info("Looking up ontology label.")
-        json_path = self.get(ontology_id)
-        ontology = json.loads(json_path.read_text(encoding="utf-8"))
-        terms = ontology.get("terms", {})
-        if not isinstance(terms, dict):
-            return []
-
+        self.index_framework(ontology_id)
         lookup_label = self.harmonize_key(label)
-        hits: list[dict[str, Any]] = []
-        for index_name in ("label", "id", "accession", "iri"):
-            index = terms.get(index_name, {})
-            if not isinstance(index, dict):
-                continue
-            hits.extend(self._lookup_index(index, lookup_label))
+        with self._sqlite_connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT terms.payload
+                FROM lookup_entries
+                JOIN terms
+                  ON terms.ontology_id = lookup_entries.ontology_id
+                 AND terms.term_key = lookup_entries.term_key
+                WHERE lookup_entries.ontology_id = ?
+                  AND lookup_entries.lookup_key = ?
+                ORDER BY lookup_entries.index_rank, lookup_entries.source_order
+                """,
+                (ontology_id, lookup_label),
+            ).fetchall()
+        hits = [json.loads(row[0]) for row in rows]
 
         result = self._dedupe_lookup_hits(
             self._metadata_with_ontology_id(hits, ontology_id)
@@ -305,6 +320,228 @@ class OntoStore:
             ontology_id,
         )
         return result
+
+    def index_framework(self, ontology_id: str, force: bool = False) -> Path:
+        """Add or refresh one configured framework in the shared SQLite index."""
+        json_path = self._json_target_path(ontology_id)
+        if not json_path.exists():
+            json_path = self.get(ontology_id)
+        stat = json_path.stat()
+
+        with self._sqlite_connection() as connection:
+            if not force and self._sqlite_framework_is_current(
+                connection, ontology_id, json_path, stat
+            ):
+                return self.sqlite_path
+
+        ontology = self._load_ontology_json(json_path)
+        terms = ontology.get("terms", {})
+        if not isinstance(terms, dict):
+            terms = {}
+
+        with self._sqlite_connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                connection.execute(
+                    "DELETE FROM frameworks WHERE ontology_id = ?", (ontology_id,)
+                )
+                connection.execute(
+                    """
+                    INSERT INTO frameworks(
+                        ontology_id, json_path, json_size, json_mtime_ns, indexed_at
+                    ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    """,
+                    (
+                        ontology_id,
+                        str(json_path.resolve()),
+                        stat.st_size,
+                        stat.st_mtime_ns,
+                    ),
+                )
+                self._insert_lookup_terms(connection, ontology_id, terms)
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+
+        LOGGER.info("Indexed ontology framework %s in SQLite.", ontology_id)
+        return self.sqlite_path
+
+    def remove_indexed_framework(self, ontology_id: str) -> bool:
+        """Remove one framework from SQLite while retaining its source caches."""
+        with self._sqlite_connection() as connection:
+            cursor = connection.execute(
+                "DELETE FROM frameworks WHERE ontology_id = ?", (ontology_id,)
+            )
+            connection.commit()
+            return cursor.rowcount > 0
+
+    def sync_sqlite(
+        self,
+        frameworks: Iterable[str] | None = None,
+        force: bool = False,
+    ) -> dict[str, dict[str, Any]]:
+        """Index configured frameworks that currently have JSON caches."""
+        names = list(self.ontology_frameworks if frameworks is None else frameworks)
+        results: dict[str, dict[str, Any]] = {}
+        for ontology_id in names:
+            json_path = self._json_target_path(ontology_id)
+            if not json_path.exists():
+                continue
+            was_current = False
+            with self._sqlite_connection() as connection:
+                was_current = self._sqlite_framework_is_current(
+                    connection, ontology_id, json_path, json_path.stat()
+                )
+            self.index_framework(ontology_id, force=force)
+            with self._sqlite_connection() as connection:
+                term_count = connection.execute(
+                    "SELECT COUNT(*) FROM terms WHERE ontology_id = ?",
+                    (ontology_id,),
+                ).fetchone()[0]
+                lookup_count = connection.execute(
+                    "SELECT COUNT(*) FROM lookup_entries WHERE ontology_id = ?",
+                    (ontology_id,),
+                ).fetchone()[0]
+            results[ontology_id] = {
+                "status": "current" if was_current and not force else "indexed",
+                "terms": term_count,
+                "lookups": lookup_count,
+            }
+        return results
+
+    @staticmethod
+    def _load_ontology_json(json_path: Path) -> dict[str, Any]:
+        return json.loads(json_path.read_text(encoding="utf-8"))
+
+    @contextmanager
+    def _sqlite_connection(self) -> Iterator[sqlite3.Connection]:
+        self.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(self.sqlite_path, timeout=30)
+        try:
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA busy_timeout = 30000")
+            connection.execute("PRAGMA journal_mode = WAL")
+            connection.execute("PRAGMA synchronous = NORMAL")
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS schema_metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS frameworks (
+                    ontology_id TEXT PRIMARY KEY,
+                    json_path TEXT NOT NULL,
+                    json_size INTEGER NOT NULL,
+                    json_mtime_ns INTEGER NOT NULL,
+                    indexed_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS terms (
+                    ontology_id TEXT NOT NULL,
+                    term_key TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    PRIMARY KEY (ontology_id, term_key),
+                    FOREIGN KEY (ontology_id) REFERENCES frameworks(ontology_id)
+                        ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS lookup_entries (
+                    ontology_id TEXT NOT NULL,
+                    index_name TEXT NOT NULL,
+                    index_rank INTEGER NOT NULL,
+                    lookup_key TEXT NOT NULL,
+                    term_key TEXT NOT NULL,
+                    source_order INTEGER NOT NULL,
+                    PRIMARY KEY (ontology_id, index_name, lookup_key, term_key),
+                    FOREIGN KEY (ontology_id, term_key)
+                        REFERENCES terms(ontology_id, term_key) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS lookup_entries_lookup
+                    ON lookup_entries(
+                        ontology_id, lookup_key, index_rank, source_order
+                    );
+                """
+            )
+            connection.execute(
+                "INSERT OR REPLACE INTO schema_metadata(key, value) VALUES (?, ?)",
+                ("schema_version", self.SQLITE_SCHEMA_VERSION),
+            )
+            connection.commit()
+            yield connection
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _sqlite_framework_is_current(
+        connection: sqlite3.Connection,
+        ontology_id: str,
+        json_path: Path,
+        stat: Any,
+    ) -> bool:
+        row = connection.execute(
+            """
+            SELECT json_path, json_size, json_mtime_ns
+            FROM frameworks WHERE ontology_id = ?
+            """,
+            (ontology_id,),
+        ).fetchone()
+        return row == (str(json_path.resolve()), stat.st_size, stat.st_mtime_ns)
+
+    def _insert_lookup_terms(
+        self,
+        connection: sqlite3.Connection,
+        ontology_id: str,
+        indexes: dict[str, Any],
+    ) -> None:
+        term_rows: list[tuple[str, str, str]] = []
+        lookup_rows: list[tuple[str, str, int, str, str, int]] = []
+
+        def flush() -> None:
+            connection.executemany(
+                """
+                INSERT OR IGNORE INTO terms(ontology_id, term_key, payload)
+                VALUES (?, ?, ?)
+                """,
+                term_rows,
+            )
+            connection.executemany(
+                """
+                INSERT OR IGNORE INTO lookup_entries(
+                    ontology_id, index_name, index_rank, lookup_key,
+                    term_key, source_order
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                lookup_rows,
+            )
+            term_rows.clear()
+            lookup_rows.clear()
+
+        for index_rank, index_name in enumerate(self.LOOKUP_INDEXES):
+            index = indexes.get(index_name, {})
+            if not isinstance(index, dict):
+                continue
+            for lookup_key, raw_hits in index.items():
+                for source_order, hit in enumerate(self._lookup_value_hits(raw_hits)):
+                    if not isinstance(hit, dict):
+                        continue
+                    payload = json.dumps(
+                        hit, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+                    )
+                    term_key = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+                    term_rows.append((ontology_id, term_key, payload))
+                    lookup_rows.append(
+                        (
+                            ontology_id,
+                            index_name,
+                            index_rank,
+                            str(lookup_key),
+                            term_key,
+                            source_order,
+                        )
+                    )
+                    if len(lookup_rows) >= 5_000:
+                        flush()
+        if lookup_rows:
+            flush()
 
     def lookup_fields(self, field: Any) -> Any:
         LOGGER.info("Looking up ontology field.")

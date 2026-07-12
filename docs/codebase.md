@@ -333,15 +333,23 @@ When JSON is missing for a URL-backed framework, it parses the configured
 `owl_path` if present or downloads the `.owl` there first. With `force=True`,
 URL-backed frameworks redownload the `.owl` before reparsing, and path-backed
 frameworks reparse the configured local `owl_path` without network I/O.
-`OntoStore.lookup(label, ontology_id)` calls `get(ontology_id)`, loads the JSON
-from the configured `json_path`, normalizes the query with
-`harmonize_key(...)`, and searches `terms["label"]`, `terms["id"]`,
-`terms["accession"]`, and `terms["iri"]` in that order. It returns a list of all
-matched term dicts with `ontology_id` added, flattening list-valued index
-entries and deduping hits while preserving search order. Ontology JSON index
-keys are expected to be pre-normalized by `Owl2json`; lookup uses direct
-dictionary membership and returns `[]` when no index contains the normalized
-label.
+`OntoStore.lookup(label, ontology_id)` keeps its two-argument API but serves
+lookups from a shared SQLite index. The default database is
+`storage_dir/sqlite/ontologies.sqlite3`; callers may override it with
+`sqlite_path`. On first lookup, the store imports that framework's JSON cache.
+Later calls compare its resolved path, size, and nanosecond modification time
+and rebuild only that framework when stale. Lookup searches `label`, `id`,
+`accession`, and `iri` in the existing order and returns the same deduped term
+dictionaries with `ontology_id` added. Normalized JSON keys remain required.
+
+`index_framework(ontology_id, force=False)` explicitly adds or refreshes one
+framework. `remove_indexed_framework(ontology_id)` removes its SQLite rows
+without deleting OWL or JSON caches. `sync_sqlite(frameworks=None, force=False)`
+indexes selected frameworks, or all configured frameworks with existing JSON,
+and reports status plus term and lookup counts. Imports use batched inserts in
+a framework-scoped transaction. The normalized schema stores each term payload
+once and maps lookup keys to it; WAL mode and a busy timeout support concurrent
+readers.
 `OntoStore.download(name)` downloads only URL-backed frameworks with
 `requests.get(url, timeout=30)`, calls `raise_for_status()`, and returns the
 configured `owl_path`. Path-backed frameworks validate and return the configured
@@ -350,8 +358,9 @@ local `owl_path` without calling `requests`.
 When no explicit path is supplied, URL-backed `.owl` files are saved under
 `src/agentic_curator/curators/ontology_harmonizer/ontology_frameworks/` using
 the URL basename, and parsed JSON files are saved under the sibling `jsons/`
-directory within `storage_dir`. The default storage directory is ignored by
-git. Existing downloaded files are skipped by `download()`, and existing JSON is
+directory within `storage_dir`; SQLite is stored under the sibling `sqlite/`
+directory. The default storage directory is ignored by git. Existing downloaded
+files are skipped by `download()`, and existing JSON is
 reused by `get()` after `ontology["id"]` repair unless `force=True`. Unknown
 framework names raise `KeyError`; missing or invalid URLs or paths raise
 `ValueError`, and missing local path files raise `FileNotFoundError`.
@@ -363,7 +372,9 @@ run as `build_ontology_cache` after installation or as
 builder submits one job per framework through a parent `ThreadPoolExecutor` and
 keeps each job in an isolated child Python process that calls
 `OntoStore().get(name, force=force)`. This overlaps downloads/parses across
-frameworks while keeping RDFLib parse memory isolated per child. The default
+frameworks while keeping RDFLib parse memory isolated per child. The parent
+then synchronizes successful JSON caches into SQLite and includes its path and
+framework counts in the manifest. The default
 worker count is `min(4, os.cpu_count() or 1)` with a floor of one, and
 `--max-workers` overrides it. `--force-framework` may be passed repeatedly to
 redownload/reparse specific URL-backed frameworks or reparse path-backed
@@ -1152,8 +1163,9 @@ class OntoStore:
     DEFAULT_ONTOLOGY_FRAMEWORKS = {...}
     DEFAULT_STORAGE_DIR = package_dir / "ontology_frameworks"
 
-    def __init__(ontology_frameworks=None, storage_dir=None):
+    def __init__(ontology_frameworks=None, storage_dir=None, sqlite_path=None):
         self.storage_dir = DEFAULT_STORAGE_DIR if storage_dir is None else Path(storage_dir)
+        self.sqlite_path = sqlite_path or self.storage_dir / "sqlite" / "ontologies.sqlite3"
         self.ontology_frameworks = self._normalize_frameworks(
             DEFAULT_ONTOLOGY_FRAMEWORKS plus ontology_frameworks
         )
@@ -1210,16 +1222,19 @@ def get(name, force=False):
     return Owl2json(owl_path).write_json(json_path, ontology_id=name)
 
 def lookup(label, ontology_id):
-    json_path = self.get(ontology_id)
-    ontology = json.loads(json_path.read_text(encoding="utf-8"))
-    terms = ontology.get("terms", {})
+    index_framework(ontology_id)
     lookup_label = self.harmonize_key(label)
-    hits = []
-    for index_name in ("label", "id", "accession", "iri"):
-        index = terms.get(index_name, {})
-        if index is dict and lookup_label in index:
-            hits.extend(matched metadata values)
+    hits = query SQLite by ontology and lookup key in index/source order
     return deduped hits with ontology_id added to each term dict
+
+def index_framework(ontology_id, force=False):
+    transactionally add or refresh one stale JSON cache in SQLite
+
+def remove_indexed_framework(ontology_id):
+    remove one framework from SQLite while retaining OWL and JSON caches
+
+def sync_sqlite(frameworks=None, force=False):
+    index selected or all existing framework JSON caches and return counts
 
 def harmonize_key(value):
     return lowercase, trimmed string with edge punctuation stripped and spaces collapsed to "_"
@@ -1816,8 +1831,8 @@ Test coverage includes:
   websearch strategy fallback behavior, and `OntoStore`
   defaults/overrides/download/get/lookup behavior
 - ontology cache builder framework ordering, default worker count, threaded
-  scheduling, force flags, failure collection, manifest/log writing, and
-  console script metadata
+  scheduling, force flags, failure collection, SQLite synchronization,
+  manifest/log writing, and console script metadata
 - Owl2json imports, ontology metadata extraction, normalized term JSON,
   accession fallback, deprecated/replaced terms, HTML rejection, and JSON file
   writing

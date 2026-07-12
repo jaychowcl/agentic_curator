@@ -9,7 +9,9 @@
 
 import inspect
 import json
+import os
 import re
+import sqlite3
 from pathlib import Path
 from importlib.resources import files
 
@@ -320,6 +322,15 @@ def test_ontostore_initializes_with_default_frameworks(tmp_path: Path) -> None:
         "json_path": tmp_path / "jsons" / "mondo-international.json",
     }
     assert store.storage_dir == tmp_path
+    assert store.sqlite_path == tmp_path / "sqlite" / "ontologies.sqlite3"
+
+
+def test_ontostore_accepts_custom_sqlite_path(tmp_path: Path) -> None:
+    sqlite_path = tmp_path / "indexes" / "custom.db"
+
+    store = OntoStore(storage_dir=tmp_path, sqlite_path=sqlite_path)
+
+    assert store.sqlite_path == sqlite_path
 
 
 def test_default_frameworks_include_titles() -> None:
@@ -976,6 +987,120 @@ def test_lookup_matches_label_index(tmp_path: Path) -> None:
     )
 
     assert store.lookup(" Lung, ", "uberon") == [{**term, "ontology_id": "uberon"}]
+    assert store.sqlite_path.exists()
+
+
+def test_repeated_lookup_uses_sqlite_without_loading_json_again(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    term = {"id": "UBERON:1", "title": "lung"}
+    json_path = ontology_json_file(tmp_path, "uberon", {"label": {"lung": term}})
+    store = OntoStore(
+        ontology_frameworks={
+            "uberon": {"path": tmp_path / "missing.owl", "json_path": json_path}
+        },
+        storage_dir=tmp_path,
+    )
+    assert store.lookup("lung", "uberon") == [{**term, "ontology_id": "uberon"}]
+
+    monkeypatch.setattr(
+        store,
+        "_load_ontology_json",
+        lambda path: (_ for _ in ()).throw(AssertionError("JSON should not load")),
+    )
+
+    assert store.lookup("lung", "uberon") == [{**term, "ontology_id": "uberon"}]
+
+
+def test_lookup_refreshes_stale_sqlite_framework(tmp_path: Path) -> None:
+    old_term = {"id": "UBERON:1", "title": "old lung"}
+    new_term = {"id": "UBERON:2", "title": "new lung"}
+    json_path = ontology_json_file(
+        tmp_path, "uberon", {"label": {"lung": old_term}}
+    )
+    store = OntoStore(
+        ontology_frameworks={
+            "uberon": {"path": tmp_path / "missing.owl", "json_path": json_path}
+        },
+        storage_dir=tmp_path,
+    )
+    assert store.lookup("lung", "uberon")[0]["id"] == "UBERON:1"
+
+    json_path.write_text(
+        json.dumps(
+            {"ontology": {"id": "uberon"}, "terms": {"label": {"lung": new_term}}}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    stat = json_path.stat()
+    os.utime(json_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+
+    assert store.lookup("lung", "uberon") == [
+        {**new_term, "ontology_id": "uberon"}
+    ]
+
+
+def test_failed_sqlite_refresh_preserves_previous_framework_index(
+    tmp_path: Path,
+) -> None:
+    term = {"id": "UBERON:1", "title": "lung"}
+    json_path = ontology_json_file(tmp_path, "uberon", {"label": {"lung": term}})
+    store = OntoStore(
+        ontology_frameworks={
+            "uberon": {"path": tmp_path / "missing.owl", "json_path": json_path}
+        },
+        storage_dir=tmp_path,
+    )
+    store.index_framework("uberon")
+    json_path.write_text("not json\n", encoding="utf-8")
+
+    with pytest.raises(json.JSONDecodeError):
+        store.index_framework("uberon", force=True)
+
+    with sqlite3.connect(store.sqlite_path) as connection:
+        payload = connection.execute(
+            """
+            SELECT terms.payload
+            FROM lookup_entries
+            JOIN terms USING (ontology_id, term_key)
+            WHERE lookup_entries.ontology_id = 'uberon'
+              AND lookup_entries.lookup_key = 'lung'
+            """
+        ).fetchone()[0]
+    assert json.loads(payload) == term
+
+
+def test_sqlite_framework_helpers_add_remove_and_sync(tmp_path: Path) -> None:
+    alpha_json = ontology_json_file(
+        tmp_path, "alpha", {"label": {"alpha": {"id": "A:1"}}}
+    )
+    beta_json = ontology_json_file(
+        tmp_path, "beta", {"label": {"beta": {"id": "B:1"}}}
+    )
+    store = OntoStore(
+        ontology_frameworks={
+            "alpha": {"path": tmp_path / "alpha.owl", "json_path": alpha_json},
+            "beta": {"path": tmp_path / "beta.owl", "json_path": beta_json},
+        },
+        storage_dir=tmp_path,
+    )
+
+    assert store.index_framework("alpha") == store.sqlite_path
+    assert store.sync_sqlite() == {
+        "alpha": {"status": "current", "terms": 1, "lookups": 1},
+        "beta": {"status": "indexed", "terms": 1, "lookups": 1},
+    }
+    assert store.remove_indexed_framework("alpha") is True
+    assert store.remove_indexed_framework("alpha") is False
+    assert store.lookup("alpha", "alpha") == [{"id": "A:1", "ontology_id": "alpha"}]
+
+    with sqlite3.connect(store.sqlite_path) as connection:
+        indexed = connection.execute(
+            "SELECT ontology_id FROM frameworks ORDER BY ontology_id"
+        ).fetchall()
+    assert indexed == [("alpha",), ("beta",)]
 
 
 def test_lookup_matches_id_accession_and_iri_indexes(tmp_path: Path) -> None:
