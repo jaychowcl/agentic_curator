@@ -1465,15 +1465,14 @@ class GeminiEnterprisePlatform:
         effective_model = model or self.model
         generation_config = self._clean_options(self._generation_config(config))
         generation_tools = self.tools_template if tools is None else tools
+        if generation_tools:
+            generation_config["tools"] = generation_tools
         request = {
             "model": effective_model,
             "contents": prompt,
             "config": generation_config,
             **extra_options,
         }
-        if generation_tools:
-            request["tools"] = generation_tools
-
         raw_response = self._client().models.generate_content(**request)
         return {
             "text": self._model_adapter(effective_model).parse_response(raw_response),
@@ -1488,6 +1487,10 @@ class GeminiEnterprisePlatform:
 ```
 
 Internal calls from `generate_response_with_metadata()`:
+
+Generation tools are nested under `config["tools"]`, matching the Google Gen AI
+SDK `generate_content(model=..., contents=..., config=...)` signature. They are
+not sent as an unsupported top-level request keyword.
 
 - `_generation_config(...)`
 - `_clean_options(...)`

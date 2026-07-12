@@ -122,8 +122,8 @@ def test_llm_generate_response_with_metadata_delegates_to_platform() -> None:
                 "temperature": 0.2,
                 "max_output_tokens": 8192,
                 "candidate_count": 1,
+                "tools": [{"type": "google_search"}],
             },
-            "tools": [{"type": "google_search"}],
         }
     ]
 
@@ -228,12 +228,12 @@ def test_gemini_enterprise_generate_response_uses_injected_client() -> None:
         {
             "model": "gemini-default",
             "contents": "extract evidence",
-            "config": {
-                "temperature": 0.4,
-                "max_output_tokens": 128,
-                "candidate_count": 1,
-            },
-            "tools": ["tool-b"],
+                "config": {
+                    "temperature": 0.4,
+                    "max_output_tokens": 128,
+                    "candidate_count": 1,
+                    "tools": ["tool-b"],
+                },
         }
     ]
 
@@ -298,7 +298,10 @@ def test_gemini_enterprise_generate_response_with_metadata_extracts_citations() 
         ],
         "provider": "gemini_enterprise",
     }
-    assert client.models.calls[0]["tools"] == [{"type": "google_search"}]
+    assert client.models.calls[0]["config"]["tools"] == [
+        {"type": "google_search"}
+    ]
+    assert "tools" not in client.models.calls[0]
 
 
 def test_claude_vertex_generate_response_uses_injected_client() -> None:

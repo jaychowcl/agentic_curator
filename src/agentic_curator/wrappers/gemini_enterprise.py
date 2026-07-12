@@ -164,14 +164,14 @@ class GeminiEnterprisePlatform:
         effective_model = model or self.model
         generation_config = self._clean_options(self._generation_config(config))
         generation_tools = self.tools_template if tools is None else tools
+        if generation_tools:
+            generation_config["tools"] = generation_tools
         request = {
             "model": effective_model,
             "contents": prompt,
             "config": generation_config,
             **extra_options,
         }
-        if generation_tools:
-            request["tools"] = generation_tools
 
         client = self._client()
         raw_response = client.models.generate_content(**request)
