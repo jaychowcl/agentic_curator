@@ -16,6 +16,9 @@ from agentic_curator.curators.ontology_harmonizer.ontology_store import (
     OntologyCacheError,
 )
 from agentic_curator.curators.ontology_harmonizer.request_policy import RequestPolicy
+from agentic_curator.curators.ontology_harmonizer.miniml_metadata_context import (
+    build_miniml_metadata_context,
+)
 from agentic_curator.curators.ontology_harmonizer.owl2json import (
     Owl2json,
     Owl2jsonParseError,
@@ -34,6 +37,7 @@ __all__ = [
     "OntoStore",
     "OntologyCacheError",
     "RequestPolicy",
+    "build_miniml_metadata_context",
     "Owl2json",
     "Owl2jsonParseError",
     "GeminiGroundedSearchClient",

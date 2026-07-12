@@ -216,6 +216,11 @@ and first-seen unique `field=value` target pairs. Whitespace is collapsed,
 protocols and paths are excluded, and the single-line result is capped at 500
 characters with an ellipsis. Callers cannot override this generated MINiML
 context; `publication_context` remains a separate user-supplied value.
+The same behavior is publicly available as
+`build_miniml_metadata_context(miniml_json, *, harmonization_targets=None,
+max_chars=500)`. When targets are omitted, it discovers and deduplicates the
+default MINiML sample-channel targets itself, allowing thematic review and
+ontology harmonization to share one compact context implementation.
 After harmonization, `harmonize_miniml_json(...)` calls `apply_targets(...)`,
 mutates the supplied MINiML JSON in place, and includes that same object in the
 return wrapper under `miniml_json`.

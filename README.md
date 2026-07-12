@@ -309,6 +309,11 @@ ontologies, allowed extraction modes, source, confidence, and reason.
 molecule, organism, and characteristic paths. `dedupe_targets(...)` combines
 identical field/label targets while retaining all occurrences.
 
+`build_miniml_metadata_context(miniml_json, max_chars=500)` creates the shared
+LLM-facing MINiML summary: first series title plus unique source, molecule,
+organism, and characteristic `field=value` pairs. It is deterministic,
+whitespace-normalized, and excludes unrelated protocol/platform sections.
+
 `Owl2json(owl_path).parse(ontology_id=None)` reads RDF/XML with RDFLib.
 `write_json(output_path, ontology_id=None)` writes label, ID, accession, and
 IRI indexes while retaining ontology and term metadata.

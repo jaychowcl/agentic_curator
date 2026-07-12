@@ -21,6 +21,9 @@ from agentic_curator.curators.ontology_harmonizer.harmonization_target_extractor
     StartPathSpec,
 )
 from agentic_curator.curators.ontology_harmonizer.ontology_store import OntoStore
+from agentic_curator.curators.ontology_harmonizer.miniml_metadata_context import (
+    build_miniml_metadata_context,
+)
 from agentic_curator.curators.ontology_harmonizer.request_policy import RequestPolicy, request_with_retry
 from agentic_curator.curators.ontology_harmonizer.strategy_handlers import (
     GeminiGroundedSearchClient,
@@ -840,62 +843,12 @@ class OntologyHarmonizer:
         miniml_json: dict[str, Any] | list[Any] | None,
         harmonization_targets: list[dict[str, Any]],
     ) -> str | None:
-        """Build a compact, deterministic context from useful MINiML metadata."""
-        packages = [miniml_json] if isinstance(miniml_json, dict) else miniml_json
-        title: str | None = None
-        if isinstance(packages, list):
-            for package in packages:
-                if not isinstance(package, dict):
-                    continue
-                series = package.get("series")
-                if isinstance(series, dict) and series.get("title") is not None:
-                    candidate = self._compact_context_value(series["title"])
-                    if candidate:
-                        title = candidate
-                        break
-
-        entries: list[str] = []
-        seen: set[tuple[str, str]] = set()
-        for target in harmonization_targets:
-            if not isinstance(target, dict):
-                continue
-            field_value = target.get("pre_hz_field")
-            label_value = target.get("pre_hz_label")
-            if field_value is None or label_value is None:
-                continue
-            field = self._compact_context_value(field_value)
-            label = self._compact_context_value(label_value)
-            if not field or not label or (field, label) in seen:
-                continue
-            seen.add((field, label))
-            entries.append(f"{field}={label}")
-
-        context = f"Study: {title}" if title else ""
-        if len(context) > self.METADATA_CONTEXT_MAX_CHARS:
-            return context[: self.METADATA_CONTEXT_MAX_CHARS - 1].rstrip() + "…"
-
-        appended_entries = 0
-        for entry in entries:
-            separator = " | " if context and appended_entries == 0 else "; " if context else ""
-            candidate = f"{context}{separator}{entry}"
-            if len(candidate) <= self.METADATA_CONTEXT_MAX_CHARS:
-                context = candidate
-                appended_entries += 1
-                continue
-            if len(entry) <= self.METADATA_CONTEXT_MAX_CHARS:
-                break
-            available = self.METADATA_CONTEXT_MAX_CHARS - len(context) - len(separator)
-            if available > 1:
-                context = f"{context}{separator}{entry[: available - 1].rstrip()}…"
-            break
-
-        if not context:
-            return None
-        return context
-
-    @staticmethod
-    def _compact_context_value(value: Any) -> str:
-        return " ".join(str(value).split())
+        """Build compact context while preserving the compatibility method."""
+        return build_miniml_metadata_context(
+            miniml_json,
+            harmonization_targets=harmonization_targets,
+            max_chars=self.METADATA_CONTEXT_MAX_CHARS,
+        )
 
     @staticmethod
     def _metadata_context_kwargs(metadata_context: str | None) -> dict[str, str]:
