@@ -25,6 +25,8 @@ LOGGER = logging.getLogger(__name__)
 class ThematicReviewer:
     """Assess publication relevance to a thematic curation target."""
 
+    MAX_OUTPUT_TOKENS = 16_384
+
     def __init__(self, llm: Any | None = None) -> None:
         self.llm = llm
 
@@ -63,6 +65,7 @@ class ThematicReviewer:
         response = self._llm().generate_response(
             prompt,
             config={
+                "max_output_tokens": self.MAX_OUTPUT_TOKENS,
                 "response_mime_type": "application/json",
                 "response_schema": self._evidence_response_schema(),
             },
@@ -88,6 +91,7 @@ class ThematicReviewer:
         response = self._llm().generate_response(
             prompt,
             config={
+                "max_output_tokens": self.MAX_OUTPUT_TOKENS,
                 "response_mime_type": "application/json",
                 "response_schema": self._judge_evidence_response_schema(),
             },

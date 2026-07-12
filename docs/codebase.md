@@ -162,6 +162,12 @@ prompt helpers. The reviewer asks providers for JSON output, passes dict/list
 responses through, parses JSON text with `json.loads(...)`, and raises
 `ValueError` for invalid JSON text.
 
+Evidence extraction and final judgement request `max_output_tokens=16384`.
+Gemini counts internal thinking against this budget, so the reviewer overrides
+the wrapper's smaller general default for long full-text evidence responses.
+Invalid or truncated consumed responses still raise and are not regenerated
+automatically; the atlas caller isolates and records the affected publication.
+
 <a id="query-generator"></a>
 ## Query Generator
 

@@ -188,6 +188,7 @@ def test_judge_evidence_generates_json_response_from_prompt() -> None:
     assert len(fake_llm.calls) == 1
     assert fake_llm.calls[0]["model"] is None
     assert fake_llm.calls[0]["config"] == {
+        "max_output_tokens": 16384,
         "response_mime_type": "application/json",
         "response_schema": reviewer._judge_evidence_response_schema(),
     }
@@ -266,6 +267,7 @@ def test_extract_evidence_generates_json_response_from_prompt() -> None:
     assert len(fake_llm.calls) == 1
     assert fake_llm.calls[0]["model"] is None
     assert fake_llm.calls[0]["config"] == {
+        "max_output_tokens": 16384,
         "response_mime_type": "application/json",
         "response_schema": reviewer._evidence_response_schema(),
     }
