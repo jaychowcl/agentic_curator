@@ -183,6 +183,13 @@ The dataset-link filter is added in code and model responses containing
 PMC, count hits, or retry generation. `queries` is directly compatible with
 ThematicAtlases' current `list[str]` collector input; downstream
 `max_publications` remains the cost boundary.
+The domain-neutral prompt defaults to one comprehensive query. It asks the
+model to identify independent mandatory theme concepts, build an extensive
+synonym/variant `OR` group for each, and join concept groups with `AND`.
+Additional queries are allowed only for an explained unbridgeable Boolean,
+semantic-collision, syntax, or query-length gap; organ, disease, assay subtype,
+mechanism, and spelling variations must remain in one query when `OR` can
+bridge them. This is prompt guidance rather than semantic response validation.
 
 <a id="ontology-harmonizer"></a>
 ## Ontology Harmonizer

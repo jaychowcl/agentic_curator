@@ -201,8 +201,10 @@ container inputs receive a sibling `hz_<field>` list.
 
 `QueryGenerator(llm=None).generate_queries(theme, max_queries=3)` makes one
 schema-constrained LLM call and returns `queries`, matching `details`, and a
-short `strategy_summary`. It permits one to three complementary topical clauses
-and adds `(HAS_DATA:y OR HAS_LABSLINKS:y)` programmatically to every query.
+short `strategy_summary`. The domain-neutral prompt prefers one comprehensive
+query made of AND-joined mandatory concept groups with extensive OR synonyms;
+more queries require an unbridgeable logical, semantic, syntax, or length gap.
+It adds `(HAS_DATA:y OR HAS_LABSLINKS:y)` programmatically to every query.
 The curator does not call Europe PMC or estimate hit counts.
 
 ### Query Generator CLI

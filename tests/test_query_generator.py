@@ -87,6 +87,33 @@ def test_generate_queries_returns_dataset_filtered_epmc_queries() -> None:
     }
 
 
+def test_query_prompt_requires_comprehensive_and_or_concept_groups() -> None:
+    llm = FakeLLM(
+        response(
+            {
+                "query": "TITLE_ABS:(human OR humans) AND "
+                "TITLE_ABS:(transcriptom* OR RNA-seq) AND "
+                "TITLE_ABS:(fibrosis OR fibrotic)",
+                "purpose": "One comprehensive query.",
+            }
+        )
+    )
+
+    QueryGenerator(llm=llm).generate_queries("Human fibrosis transcriptomics")
+
+    prompt = llm.calls[0]["prompt"]
+    assert "Default to exactly one comprehensive query" in prompt
+    assert "independent core theme concept" in prompt
+    assert "other mandatory groups with\n`AND`" in prompt
+    assert "synonyms as practical inside\nthat group with `OR`" in prompt
+    assert "Do not split queries merely by organ, disease, assay subtype" in prompt
+    assert "unbridgeable gap" in prompt
+    static_prompt = prompt.split("\nTheme:\n", maxsplit=1)[0]
+    assert "fibrosis" not in static_prompt.casefold()
+    assert "Homo sapiens" not in static_prompt
+    assert "RNA-seq" not in static_prompt
+
+
 @pytest.mark.parametrize("theme", [None, "", "  \n "])
 def test_generate_queries_rejects_empty_theme(theme) -> None:
     llm = FakeLLM(response())
@@ -188,4 +215,3 @@ def test_query_generator_lazily_creates_default_llm(monkeypatch) -> None:
     generator.generate_queries("fibrosis")
 
     assert created == [True]
-
