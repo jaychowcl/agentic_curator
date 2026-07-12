@@ -1,6 +1,6 @@
 # agentic-curator
 
-LLM-assisted thematic review and ontology metadata harmonization for life-science publications.
+LLM-assisted thematic review and ontology metadata harmonization for life-science publications & metadata.
 
 ## Description
 
