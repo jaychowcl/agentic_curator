@@ -144,6 +144,8 @@ def test_readme_covers_supported_interfaces_and_current_controls() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
     for interface in (
+        "Python Query Generation",
+        "CLI Query Generation",
         "Python Thematic Review",
         "CLI Thematic Review",
         "Python Ontology Harmonization",
@@ -155,6 +157,7 @@ def test_readme_covers_supported_interfaces_and_current_controls() -> None:
         assert interface in readme
 
     for option in (
+        "--max-queries",
         "--no-lookup-llm-judge",
         "--no-search-llm-judge",
         "--request-timeout",

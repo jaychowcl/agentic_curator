@@ -18,9 +18,9 @@ a compact handoff for humans and agents working in this repository.
 ## Project Purpose And Layout
 
 `agentic-curator` provides LLM-assisted curation utilities for life science
-publications. The current package focuses on publication evidence extraction,
-final relevance judging, ontology harmonizer scaffolding, and provider
-adapters for Gemini and Claude on Vertex AI.
+publications. The current package covers Europe PMC query generation,
+publication evidence extraction, final relevance judging, ontology
+harmonization, and provider adapters for Gemini and Claude on Vertex AI.
 
 Tracked project layout:
 
@@ -37,6 +37,7 @@ src/agentic_curator/
   cli/
     __init__.py
     cli_ontology_harmonizer.py
+    cli_query_generator.py
     cli_thematic_reviewer.py
     common.py
   curators/
@@ -55,6 +56,11 @@ src/agentic_curator/
         assign_onto_framework.md
         judge_lookup.md
         judge_search.md
+    query_generator/
+      __init__.py
+      generator.py
+      prompts/
+        generate_queries.md
     thematic_reviewer/
       __init__.py
       reviewer.py
@@ -69,9 +75,11 @@ src/agentic_curator/
     llm.py
 tests/
   test_cli_ontology_harmonizer.py
+  test_cli_query_generator.py
   test_cli_thematic_reviewer.py
   test_curator_llm_wrappers.py
   test_ontology_harmonizer.py
+  test_query_generator.py
   test_owl2json.py
   test_repository_metadata.py
   test_thematic_reviewer.py
@@ -104,6 +112,7 @@ The package uses a `src/` layout with setuptools:
   - `build_ontology_cache = "agentic_curator.curators.ontology_harmonizer.cache_builder:main"`
   - `cli_thematic_reviewer = "agentic_curator.cli.cli_thematic_reviewer:main"`
   - `cli_ontology_harmonizer = "agentic_curator.cli.cli_ontology_harmonizer:main"`
+  - `cli_query_generator = "agentic_curator.cli.cli_query_generator:main"`
 - package data: `agentic_curator/curators/*/prompts/*.md`
 
 The local development convention is to use `.env/bin/python`. A typical setup
@@ -127,13 +136,11 @@ Equivalent requirements bootstrap:
 The canonical reviewer import is:
 
 ```python
-from agentic_curator.curators import OntologyHarmonizer, ThematicReviewer
+from agentic_curator.curators import OntologyHarmonizer, QueryGenerator, ThematicReviewer
 ```
 
-`agentic_curator.__init__` also exports both curator classes, so
-`from agentic_curator import ThematicReviewer, OntologyHarmonizer` remains
-supported. The old flat module import `agentic_curator.thematic_reviewer` is
-intentionally absent after the curator subpackage refactor.
+`agentic_curator.__init__` also exports all three curator classes. The old flat
+module import `agentic_curator.thematic_reviewer` remains intentionally absent.
 
 `agentic_curator.curators.ontology_harmonizer` exports ontology-specific helper
 classes including `OntoStore`, `Owl2json`, `OlsClient`,
@@ -154,6 +161,28 @@ Main methods:
 prompt helpers. The reviewer asks providers for JSON output, passes dict/list
 responses through, parses JSON text with `json.loads(...)`, and raises
 `ValueError` for invalid JSON text.
+
+<a id="query-generator"></a>
+## Query Generator
+
+`QueryGenerator(llm=None).generate_queries(theme, max_queries=3)` makes one
+structured LLM call. `theme` must be non-empty and `max_queries` must be an
+integer from one to three. The model returns topical clauses and purposes; the
+curator validates non-empty, unique details and derives this public result:
+
+```python
+{
+    "queries": ["(<topical clause>) AND (HAS_DATA:y OR HAS_LABSLINKS:y)"],
+    "details": [{"query": "<same final query>", "purpose": "..."}],
+    "strategy_summary": "...",
+}
+```
+
+The dataset-link filter is added in code and model responses containing
+`HAS_DATA:` or `HAS_LABSLINKS:` are rejected. The curator does not call Europe
+PMC, count hits, or retry generation. `queries` is directly compatible with
+ThematicAtlases' current `list[str]` collector input; downstream
+`max_publications` remains the cost boundary.
 
 <a id="ontology-harmonizer"></a>
 ## Ontology Harmonizer
@@ -653,22 +682,25 @@ array. Each evidence item requires `evidence`, `judgement`, `confidence`, and
 
 Major orchestration flow:
 
-1. CLI users call `cli_thematic_reviewer` or `cli_ontology_harmonizer`. The
+1. CLI users call `cli_query_generator`, `cli_thematic_reviewer`, or
+   `cli_ontology_harmonizer`. The
    CLI helpers read direct or UTF-8 file inputs, parse JSON inputs where the
    exposed curator method expects structured data, configure stderr logging
    from `--verbosity`, and write pretty JSON to stdout or `--out`.
-2. `review_relevancy()` calls `extract_evidence(...)`, then passes that parsed
+2. `QueryGenerator.generate_queries()` validates its inputs, requests topical
+   query details once, validates parsed JSON, and adds the dataset-link filter.
+3. `review_relevancy()` calls `extract_evidence(...)`, then passes that parsed
    evidence result into `judge_evidence(...)`.
-3. Each reviewer primitive loads its packaged Markdown prompt, appends labeled
+4. Each reviewer primitive loads its packaged Markdown prompt, appends labeled
    input blocks, then calls `self._llm().generate_response(...)` with a JSON
    response schema.
-4. `LLM.generate_response(...)` delegates to the configured platform. Claude
+5. `LLM.generate_response(...)` delegates to the configured platform. Claude
    model names are routed to `ClaudeVertexPlatform` when the default platform is
    Gemini.
-5. Provider adapters construct SDK-specific requests, call the injected or
+6. Provider adapters construct SDK-specific requests, call the injected or
    lazily created client, and normalize the provider response to a raw text
    string.
-6. Curator methods that request JSON parse dict/list or JSON text responses
+7. Curator methods that request JSON parse dict/list or JSON text responses
    before returning.
 
 The CLI configures standard-library logging to stderr. Curator workflows emit
@@ -690,6 +722,26 @@ serializing the full MINiML document.
 This section traces the main classes and methods by call flow. Names here match
 the implementation so an agent can jump directly from a pseudocode step to the
 corresponding method.
+
+### `QueryGenerator`
+
+```python
+def generate_queries(theme, max_queries=3):
+    validate non-empty theme and max_queries in 1..3
+    response = lazy_llm.generate_response(
+        packaged prompt plus theme and maximum,
+        JSON schema for details and strategy_summary,
+    )
+    parsed = parse_json_response(response)
+    validate one-to-max unique topical clauses and non-empty purposes
+    reject model-supplied HAS_DATA or HAS_LABSLINKS filters
+    final details = add "(HAS_DATA:y OR HAS_LABSLINKS:y)" to each clause
+    return queries derived from final details plus strategy_summary
+```
+
+Internal calls are `_prompt(...)`, `_response_schema(...)`, `_llm()`,
+`parse_json_response(...)`, and `_validated_response(...)`. The only external
+call is the configured LLM provider; Europe PMC is not called.
 
 ### `ThematicReviewer`
 
@@ -1757,6 +1809,11 @@ thematic reviewer prompts live under
   manual CLI runs. It is packaged but not loaded automatically by
   `ThematicReviewer`.
 
+`query_generator/prompts/generate_queries.md` requests one to three
+complementary Europe PMC topical clauses, short per-query purposes, and a
+strategy summary. It forbids dataset-link filters because the curator adds them
+deterministically.
+
 The ontology harmonizer prompt files are:
 
 - `assign_onto_framework.md` instructs the model to choose a configured
@@ -1888,18 +1945,22 @@ adapter behavior: `text`, `response`, candidate content part text, then
 ## CLI
 
 The installed console commands are `build_ontology_cache`,
-`cli_thematic_reviewer`, and `cli_ontology_harmonizer`. The modules can also be
-run directly:
+`cli_query_generator`, `cli_thematic_reviewer`, and
+`cli_ontology_harmonizer`. The modules can also be run directly:
 
 ```bash
 .env/bin/python -m agentic_curator.curators.ontology_harmonizer.cache_builder --help
 .env/bin/python -m agentic_curator.cli.cli_thematic_reviewer --help
 .env/bin/python -m agentic_curator.cli.cli_ontology_harmonizer --help
+.env/bin/python -m agentic_curator.cli.cli_query_generator --help
 ```
 
 The curator CLI commands accept `--verbosity {quiet,error,warning,info,debug}`.
 Logs are written to stderr and JSON results stay on stdout unless `--out` is
 supplied.
+
+`cli_query_generator` accepts `--theme` or `--theme-file`, `--max-queries`
+from one to three, and `--out`. Theme files take precedence over direct text.
 
 `build_ontology_cache` prepares OWL/JSON caches for configured built-in
 ontology frameworks. Options include `--timeout`, `--out-dir`, `--out-prefix`,
@@ -1959,6 +2020,9 @@ clients and fake LLM objects.
 
 Test coverage includes:
 
+- query generator exports, prompt/schema construction, one-call generation,
+  bounded and unique details, deterministic dataset filters, lazy LLM creation,
+  malformed responses, and CLI direct/file inputs
 - reviewer instantiation, public exports, missing legacy module, prompt
   construction, schema construction, and two-call ordering
 - ontology harmonizer imports, root exports, target wrapper behavior,

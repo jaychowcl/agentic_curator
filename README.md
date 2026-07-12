@@ -4,9 +4,10 @@ LLM-assisted thematic review and ontology metadata harmonization for life-scienc
 
 ## Description
 
-`agentic-curator` provides two curator workflows: a thematic reviewer that
-extracts and judges publication evidence, and an ontology harmonizer that maps
-metadata fields and values to controlled terms. It includes MINiML target
+`agentic-curator` provides three curator workflows: a Europe PMC query
+generator, a thematic reviewer that extracts and judges publication evidence,
+and an ontology harmonizer that maps metadata fields and values to controlled
+terms. It includes MINiML target
 extraction/application, OWL-to-JSON conversion, exact and FTS5 SQLite lookup,
 OLS and grounded-web search, LLM candidate judging, persistent field and
 response caches, and provider routing for Gemini Enterprise and Claude on
@@ -45,6 +46,25 @@ python -m pip install -r requirements.txt
 - Network access for live LLM, OLS, web-search, and ontology-download requests
 
 ## Quickstart
+
+### Python Query Generation
+
+```python
+from agentic_curator import QueryGenerator
+
+result = QueryGenerator().generate_queries(
+    "Include publications about fibrosis and fibrotic biology."
+)
+print(result["queries"])
+```
+
+The returned `queries` list can be passed directly to ThematicAtlases.
+
+### CLI Query Generation
+
+```bash
+cli_query_generator --theme-file theme.md --max-queries 3 --out queries.json
+```
 
 ### Python Thematic Review
 
@@ -133,6 +153,10 @@ interface. Use the Python package or installed console scripts.
 
 ### Inputs & Outputs
 
+Query generation accepts a non-empty theme and returns final Europe PMC query
+strings alongside matching purposes and a strategy summary. Each final query
+includes the dataset-link filter used by ThematicAtlases.
+
 The thematic reviewer accepts publication text, a theme, optional metadata, and
 an optional title. `review_relevancy(...)` returns parsed evidence and judgement
 objects:
@@ -172,6 +196,23 @@ container inputs receive a sibling `hz_<field>` list.
 `citations`, `tool_calls`, and `provider`.
 
 ## Guide
+
+### Python Query Generator
+
+`QueryGenerator(llm=None).generate_queries(theme, max_queries=3)` makes one
+schema-constrained LLM call and returns `queries`, matching `details`, and a
+short `strategy_summary`. It permits one to three complementary topical clauses
+and adds `(HAS_DATA:y OR HAS_LABSLINKS:y)` programmatically to every query.
+The curator does not call Europe PMC or estimate hit counts.
+
+### Query Generator CLI
+
+| Option | Behavior |
+| --- | --- |
+| `--theme`, `--theme-file` | Theme definition; file takes precedence |
+| `--max-queries {1,2,3}` | Maximum complementary queries; default `3` |
+| `--verbosity {debug,error,info,quiet,warning}` | Logging level on stderr |
+| `--out` | Pretty JSON file; otherwise stdout |
 
 ### Python Thematic Reviewer
 

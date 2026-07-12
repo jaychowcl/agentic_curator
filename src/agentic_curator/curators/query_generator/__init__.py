@@ -7,6 +7,7 @@
 # https://www.gsk.com/
 # =============================================================================
 
-from agentic_curator.curators import OntologyHarmonizer, QueryGenerator, ThematicReviewer
+from agentic_curator.curators.query_generator.generator import QueryGenerator
 
-__all__ = ["OntologyHarmonizer", "QueryGenerator", "ThematicReviewer"]
+__all__ = ["QueryGenerator"]
+

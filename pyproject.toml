@@ -33,6 +33,7 @@ dev = ["pytest>=8"]
 build_ontology_cache = "agentic_curator.curators.ontology_harmonizer.cache_builder:main"
 cli_thematic_reviewer = "agentic_curator.cli.cli_thematic_reviewer:main"
 cli_ontology_harmonizer = "agentic_curator.cli.cli_ontology_harmonizer:main"
+cli_query_generator = "agentic_curator.cli.cli_query_generator:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
