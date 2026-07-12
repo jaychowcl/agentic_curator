@@ -165,10 +165,10 @@ and an injected or lazy `LLM` for framework assignment when lookup fails.
 Public methods:
 
 - `apply_targets(miniml_json, harmonization_targets) -> dict | list | None`
-- `assign_field(target, *, publication_context, ontostore) -> dict`
-- `assign_onto_framework(target, *, publication_context, ontostore) -> dict`
+- `assign_field(target, *, publication_context, metadata_context=None, ontostore) -> dict`
+- `assign_onto_framework(target, *, publication_context, metadata_context=None, ontostore) -> dict`
 - `harmonize_miniml_json(publication_context=None, miniml_json=None, ontostore=None, target_paths=None, strategy="websearch", lookup_llm_judge=True, lookup_llm_threshold=2, search_llm_judge=True, llm=True) -> dict`
-- `harmonize(publication_context=None, harmonization_targets=None, target=None, strategy="websearch", ontostore=None, target_paths=None, lookup_llm_judge=True, lookup_llm_threshold=2, search_llm_judge=True, llm=True) -> dict`
+- `harmonize(publication_context=None, metadata_context=None, harmonization_targets=None, target=None, strategy="websearch", ontostore=None, target_paths=None, lookup_llm_judge=True, lookup_llm_threshold=2, search_llm_judge=True, llm=True) -> dict`
 - `harmonize_field(target, *, publication_context, ontostore) -> Any`
 - `harmonize_label(target, *, publication_context, ontostore, strategy, search_llm_judge=True) -> dict`
 - `judge_lookup(target, *, publication_context, hits) -> dict`
@@ -182,6 +182,11 @@ meaningful sample metadata (`source`, `molecule`, `organism`, and
 `characteristics`), and dedupes targets by exact
 `pre_hz_field:pre_hz_label` while preserving every source path in
 `occurrences`. Supplying `target_paths` keeps explicit path extraction behavior.
+It also creates a deterministic `metadata_context` from the first series title
+and first-seen unique `field=value` target pairs. Whitespace is collapsed,
+protocols and paths are excluded, and the single-line result is capped at 500
+characters with an ellipsis. Callers cannot override this generated MINiML
+context; `publication_context` remains a separate user-supplied value.
 After harmonization, `harmonize_miniml_json(...)` calls `apply_targets(...)`,
 mutates the supplied MINiML JSON in place, and includes that same object in the
 return wrapper under `miniml_json`.
@@ -191,6 +196,7 @@ The lower-level `harmonize(...)` returns a target wrapper:
 ```python
 {
     "publication_context": publication_context,
+    "metadata_context": metadata_context,
     "harmonization_targets": normalized_targets,
     "strategy": "websearch",
     "target_paths": target_paths,
@@ -213,7 +219,8 @@ fallback; `onto` is the ontology framework ID. IRI values stay in
 `harmonization_targets` and are not copied into the MINiML JSON. Malformed or
 unresolved occurrence paths are skipped.
 
-`publication_context` may be a string or `None`, `miniml_json` may be a
+`publication_context` and `metadata_context` may each be a string or `None`;
+they are emitted as separate prompt sections. `miniml_json` may be a
 dictionary, list, or `None`, `harmonization_targets` may be a list of extracted
 target dictionaries, a single target dictionary, or `None`, and `target` may be
 a single target dictionary. Passing both `target` and `harmonization_targets`
@@ -298,12 +305,12 @@ strategy/lookup traces are excluded from prompts but retained in outputs.
 
 | LLM call | When it runs | Model-facing context |
 | --- | --- | --- |
-| Local lookup judge | Exact lookup has at least `lookup_llm_threshold` hits, or FTS5 returns any candidates. | Full publication context; semantic target; top 10 ranked hits with `id`, `accession`, `iri`, `title`, complete `description`, and `ontology_id`. |
-| Framework assignment | Exact and FTS lookup produce no accepted match. | Full publication context; semantic target; candidate framework `id`, `title`, and complete `description`. |
-| Field assignment | `OntoStore.lookup_fields(...)` cannot resolve the field. | Full publication context; semantic target plus current `ontology_id`; configured field key with `label`, `aliases`, and complete `description`. Field provenance, confidence, and reasons are excluded. |
-| Restricted search judge | Local lookup missed, a framework was assigned, and framework-restricted OLS returned candidates. | Full publication context; semantic target plus assigned `ontology_id`; stage `restricted`; top 10 restricted OLS candidates in the same compact hit shape. Empty unrestricted/web sections are omitted. |
+| Local lookup judge | Exact lookup has at least `lookup_llm_threshold` hits, or FTS5 returns any candidates. | User publication context; compact metadata context; semantic target; top 10 ranked hits with `id`, `accession`, `iri`, `title`, complete `description`, and `ontology_id`. |
+| Framework assignment | Exact and FTS lookup produce no accepted match. | User publication context; compact metadata context; semantic target; candidate framework `id`, `title`, and complete `description`. |
+| Field assignment | `OntoStore.lookup_fields(...)` cannot resolve the field. | User publication context; compact metadata context; semantic target plus current `ontology_id`; configured field key with `label`, `aliases`, and complete `description`. Field provenance, confidence, and reasons are excluded. |
+| Restricted search judge | Local lookup missed, a framework was assigned, and framework-restricted OLS returned candidates. | User publication context; compact metadata context; semantic target plus assigned `ontology_id`; stage `restricted`; top 10 restricted OLS candidates in the same compact hit shape. Empty unrestricted/web sections are omitted. |
 | Gemini grounded search | Restricted OLS has no candidates or the restricted judge rejects every candidate. | Original field and label in `{field}: {label} ontology`; no full target, publication context, or OLS candidates. |
-| Expanded search judge | Restricted search failed or was rejected, and unrestricted OLS or safely resolved web IDs produced candidates. | Full publication context; semantic target plus initial `ontology_id`; stage `expanded`; top 10 unrestricted OLS and resolved web candidates; one grounded response summary plus source title/URL pairs. Rejected restricted candidates are omitted. |
+| Expanded search judge | Restricted search failed or was rejected, and unrestricted OLS or safely resolved web IDs produced candidates. | User publication context; compact metadata context; semantic target plus initial `ontology_id`; stage `expanded`; top 10 unrestricted OLS and resolved web candidates; one grounded response summary plus source title/URL pairs. Rejected restricted candidates are omitted. |
 
 The expected logical call count per target is:
 
@@ -673,6 +680,9 @@ strategy, runs exact-then-FTS SQLite lookup, and always calls
 `harmonize_field(...)`. Framework assignment and label strategy routing run
 only when local lookup has no accepted match. Post-strategy enrichment uses
 exact selected-term identifiers and cannot replace the judged identity.
+`harmonize_miniml_json(...)` additionally derives the compact metadata context
+before delegation, so ontology prompts receive relevant sample values without
+serializing the full MINiML document.
 
 <a id="method-orchestrator-pseudocode"></a>
 ## Method Orchestrator Pseudocode
@@ -1922,6 +1932,7 @@ inputs for `judge-evidence` are parsed as JSON.
 Ontology inputs include:
 
 - `--publication-context` or `--publication-context-file`
+- `--metadata-context` or `--metadata-context-file` for direct `harmonize`
 - `--target` or `--target-file`
 - `--harmonization-targets` or `--harmonization-targets-file`
 - `--miniml-json` or `--miniml-json-file`

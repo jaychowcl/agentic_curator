@@ -40,6 +40,7 @@ class OntologyHarmonizer:
 
     DEFAULT_TARGET_PATHS = HarmonizationTargetExtractor.DEFAULT_TARGET_PATHS
     LLM_CANDIDATE_LIMIT = 10
+    METADATA_CONTEXT_MAX_CHARS = 500
     STRATEGY_ALIASES = {
         "rag": "rag",
         "websearch": "websearch",
@@ -63,6 +64,7 @@ class OntologyHarmonizer:
     def harmonize(
         self,
         publication_context: str | None = None,
+        metadata_context: str | None = None,
         harmonization_targets: dict[str, Any] | list[dict[str, Any]] | None = None,
         target: dict[str, Any] | None = None,
         strategy: str = "websearch",
@@ -94,6 +96,7 @@ class OntologyHarmonizer:
                 strategy=normalized_strategy,
                 lookup_llm_judge=lookup_llm_judge and llm,
                 lookup_llm_threshold=lookup_llm_threshold,
+                **self._metadata_context_kwargs(metadata_context),
             )
             if not lookup:
                 LOGGER.info(
@@ -110,6 +113,7 @@ class OntologyHarmonizer:
                         normalized_target,
                         publication_context=publication_context,
                         ontostore=effective_ontostore,
+                        **self._metadata_context_kwargs(metadata_context),
                     )
 
             self.harmonize_field(
@@ -117,6 +121,7 @@ class OntologyHarmonizer:
                 publication_context=publication_context,
                 ontostore=effective_ontostore,
                 llm=llm,
+                **self._metadata_context_kwargs(metadata_context),
             )
 
             if not lookup:
@@ -132,6 +137,7 @@ class OntologyHarmonizer:
                         ontostore=effective_ontostore,
                         strategy=normalized_strategy,
                         search_llm_judge=search_llm_judge and llm,
+                        **self._metadata_context_kwargs(metadata_context),
                     )
                     if strategy_result.get("status") == "matched":
                         self._lookup_harmonized_label(
@@ -142,6 +148,7 @@ class OntologyHarmonizer:
         LOGGER.info("Completed ontology harmonization.")
         return {
             "publication_context": publication_context,
+            "metadata_context": metadata_context,
             "harmonization_targets": normalized_targets,
             "strategy": normalized_strategy,
             "target_paths": target_paths,
@@ -175,8 +182,13 @@ class OntologyHarmonizer:
             harmonization_targets = self.target_extractor.dedupe_targets(
                 harmonization_targets
             )
+        metadata_context = self._metadata_context_from_miniml(
+            miniml_json,
+            harmonization_targets,
+        )
         result = self.harmonize(
             publication_context=publication_context,
+            metadata_context=metadata_context,
             harmonization_targets=harmonization_targets,
             target=None,
             strategy=strategy,
@@ -504,6 +516,7 @@ class OntologyHarmonizer:
         target: dict[str, Any],
         *,
         publication_context: str | None,
+        metadata_context: str | None = None,
         ontostore: OntoStore,
         strategy: str,
         lookup_llm_judge: bool = True,
@@ -550,6 +563,7 @@ class OntologyHarmonizer:
         lookup = self._select_lookup_hit(
             target=target,
             publication_context=publication_context,
+            metadata_context=metadata_context,
             hits=hits,
             lookup_llm_judge=(
                 lookup_llm_judge
@@ -573,6 +587,7 @@ class OntologyHarmonizer:
         *,
         target: dict[str, Any],
         publication_context: str | None,
+        metadata_context: str | None = None,
         hits: list[dict[str, Any]],
         lookup_llm_judge: bool,
         lookup_llm_threshold: int,
@@ -585,6 +600,7 @@ class OntologyHarmonizer:
         judgement = self.judge_lookup(
             target,
             publication_context=publication_context,
+            metadata_context=metadata_context,
             hits=judged_hits,
         )
         target["ontology_lookup_judgement"] = judgement
@@ -602,11 +618,13 @@ class OntologyHarmonizer:
         target: dict[str, Any],
         *,
         publication_context: str | None,
+        metadata_context: str | None = None,
         hits: list[dict[str, Any]],
     ) -> dict[str, Any]:
         prompt = self._judge_lookup_prompt(
             target=target,
             publication_context=publication_context,
+            metadata_context=metadata_context,
             hits=hits,
         )
         response = self._generate_response(
@@ -625,6 +643,7 @@ class OntologyHarmonizer:
         *,
         target: dict[str, Any],
         publication_context: str | None,
+        metadata_context: str | None = None,
         stage: str,
         restricted_hits: list[dict[str, Any]],
         unrestricted_hits: list[dict[str, Any]],
@@ -633,6 +652,7 @@ class OntologyHarmonizer:
         prompt = self._judge_search_prompt(
             target=target,
             publication_context=publication_context,
+            metadata_context=metadata_context,
             stage=stage,
             restricted_hits=restricted_hits,
             unrestricted_hits=unrestricted_hits,
@@ -654,6 +674,7 @@ class OntologyHarmonizer:
         target: dict[str, Any],
         *,
         publication_context: str | None,
+        metadata_context: str | None = None,
         ontostore: OntoStore,
     ) -> dict[str, Any]:
         LOGGER.info("Assigning ontology framework with LLM.")
@@ -662,6 +683,7 @@ class OntologyHarmonizer:
         prompt = self._assign_onto_framework_prompt(
             target=target,
             publication_context=publication_context,
+            metadata_context=metadata_context,
             ontology_frameworks=framework_configs,
         )
         response = self._generate_response(
@@ -686,6 +708,7 @@ class OntologyHarmonizer:
         target: dict[str, Any],
         *,
         publication_context: str | None,
+        metadata_context: str | None = None,
         ontostore: OntoStore,
         llm: bool = True,
     ) -> Any:
@@ -707,6 +730,7 @@ class OntologyHarmonizer:
             return self.assign_field(
                 target,
                 publication_context=publication_context,
+                metadata_context=metadata_context,
                 ontostore=ontostore,
             )
         return False
@@ -716,12 +740,14 @@ class OntologyHarmonizer:
         target: dict[str, Any],
         *,
         publication_context: str | None,
+        metadata_context: str | None = None,
         ontostore: OntoStore,
     ) -> dict[str, Any]:
         LOGGER.info("Assigning harmonized field with LLM.")
         prompt = self._assign_field_prompt(
             target=target,
             publication_context=publication_context,
+            metadata_context=metadata_context,
             fields=ontostore.fields,
         )
         response = self._generate_response(
@@ -753,6 +779,7 @@ class OntologyHarmonizer:
         target: dict[str, Any],
         *,
         publication_context: str | None,
+        metadata_context: str | None = None,
         ontostore: OntoStore,
         strategy: str,
         search_llm_judge: bool = True,
@@ -778,6 +805,7 @@ class OntologyHarmonizer:
             target,
             publication_context=publication_context,
             ontostore=ontostore,
+            **self._metadata_context_kwargs(metadata_context),
         )
 
     def _llm(self) -> Any:
@@ -806,6 +834,72 @@ class OntologyHarmonizer:
         start_paths: list[StartPathSpec] | None = None,
     ) -> list[dict[str, Any]]:
         return self.target_extractor.extract(metadata, start_paths=start_paths)
+
+    def _metadata_context_from_miniml(
+        self,
+        miniml_json: dict[str, Any] | list[Any] | None,
+        harmonization_targets: list[dict[str, Any]],
+    ) -> str | None:
+        """Build a compact, deterministic context from useful MINiML metadata."""
+        packages = [miniml_json] if isinstance(miniml_json, dict) else miniml_json
+        title: str | None = None
+        if isinstance(packages, list):
+            for package in packages:
+                if not isinstance(package, dict):
+                    continue
+                series = package.get("series")
+                if isinstance(series, dict) and series.get("title") is not None:
+                    candidate = self._compact_context_value(series["title"])
+                    if candidate:
+                        title = candidate
+                        break
+
+        entries: list[str] = []
+        seen: set[tuple[str, str]] = set()
+        for target in harmonization_targets:
+            if not isinstance(target, dict):
+                continue
+            field_value = target.get("pre_hz_field")
+            label_value = target.get("pre_hz_label")
+            if field_value is None or label_value is None:
+                continue
+            field = self._compact_context_value(field_value)
+            label = self._compact_context_value(label_value)
+            if not field or not label or (field, label) in seen:
+                continue
+            seen.add((field, label))
+            entries.append(f"{field}={label}")
+
+        context = f"Study: {title}" if title else ""
+        if len(context) > self.METADATA_CONTEXT_MAX_CHARS:
+            return context[: self.METADATA_CONTEXT_MAX_CHARS - 1].rstrip() + "…"
+
+        appended_entries = 0
+        for entry in entries:
+            separator = " | " if context and appended_entries == 0 else "; " if context else ""
+            candidate = f"{context}{separator}{entry}"
+            if len(candidate) <= self.METADATA_CONTEXT_MAX_CHARS:
+                context = candidate
+                appended_entries += 1
+                continue
+            if len(entry) <= self.METADATA_CONTEXT_MAX_CHARS:
+                break
+            available = self.METADATA_CONTEXT_MAX_CHARS - len(context) - len(separator)
+            if available > 1:
+                context = f"{context}{separator}{entry[: available - 1].rstrip()}…"
+            break
+
+        if not context:
+            return None
+        return context
+
+    @staticmethod
+    def _compact_context_value(value: Any) -> str:
+        return " ".join(str(value).split())
+
+    @staticmethod
+    def _metadata_context_kwargs(metadata_context: str | None) -> dict[str, str]:
+        return {} if metadata_context is None else {"metadata_context": metadata_context}
 
     def _candidate_ontology_ids(
         self,
@@ -964,6 +1058,7 @@ class OntologyHarmonizer:
         *,
         target: dict[str, Any],
         publication_context: str | None,
+        metadata_context: str | None,
         ontology_frameworks: dict[str, Any],
     ) -> str:
         initial_prompt = files(PROMPT_PACKAGE).joinpath(
@@ -972,6 +1067,7 @@ class OntologyHarmonizer:
         return self._structured_prompt(
             initial_prompt,
             ("Publication Context", publication_context),
+            ("Metadata Context", metadata_context),
             ("Harmonization Target", self._semantic_target_context(target)),
             ("Ontology Framework Config", ontology_frameworks),
         )
@@ -981,6 +1077,7 @@ class OntologyHarmonizer:
         *,
         target: dict[str, Any],
         publication_context: str | None,
+        metadata_context: str | None,
         fields: dict[str, Any],
     ) -> str:
         initial_prompt = files(PROMPT_PACKAGE).joinpath(
@@ -989,6 +1086,7 @@ class OntologyHarmonizer:
         return self._structured_prompt(
             initial_prompt,
             ("Publication Context", publication_context),
+            ("Metadata Context", metadata_context),
             (
                 "Harmonization Target",
                 self._semantic_target_context(target, include_ontology_id=True),
@@ -1001,6 +1099,7 @@ class OntologyHarmonizer:
         *,
         target: dict[str, Any],
         publication_context: str | None,
+        metadata_context: str | None,
         hits: list[dict[str, Any]],
     ) -> str:
         initial_prompt = files(PROMPT_PACKAGE).joinpath(
@@ -1009,6 +1108,7 @@ class OntologyHarmonizer:
         return self._structured_prompt(
             initial_prompt,
             ("Publication Context", publication_context),
+            ("Metadata Context", metadata_context),
             ("Harmonization Target", self._semantic_target_context(target)),
             ("Lookup Hits", self._candidate_prompt_context(hits)),
         )
@@ -1018,6 +1118,7 @@ class OntologyHarmonizer:
         *,
         target: dict[str, Any],
         publication_context: str | None,
+        metadata_context: str | None,
         stage: str,
         restricted_hits: list[dict[str, Any]],
         unrestricted_hits: list[dict[str, Any]],
@@ -1028,6 +1129,7 @@ class OntologyHarmonizer:
         ).read_text(encoding="utf-8").strip()
         sections: list[tuple[str, Any]] = [
             ("Publication Context", publication_context),
+            ("Metadata Context", metadata_context),
             (
                 "Harmonization Target",
                 self._semantic_target_context(target, include_ontology_id=True),

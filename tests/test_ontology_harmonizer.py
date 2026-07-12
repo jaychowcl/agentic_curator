@@ -1453,6 +1453,7 @@ def test_lookup_label_llm_judge_selects_best_hit_by_id(
     result = OntologyHarmonizer(llm=fake_llm).lookup_label(
         target,
         publication_context="sample is oral buccal tissue",
+        metadata_context="tissue=lung",
         ontostore=store,
         strategy="websearch",
         lookup_llm_judge=True,
@@ -1475,6 +1476,7 @@ def test_lookup_label_llm_judge_selects_best_hit_by_id(
     assert "Publication Context:\nsample is oral buccal tissue" in fake_llm.calls[0][
         "prompt"
     ]
+    assert "Metadata Context:\ntissue=lung" in fake_llm.calls[0]["prompt"]
     assert '"field": "tissue"' in fake_llm.calls[0]["prompt"]
     assert '"label": "lung"' in fake_llm.calls[0]["prompt"]
     assert '"id": "target-0"' not in fake_llm.calls[0]["prompt"]
@@ -1492,6 +1494,7 @@ def test_judge_search_results_builds_structured_prompt() -> None:
     result = harmonizer.judge_search_results(
         target={"id": "target-0", "hz_field": "tissue", "hz_label": "lung"},
         publication_context="lung sample",
+        metadata_context="tissue=lung",
         stage="expanded",
         restricted_hits=[{"id": "EFO_1", "title": "wrong"}],
         unrestricted_hits=[
@@ -1529,6 +1532,8 @@ def test_judge_search_results_builds_structured_prompt() -> None:
     assert result == response
     call = fake_llm.calls[0]
     assert call["prompt"].startswith(JUDGE_SEARCH_PROMPT)
+    assert "Publication Context:\nlung sample" in call["prompt"]
+    assert "Metadata Context:\ntissue=lung" in call["prompt"]
     assert "Search Stage:\nexpanded" in call["prompt"]
     assert '"UBERON_2"' in call["prompt"]
     assert '"UBERON_10"' not in call["prompt"]
@@ -1809,6 +1814,7 @@ def test_assign_onto_framework_uses_llm_framework_decision(tmp_path: Path) -> No
     result = OntologyHarmonizer(llm=fake_llm).assign_onto_framework(
         target,
         publication_context="sample is from lung tissue",
+        metadata_context="tissue=lung",
         ontostore=store,
     )
 
@@ -1829,6 +1835,7 @@ def test_assign_onto_framework_uses_llm_framework_decision(tmp_path: Path) -> No
     assert "Publication Context:\nsample is from lung tissue" in fake_llm.calls[0][
         "prompt"
     ]
+    assert "Metadata Context:\ntissue=lung" in fake_llm.calls[0]["prompt"]
     assert '"field": ""' in fake_llm.calls[0]["prompt"]
     assert '"label": "lung"' in fake_llm.calls[0]["prompt"]
     assert '"id": "target-0"' not in fake_llm.calls[0]["prompt"]
@@ -2038,6 +2045,7 @@ def test_assign_field_generates_json_response_and_adds_new_field(
     result = OntologyHarmonizer(llm=fake_llm).assign_field(
         target,
         publication_context="sample metadata context",
+        metadata_context="developmental stage=adult",
         ontostore=store,
     )
 
@@ -2059,6 +2067,9 @@ def test_assign_field_generates_json_response_and_adds_new_field(
     }
     assert fake_llm.calls[0]["prompt"].startswith(ASSIGN_FIELD_PROMPT)
     assert "Publication Context:\nsample metadata context" in fake_llm.calls[0][
+        "prompt"
+    ]
+    assert "Metadata Context:\ndevelopmental stage=adult" in fake_llm.calls[0][
         "prompt"
     ]
     assert '"field": "developmental stage"' in fake_llm.calls[0]["prompt"]
@@ -2289,6 +2300,7 @@ def test_harmonize_accepts_single_target() -> None:
 
     assert result == {
         "publication_context": None,
+        "metadata_context": None,
         "harmonization_targets": [target],
         "strategy": "websearch",
         "target_paths": None,
@@ -2365,6 +2377,7 @@ def test_harmonize_defaults_to_empty_targets() -> None:
 
     assert result == {
         "publication_context": None,
+        "metadata_context": None,
         "harmonization_targets": [],
         "strategy": "websearch",
         "target_paths": None,
@@ -2420,6 +2433,7 @@ def test_harmonize_accepts_ontostore_override() -> None:
 
     assert result == {
         "publication_context": None,
+        "metadata_context": None,
         "harmonization_targets": [],
         "strategy": "websearch",
         "target_paths": None,
@@ -4123,6 +4137,19 @@ def test_metadata_context_omits_empty_or_malformed_values() -> None:
     ) is None
 
 
+def test_metadata_context_stops_before_partial_regular_entry() -> None:
+    context = OntologyHarmonizer()._metadata_context_from_miniml(
+        None,
+        [
+            {"pre_hz_field": "first", "pre_hz_label": "x" * 480},
+            {"pre_hz_field": "second", "pre_hz_label": "short value"},
+        ],
+    )
+
+    assert context == f"first={'x' * 480}"
+    assert "second" not in context
+
+
 def test_harmonize_miniml_json_accepts_explicit_target_paths(tmp_path: Path) -> None:
     miniml_json = {"sample": {"tissue": "lung"}}
     result = OntologyHarmonizer(
@@ -4134,6 +4161,7 @@ def test_harmonize_miniml_json_accepts_explicit_target_paths(tmp_path: Path) -> 
 
     assert result == {
         "publication_context": None,
+        "metadata_context": "tissue=lung",
         "harmonization_targets": [
             {
                 "id": "target-0",
@@ -4190,6 +4218,7 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
         def harmonize(
             self,
             publication_context=None,
+            metadata_context=None,
             harmonization_targets=None,
             target=None,
             strategy="websearch",
@@ -4203,6 +4232,7 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
             calls.append(
                 {
                     "publication_context": publication_context,
+                    "metadata_context": metadata_context,
                     "harmonization_targets": harmonization_targets,
                     "target": target,
                     "strategy": strategy,
@@ -4254,6 +4284,7 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
     assert calls == [
         {
             "publication_context": "context",
+            "metadata_context": "tissue=lung",
             "harmonization_targets": [
                 {
                     "id": "target-0",
@@ -4419,6 +4450,7 @@ def test_harmonize_accepts_target_paths() -> None:
 
     assert result == {
         "publication_context": None,
+        "metadata_context": None,
         "harmonization_targets": [],
         "strategy": "websearch",
         "target_paths": [],

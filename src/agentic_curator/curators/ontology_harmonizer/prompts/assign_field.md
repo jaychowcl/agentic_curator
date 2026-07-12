@@ -11,8 +11,9 @@ https://www.gsk.com/
 
 You are assigning a harmonization target field to the best known field.
 
-Use the harmonization target, publication context, and fields dictionary to
-choose one existing field key or create one new normalized field key.
+Use the harmonization target, publication context, compact metadata context, and
+fields dictionary to choose one existing field key or create one new normalized
+field key.
 
 Return JSON only with:
 - decision: the selected or newly created normalized field key.

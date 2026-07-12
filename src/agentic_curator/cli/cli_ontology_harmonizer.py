@@ -32,6 +32,11 @@ def _add_publication_context(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--publication-context-file", default=None)
 
 
+def _add_metadata_context(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--metadata-context", default=None)
+    parser.add_argument("--metadata-context-file", default=None)
+
+
 def _add_store_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--ontology-frameworks", default=None)
     parser.add_argument("--ontology-frameworks-file", default=None)
@@ -81,6 +86,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     add_verbosity_argument(harmonize, default=None, dest="command_verbosity")
     _add_publication_context(harmonize)
+    _add_metadata_context(harmonize)
     _add_store_options(harmonize)
     _add_harmonize_options(harmonize)
     harmonize.add_argument("--harmonization-targets", default=None)
@@ -155,6 +161,13 @@ def _publication_context(args: argparse.Namespace) -> str | None:
     )
 
 
+def _metadata_context(args: argparse.Namespace) -> str | None:
+    return input_value(
+        value=args.metadata_context,
+        file=args.metadata_context_file,
+    )
+
+
 def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Any:
     LOGGER.info("Running ontology harmonizer method %s.", args.command)
     ontostore = _store_from_args(args, parser)
@@ -163,6 +176,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Any:
     if args.command == "harmonize":
         return harmonizer.harmonize(
             publication_context=_publication_context(args),
+            metadata_context=_metadata_context(args),
             harmonization_targets=json_input(
                 parser,
                 value=args.harmonization_targets,

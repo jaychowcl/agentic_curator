@@ -11,9 +11,9 @@ https://www.gsk.com/
 
 You are judging ontology search candidates for a harmonization target.
 
-Use the publication context, target context, assigned ontology framework,
-restricted OLS candidates, unrestricted OLS candidates, and grounded web
-evidence to select the single best supplied ontology candidate.
+Use the publication context, compact metadata context, target context, assigned
+ontology framework, restricted OLS candidates, unrestricted OLS candidates, and
+grounded web evidence to select the single best supplied ontology candidate.
 
 Return JSON only with:
 - decision: the id, accession, or IRI of one supplied OLS candidate, or "false"

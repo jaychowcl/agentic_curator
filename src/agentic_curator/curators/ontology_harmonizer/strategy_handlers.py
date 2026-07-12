@@ -30,9 +30,10 @@ class PlaceholderStrategyHandler:
         target: dict[str, Any],
         *,
         publication_context: str | None,
+        metadata_context: str | None = None,
         ontostore: OntoStore,
     ) -> dict[str, str]:
-        del publication_context, ontostore
+        del publication_context, metadata_context, ontostore
 
         result = {
             "strategy": self.strategy,
@@ -224,6 +225,7 @@ class WebsearchStrategyHandler:
         target: dict[str, Any],
         *,
         publication_context: str | None,
+        metadata_context: str | None = None,
         ontostore: OntoStore,
     ) -> dict[str, Any]:
         ontology_id = target.get("ontology_id")
@@ -269,6 +271,7 @@ class WebsearchStrategyHandler:
                     restricted_hits=restricted_hits[: self.judge_candidate_limit],
                     unrestricted_hits=[],
                     web_hits=[],
+                    **({} if metadata_context is None else {"metadata_context": metadata_context}),
                 )
             except Exception as exc:  # noqa: BLE001 - preserve judge failure trace.
                 return self._not_harmonized(
@@ -329,6 +332,7 @@ class WebsearchStrategyHandler:
                         : self.judge_candidate_limit
                     ],
                     web_hits=web_hits,
+                    **({} if metadata_context is None else {"metadata_context": metadata_context}),
                 )
             except Exception as exc:  # noqa: BLE001 - preserve judge failure trace.
                 return self._not_harmonized(
@@ -494,6 +498,7 @@ class WebsearchStrategyHandler:
         *,
         target: dict[str, Any],
         publication_context: str | None,
+        metadata_context: str | None = None,
         stage: str,
         restricted_hits: list[dict[str, Any]],
         unrestricted_hits: list[dict[str, Any]],
@@ -506,6 +511,7 @@ class WebsearchStrategyHandler:
             restricted_hits=restricted_hits,
             unrestricted_hits=unrestricted_hits,
             web_hits=web_hits,
+            **({} if metadata_context is None else {"metadata_context": metadata_context}),
         )
         if not isinstance(judgement, dict):
             raise ValueError("Search LLM judgement must be a JSON object.")

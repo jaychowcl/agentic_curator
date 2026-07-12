@@ -219,8 +219,8 @@ target normalization, lookup, assignment, search, enrichment, and application.
 
 | Method | Main options |
 | --- | --- |
-| `harmonize(...)` | `publication_context`, `harmonization_targets` or `target`, `strategy="websearch"`, `ontostore`, `target_paths`, `lookup_llm_judge=True`, `lookup_llm_threshold=2`, `search_llm_judge=True`, `llm=True` |
-| `harmonize_miniml_json(...)` | `publication_context`, `miniml_json`, `ontostore`, `target_paths`, and the same strategy/judge/LLM controls |
+| `harmonize(...)` | User `publication_context`, compact `metadata_context`, `harmonization_targets` or `target`, `strategy="websearch"`, `ontostore`, `target_paths`, and judge/LLM controls |
+| `harmonize_miniml_json(...)` | User `publication_context`, `miniml_json`, `ontostore`, `target_paths`, and the same strategy/judge/LLM controls; `metadata_context` is generated automatically |
 | `lookup_label(...)` | Target, publication context, store, strategy, local judge toggle/threshold |
 | `assign_onto_framework(...)` | Target, publication context, and store |
 | `harmonize_field(...)` | Target, publication context, store, and `llm` toggle |
@@ -292,6 +292,7 @@ their `-file` counterparts are mutually substitutable; files take precedence.
 | --- | --- |
 | `--verbosity {debug,error,info,quiet,warning}` | Logging level; logs go to stderr |
 | `--publication-context`, `--publication-context-file` | User-supplied publication context |
+| `--metadata-context`, `--metadata-context-file` | Compact metadata context for direct `harmonize` only; files take precedence |
 | `--ontology-frameworks`, `--ontology-frameworks-file` | JSON framework configuration |
 | `--fields`, `--fields-file` | JSON controlled-field configuration |
 | `--storage-dir` | OWL, JSON, and SQLite storage root |
