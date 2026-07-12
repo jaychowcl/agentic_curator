@@ -81,12 +81,12 @@ tests/
 Ignored local development artifacts include `.dev/`, `.env/`, `.vscode/`,
 Python caches, pytest caches, build outputs, and editable-install metadata.
 
-Tracked comment-capable project files carry a distinctive authors header at the
-top of the file. Python, TOML, and `.gitignore` use `#` comments; non-prompt
-Markdown docs use a leading HTML comment. `README.md` keeps authorship in its
-`## Authors` section and includes a citation subsection. `LICENSE` and packaged
-prompt Markdown files under `curators/*/prompts/` are intentionally left
-without author comment headers.
+Tracked comment-capable project files carry exactly one distinctive authors
+header at the top of the file. Python, TOML, requirements, and `.gitignore` use
+`#` comments; all project-owned Markdown other than `README.md` uses a leading
+HTML comment, including packaged prompts. `README.md` keeps linked authorship in
+its visible `## Authors` section and includes a complete software citation
+subsection. The externally sourced GPL `LICENSE` is intentionally unchanged.
 
 <a id="runtime-and-packaging"></a>
 ## Runtime And Packaging

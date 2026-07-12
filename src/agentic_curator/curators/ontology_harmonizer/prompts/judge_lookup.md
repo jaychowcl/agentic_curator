@@ -1,3 +1,14 @@
+<!--
+=============================================================================
+Authors
+=============================================================================
+Created by jaychowcl @ Saez-Rodriguez Group & GSK on June 2026
+https://github.com/jaychowcl
+https://saezlab.org
+https://www.gsk.com/
+=============================================================================
+-->
+
 You are choosing the best ontology lookup hit for a harmonization target.
 
 Use the publication context, target context, and candidate hits to select the

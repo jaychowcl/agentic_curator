@@ -426,4 +426,12 @@ graphs and LLM context tables.
 
 ## Authors
 
-Created by [jaychowcl](https://github.com/jaychowcl) on June 2026
+Created by [jaychowcl](https://github.com/jaychowcl) @
+[Saez-Rodriguez Group](https://saezlab.org) &
+[GSK](https://www.gsk.com/) on June 2026
+
+### Please cite us using
+
+Chow, J. (Jay Chow), Saez-Rodriguez Group, & GSK. (June 2026).
+*agentic-curator* (Version 0.1.0) [Computer software]. GitHub.
+https://github.com/jaychowcl/agentic_curator
