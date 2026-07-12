@@ -22,6 +22,7 @@ from agentic_curator.curators.ontology_harmonizer.harmonization_target_extractor
 )
 from agentic_curator.curators.ontology_harmonizer.ontology_store import OntoStore
 from agentic_curator.curators.ontology_harmonizer.strategy_handlers import (
+    GeminiGroundedSearchClient,
     RagStrategyHandler,
     WebsearchStrategyHandler,
 )
@@ -87,6 +88,7 @@ class OntologyHarmonizer:
         target_paths: list[StartPathSpec] | None = None,
         lookup_llm_judge: bool = False,
         lookup_llm_threshold: int = 2,
+        search_llm_judge: bool = True,
         llm: bool = True,
     ) -> dict[str, Any]:
         LOGGER.info("Starting ontology harmonization.")
@@ -142,16 +144,18 @@ class OntologyHarmonizer:
                         normalized_target.get("id"),
                         normalized_strategy,
                     )
-                    self.harmonize_label(
+                    strategy_result = self.harmonize_label(
                         normalized_target,
                         publication_context=publication_context,
                         ontostore=effective_ontostore,
                         strategy=normalized_strategy,
+                        search_llm_judge=search_llm_judge and llm,
                     )
-                    self._lookup_harmonized_label(
-                        normalized_target,
-                        ontostore=effective_ontostore,
-                    )
+                    if strategy_result.get("status") == "matched":
+                        self._lookup_harmonized_label(
+                            normalized_target,
+                            ontostore=effective_ontostore,
+                        )
 
         LOGGER.info("Completed ontology harmonization.")
         return {
@@ -170,6 +174,7 @@ class OntologyHarmonizer:
         strategy: str = "websearch",
         lookup_llm_judge: bool = False,
         lookup_llm_threshold: int = 2,
+        search_llm_judge: bool = True,
         llm: bool = True,
     ) -> dict[str, Any]:
         LOGGER.info("Starting MINiML JSON ontology harmonization.")
@@ -197,6 +202,7 @@ class OntologyHarmonizer:
             target_paths=effective_target_paths,
             lookup_llm_judge=lookup_llm_judge,
             lookup_llm_threshold=lookup_llm_threshold,
+            search_llm_judge=search_llm_judge,
             llm=llm,
         )
         applied_targets = result.get("harmonization_targets", harmonization_targets)
@@ -611,6 +617,35 @@ class OntologyHarmonizer:
         self._validate_lookup_judge_response(judgement)
         return judgement
 
+    def judge_search_results(
+        self,
+        *,
+        target: dict[str, Any],
+        publication_context: str | None,
+        stage: str,
+        restricted_hits: list[dict[str, Any]],
+        unrestricted_hits: list[dict[str, Any]],
+        web_hits: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        prompt = self._judge_search_prompt(
+            target=target,
+            publication_context=publication_context,
+            stage=stage,
+            restricted_hits=restricted_hits,
+            unrestricted_hits=unrestricted_hits,
+            web_hits=web_hits,
+        )
+        response = self._llm().generate_response(
+            prompt,
+            config={
+                "response_mime_type": "application/json",
+                "response_schema": self._search_judge_response_schema(),
+            },
+        )
+        judgement = parse_json_response(response)
+        self._validate_search_judge_response(judgement)
+        return judgement
+
     def assign_onto_framework(
         self,
         target: dict[str, Any],
@@ -716,6 +751,7 @@ class OntologyHarmonizer:
         publication_context: str | None,
         ontostore: OntoStore,
         strategy: str,
+        search_llm_judge: bool = True,
     ) -> dict[str, Any]:
         handler_class = self.STRATEGY_HANDLERS.get(strategy)
         if handler_class is None:
@@ -726,7 +762,14 @@ class OntologyHarmonizer:
             )
 
         LOGGER.info("Running ontology harmonization strategy %s.", strategy)
-        return handler_class().handle(
+        if handler_class is WebsearchStrategyHandler and search_llm_judge:
+            handler = handler_class(
+                search_client=GeminiGroundedSearchClient(llm=self._llm()),
+                search_judge=self.judge_search_results,
+            )
+        else:
+            handler = handler_class()
+        return handler.handle(
             target,
             publication_context=publication_context,
             ontostore=ontostore,
@@ -962,6 +1005,41 @@ class OntologyHarmonizer:
         ]
         return "\n".join(prompt_parts).lstrip("\n")
 
+    def _judge_search_prompt(
+        self,
+        *,
+        target: dict[str, Any],
+        publication_context: str | None,
+        stage: str,
+        restricted_hits: list[dict[str, Any]],
+        unrestricted_hits: list[dict[str, Any]],
+        web_hits: list[dict[str, Any]],
+    ) -> str:
+        initial_prompt = files(PROMPT_PACKAGE).joinpath(
+            "prompts/judge_search.md"
+        ).read_text(encoding="utf-8").strip()
+        prompt_parts = [
+            initial_prompt,
+            "Publication Context:",
+            self._prompt_text(publication_context),
+            "",
+            "Harmonization Target:",
+            self._prompt_text(self._lookup_target_prompt_context(target)),
+            "",
+            "Search Stage:",
+            stage,
+            "",
+            "Restricted OLS Hits:",
+            self._prompt_text(restricted_hits),
+            "",
+            "Unrestricted OLS Hits:",
+            self._prompt_text(unrestricted_hits),
+            "",
+            "Grounded Web Evidence:",
+            self._prompt_text(web_hits),
+        ]
+        return "\n".join(prompt_parts).lstrip("\n")
+
     def _assignment_target_prompt_context(
         self,
         target: dict[str, Any],
@@ -1060,6 +1138,9 @@ class OntologyHarmonizer:
             "required": ["decision", "confidence", "reason"],
         }
 
+    def _search_judge_response_schema(self) -> dict[str, Any]:
+        return self._lookup_judge_response_schema()
+
     def _validate_assignment_response(self, assignment: Any) -> None:
         if not isinstance(assignment, dict):
             raise ValueError("LLM assignment response must be a JSON object.")
@@ -1089,6 +1170,15 @@ class OntologyHarmonizer:
         if not required_fields.issubset(judgement):
             raise ValueError(
                 "LLM lookup judgement response must include decision, confidence, "
+                "and reason."
+            )
+
+    def _validate_search_judge_response(self, judgement: Any) -> None:
+        if not isinstance(judgement, dict):
+            raise ValueError("Search LLM judgement response must be a JSON object.")
+        if not {"decision", "confidence", "reason"}.issubset(judgement):
+            raise ValueError(
+                "Search LLM judgement response must include decision, confidence, "
                 "and reason."
             )
 

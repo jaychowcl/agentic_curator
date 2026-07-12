@@ -48,6 +48,7 @@ class RecordingHarmonizer:
         target_paths=None,
         lookup_llm_judge=False,
         lookup_llm_threshold=2,
+        search_llm_judge=True,
         llm=True,
     ):
         self.__class__.calls.append(
@@ -61,6 +62,7 @@ class RecordingHarmonizer:
                 "target_paths": target_paths,
                 "lookup_llm_judge": lookup_llm_judge,
                 "lookup_llm_threshold": lookup_llm_threshold,
+                "search_llm_judge": search_llm_judge,
                 "llm": llm,
             }
         )
@@ -75,6 +77,7 @@ class RecordingHarmonizer:
         strategy="websearch",
         lookup_llm_judge=False,
         lookup_llm_threshold=2,
+        search_llm_judge=True,
         llm=True,
     ):
         self.__class__.calls.append(
@@ -87,6 +90,7 @@ class RecordingHarmonizer:
                 "strategy": strategy,
                 "lookup_llm_judge": lookup_llm_judge,
                 "lookup_llm_threshold": lookup_llm_threshold,
+                "search_llm_judge": search_llm_judge,
                 "llm": llm,
             }
         )
@@ -129,6 +133,7 @@ def test_cli_harmonize_passes_all_options_to_harmonizer(
                 "--lookup-llm-judge",
                 "--lookup-llm-threshold",
                 "3",
+                "--no-search-llm-judge",
                 "--no-llm",
             ]
         )
@@ -155,6 +160,7 @@ def test_cli_harmonize_passes_all_options_to_harmonizer(
             "target_paths": [{"path": "/organism", "mode": "container_value"}],
             "lookup_llm_judge": True,
             "lookup_llm_threshold": 3,
+            "search_llm_judge": False,
             "llm": False,
         }
     ]
@@ -194,6 +200,7 @@ def test_cli_harmonize_miniml_json_passes_json_file_inputs(
             "strategy": "websearch",
             "lookup_llm_judge": False,
             "lookup_llm_threshold": 2,
+            "search_llm_judge": True,
             "llm": True,
         }
     ]

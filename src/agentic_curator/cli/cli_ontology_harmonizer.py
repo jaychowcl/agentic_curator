@@ -46,6 +46,17 @@ def _add_harmonize_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--target-paths-file", default=None)
     parser.add_argument("--lookup-llm-judge", action="store_true", default=False)
     parser.add_argument("--lookup-llm-threshold", type=int, default=2)
+    parser.add_argument(
+        "--search-llm-judge",
+        dest="search_llm_judge",
+        action="store_true",
+        default=True,
+    )
+    parser.add_argument(
+        "--no-search-llm-judge",
+        dest="search_llm_judge",
+        action="store_false",
+    )
     parser.add_argument("--llm", dest="llm", action="store_true", default=True)
     parser.add_argument("--no-llm", dest="llm", action="store_false")
 
@@ -153,6 +164,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Any:
             target_paths=_target_paths(args, parser),
             lookup_llm_judge=args.lookup_llm_judge,
             lookup_llm_threshold=args.lookup_llm_threshold,
+            search_llm_judge=args.search_llm_judge,
             llm=args.llm,
         )
 
@@ -169,6 +181,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Any:
             strategy=args.strategy,
             lookup_llm_judge=args.lookup_llm_judge,
             lookup_llm_threshold=args.lookup_llm_threshold,
+            search_llm_judge=args.search_llm_judge,
             llm=args.llm,
         )
 

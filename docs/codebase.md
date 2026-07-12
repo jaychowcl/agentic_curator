@@ -54,6 +54,7 @@ src/agentic_curator/
         assign_field.md
         assign_onto_framework.md
         judge_lookup.md
+        judge_search.md
     thematic_reviewer/
       __init__.py
       reviewer.py
@@ -166,11 +167,12 @@ Public methods:
 - `apply_targets(miniml_json, harmonization_targets) -> dict | list | None`
 - `assign_field(target, *, publication_context, ontostore) -> dict`
 - `assign_onto_framework(target, *, publication_context, ontostore) -> dict`
-- `harmonize_miniml_json(publication_context=None, miniml_json=None, ontostore=None, target_paths=None, strategy="websearch", lookup_llm_judge=False, lookup_llm_threshold=2, llm=True) -> dict`
-- `harmonize(publication_context=None, harmonization_targets=None, target=None, strategy="websearch", ontostore=None, target_paths=None, lookup_llm_judge=False, lookup_llm_threshold=2, llm=True) -> dict`
+- `harmonize_miniml_json(publication_context=None, miniml_json=None, ontostore=None, target_paths=None, strategy="websearch", lookup_llm_judge=False, lookup_llm_threshold=2, search_llm_judge=True, llm=True) -> dict`
+- `harmonize(publication_context=None, harmonization_targets=None, target=None, strategy="websearch", ontostore=None, target_paths=None, lookup_llm_judge=False, lookup_llm_threshold=2, search_llm_judge=True, llm=True) -> dict`
 - `harmonize_field(target, *, publication_context, ontostore) -> Any`
-- `harmonize_label(target, *, publication_context, ontostore, strategy) -> dict`
+- `harmonize_label(target, *, publication_context, ontostore, strategy, search_llm_judge=True) -> dict`
 - `judge_lookup(target, *, publication_context, hits) -> dict`
+- `judge_search_results(target, *, publication_context, stage, restricted_hits, unrestricted_hits, web_hits) -> dict`
 - `lookup_label(target, *, publication_context, ontostore, strategy) -> Any`
 
 `harmonize_miniml_json(...)` extracts targets from MINiML-style JSON with
@@ -248,7 +250,7 @@ the first ontology lookup matched or missed. Field harmonization uses
 `OntoStore.lookup_fields(...)` and falls back to LLM-backed
 `assign_field(...)` only when `llm=True`. When the first lookup missed,
 `harmonize(...)` calls `harmonize_label(...)` only for `websearch` and `rag`.
-After a strategy handler returns, the harmonizer performs a post-strategy
+After a matched strategy handler returns, the harmonizer performs a post-strategy
 `OntoStore.lookup(...)` for the current `hz_label`, preferring the target's
 stored `ontology_id` when that framework exists in `OntoStore`. If that lookup
 finds hits, it refreshes `ontology_id`, `ontology_lookup`,
@@ -256,10 +258,15 @@ finds hits, it refreshes `ontology_id`, `ontology_lookup`,
 strategy result remains unchanged. This second lookup uses normal
 `OntoStore.lookup(...)` behavior, including download/parse for URL-backed
 configured frameworks. The websearch handler uses OLS4 restricted to the
-assigned `ontology_id`, then falls back to
-unrestricted OLS plus an injected web search client. `NullSearchClient` is the
-default and performs no network work. `GeminiGroundedSearchClient` is an
-opt-in Google Search grounding client backed by the LLM facade; it calls
+assigned `ontology_id`. With the default `search_llm_judge=True`, an LLM
+selects one supplied candidate or returns `false`. A restricted-stage rejection
+continues to unrestricted OLS plus Gemini grounded web evidence and a second
+judgement over both OLS result sets. Unknown decisions and judge failures fail
+closed; ordered decisions are stored in `search_llm_judgements`, with failures
+in `search_llm_judge_error`. Web evidence supports selection but cannot
+introduce an ID absent from OLS. `search_llm_judge=False` preserves first-hit
+behavior, and `llm=False` disables the judge and grounded search.
+`GeminiGroundedSearchClient` calls
 `generate_response_with_metadata(..., tools=[{"type": "google_search"}])`,
 normalizes returned citation annotations into `web_hits`, stores the grounded
 response at `last_response`, and records quota or provider failures at
@@ -1636,6 +1643,8 @@ The ontology harmonizer prompt files are:
   key and return `decision`, `confidence`, `reason`, and `new_field`.
 - `judge_lookup.md` instructs the model to choose the best lookup hit ID and
   return `decision`, `confidence`, and `reason`.
+- `judge_search.md` instructs the model to select one supplied OLS candidate or
+  reject all candidates using target context and grounded web evidence.
 
 <a id="llm-wrapper"></a>
 ## LLM Wrapper
@@ -1807,6 +1816,7 @@ Ontology inputs include:
 - `--strategy websearch|rag`
 - `--lookup-llm-judge`
 - `--lookup-llm-threshold`
+- `--search-llm-judge` or `--no-search-llm-judge` (enabled by default)
 - `--llm` or `--no-llm`
 - `--ontology-frameworks` or `--ontology-frameworks-file`
 - `--fields` or `--fields-file`

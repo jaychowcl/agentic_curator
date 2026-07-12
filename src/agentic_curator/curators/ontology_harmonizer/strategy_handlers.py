@@ -172,11 +172,13 @@ class WebsearchStrategyHandler:
         *,
         ols_client: OlsClient | None = None,
         search_client: Any | None = None,
+        search_judge: Any | None = None,
     ) -> None:
         self.ols_client = OlsClient() if ols_client is None else ols_client
         self.search_client = (
             NullSearchClient() if search_client is None else search_client
         )
+        self.search_judge = search_judge
 
     def handle(
         self,
@@ -209,14 +211,49 @@ class WebsearchStrategyHandler:
             rows=self.max_results,
         )
         restricted_hits = self._hits_from_docs(restricted_docs)
+        judgements: list[dict[str, Any]] = []
         if restricted_hits:
-            return self._accept_first_hit(
-                target,
-                ontostore=ontostore,
-                hits=restricted_hits,
-                web_hits=[],
-                reason="Restricted OLS search returned a usable ontology hit.",
-            )
+            if self.search_judge is None:
+                return self._accept_hit(
+                    target,
+                    ontostore=ontostore,
+                    hit=restricted_hits[0],
+                    hits=restricted_hits,
+                    web_hits=[],
+                    reason="Restricted OLS search returned a usable ontology hit.",
+                )
+            try:
+                judgement = self._judge_search_hits(
+                    target=target,
+                    publication_context=publication_context,
+                    stage="restricted",
+                    restricted_hits=restricted_hits,
+                    unrestricted_hits=[],
+                    web_hits=[],
+                )
+            except Exception as exc:  # noqa: BLE001 - preserve judge failure trace.
+                return self._not_harmonized(
+                    target,
+                    reason="Search LLM judge failed.",
+                    ols_hits=restricted_hits,
+                    web_hits=[],
+                    search_llm_judgements=judgements,
+                    search_llm_judge_error=str(exc),
+                )
+            judgements.append({"stage": "restricted", **judgement})
+            target["search_llm_judgements"] = judgements
+            if str(judgement["decision"]).lower() != "false":
+                hit = self._selected_hit(restricted_hits, judgement["decision"])
+                return self._accept_hit(
+                    target,
+                    ontostore=ontostore,
+                    hit=hit,
+                    hits=restricted_hits,
+                    web_hits=[],
+                    reason=str(judgement["reason"]),
+                    confidence=str(judgement["confidence"]),
+                    search_llm_judgements=judgements,
+                )
 
         unrestricted_docs = self.ols_client.search(
             str(label),
@@ -230,34 +267,82 @@ class WebsearchStrategyHandler:
         )[: self.max_results]
         web_search_error = getattr(self.search_client, "last_error", None)
         if unrestricted_hits:
-            return self._accept_first_hit(
+            all_hits = [*restricted_hits, *unrestricted_hits]
+            if self.search_judge is None:
+                return self._accept_hit(
+                    target,
+                    ontostore=ontostore,
+                    hit=unrestricted_hits[0],
+                    hits=unrestricted_hits,
+                    web_hits=web_hits,
+                    reason="Unrestricted OLS search returned a usable ontology hit.",
+                    web_search_error=web_search_error,
+                )
+            try:
+                judgement = self._judge_search_hits(
+                    target=target,
+                    publication_context=publication_context,
+                    stage="expanded",
+                    restricted_hits=restricted_hits,
+                    unrestricted_hits=unrestricted_hits,
+                    web_hits=web_hits,
+                )
+            except Exception as exc:  # noqa: BLE001 - preserve judge failure trace.
+                return self._not_harmonized(
+                    target,
+                    reason="Search LLM judge failed.",
+                    ols_hits=all_hits,
+                    web_hits=web_hits,
+                    web_search_error=web_search_error,
+                    search_llm_judgements=judgements,
+                    search_llm_judge_error=str(exc),
+                )
+            judgements.append({"stage": "expanded", **judgement})
+            target["search_llm_judgements"] = judgements
+            if str(judgement["decision"]).lower() != "false":
+                hit = self._selected_hit(all_hits, judgement["decision"])
+                return self._accept_hit(
+                    target,
+                    ontostore=ontostore,
+                    hit=hit,
+                    hits=all_hits,
+                    web_hits=web_hits,
+                    reason=str(judgement["reason"]),
+                    confidence=str(judgement["confidence"]),
+                    web_search_error=web_search_error,
+                    search_llm_judgements=judgements,
+                )
+            return self._not_harmonized(
                 target,
-                ontostore=ontostore,
-                hits=unrestricted_hits,
+                reason=str(judgement["reason"]),
+                ols_hits=all_hits,
                 web_hits=web_hits,
-                reason="Unrestricted OLS search returned a usable ontology hit.",
                 web_search_error=web_search_error,
+                search_llm_judgements=judgements,
             )
 
         return self._not_harmonized(
             target,
             reason="No usable OLS ontology hit was found.",
-            ols_hits=[],
+            ols_hits=restricted_hits,
             web_hits=web_hits,
             web_search_error=web_search_error,
+            search_llm_judgements=judgements,
         )
 
-    def _accept_first_hit(
+    def _accept_hit(
         self,
         target: dict[str, Any],
         *,
         ontostore: OntoStore,
+        hit: dict[str, Any],
         hits: list[dict[str, Any]],
         web_hits: list[dict[str, Any]],
         reason: str,
+        confidence: str = "medium",
         web_search_error: str | None = None,
+        search_llm_judgements: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        hit = hits[0]
         ontology_id = hit["ontology_id"]
         framework_config = self._framework_config(ontology_id)
         if framework_config is None:
@@ -270,6 +355,7 @@ class WebsearchStrategyHandler:
                 ols_hits=hits,
                 web_hits=web_hits,
                 web_search_error=web_search_error,
+                search_llm_judgements=search_llm_judgements,
             )
 
         ontostore.configure_framework(
@@ -284,7 +370,7 @@ class WebsearchStrategyHandler:
             "strategy": self.strategy,
             "status": "matched",
             "decision": self._hit_decision(hit),
-            "confidence": "medium",
+            "confidence": confidence,
             "reason": reason,
             "ols_hits": hits,
             "web_hits": web_hits,
@@ -292,6 +378,8 @@ class WebsearchStrategyHandler:
         }
         if web_search_error:
             result["web_search_error"] = web_search_error
+        if search_llm_judgements:
+            result["search_llm_judgements"] = search_llm_judgements
         target["ontology_id"] = ontology_id
         target["ontology_lookup"] = hit
         target["ontology_lookup_hits"] = hits
@@ -307,6 +395,8 @@ class WebsearchStrategyHandler:
         ols_hits: list[dict[str, Any]],
         web_hits: list[dict[str, Any]],
         web_search_error: str | None = None,
+        search_llm_judgements: list[dict[str, Any]] | None = None,
+        search_llm_judge_error: str | None = None,
     ) -> dict[str, Any]:
         result = {
             "strategy": self.strategy,
@@ -319,11 +409,60 @@ class WebsearchStrategyHandler:
         }
         if web_search_error:
             result["web_search_error"] = web_search_error
+        if search_llm_judgements:
+            result["search_llm_judgements"] = search_llm_judgements
+            target["search_llm_judgements"] = search_llm_judgements
+        if search_llm_judge_error:
+            result["search_llm_judge_error"] = search_llm_judge_error
         target["ontology_match"] = False
         target.pop("ontology_lookup", None)
         target.pop("ontology_lookup_hits", None)
         target["ontology_strategy_result"] = result
         return result
+
+    def _judge_search_hits(
+        self,
+        *,
+        target: dict[str, Any],
+        publication_context: str | None,
+        stage: str,
+        restricted_hits: list[dict[str, Any]],
+        unrestricted_hits: list[dict[str, Any]],
+        web_hits: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        judgement = self.search_judge(
+            target=target,
+            publication_context=publication_context,
+            stage=stage,
+            restricted_hits=restricted_hits,
+            unrestricted_hits=unrestricted_hits,
+            web_hits=web_hits,
+        )
+        if not isinstance(judgement, dict):
+            raise ValueError("Search LLM judgement must be a JSON object.")
+        if not {"decision", "confidence", "reason"}.issubset(judgement):
+            raise ValueError(
+                "Search LLM judgement must include decision, confidence, and reason."
+            )
+        candidates = [*restricted_hits, *unrestricted_hits]
+        if str(judgement["decision"]).lower() != "false":
+            self._selected_hit(candidates, judgement["decision"])
+        return judgement
+
+    def _selected_hit(
+        self,
+        hits: list[dict[str, Any]],
+        decision: Any,
+    ) -> dict[str, Any]:
+        value = str(decision)
+        for hit in hits:
+            if value in {
+                str(hit.get("id")),
+                str(hit.get("accession")),
+                str(hit.get("iri")),
+            }:
+                return hit
+        raise ValueError("Search LLM decision must match a supplied OLS candidate.")
 
     def _hits_from_docs(self, docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [

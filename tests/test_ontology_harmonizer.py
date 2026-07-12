@@ -112,6 +112,9 @@ ASSIGN_FIELD_PROMPT = files("agentic_curator").joinpath(
 JUDGE_LOOKUP_PROMPT = files("agentic_curator").joinpath(
     "curators/ontology_harmonizer/prompts/judge_lookup.md"
 ).read_text(encoding="utf-8").strip()
+JUDGE_SEARCH_PROMPT = files("agentic_curator").joinpath(
+    "curators/ontology_harmonizer/prompts/judge_search.md"
+).read_text(encoding="utf-8").strip()
 
 
 class FakeResponse:
@@ -1463,9 +1466,36 @@ def test_lookup_label_llm_judge_selects_best_hit_by_id(
         "prompt"
     ]
     assert '"id": "target-0"' in fake_llm.calls[0]["prompt"]
-    assert '"id": "UBERON:2"' in fake_llm.calls[0]["prompt"]
 
 
+def test_judge_search_results_builds_structured_prompt() -> None:
+    response = {
+        "decision": "UBERON_2",
+        "confidence": "high",
+        "reason": "Matches the sample context.",
+    }
+    fake_llm = FakeLLM(response=json.dumps(response))
+    harmonizer = OntologyHarmonizer(llm=fake_llm)
+
+    result = harmonizer.judge_search_results(
+        target={"id": "target-0", "hz_field": "tissue", "hz_label": "lung"},
+        publication_context="lung sample",
+        stage="expanded",
+        restricted_hits=[{"id": "EFO_1", "title": "wrong"}],
+        unrestricted_hits=[{"id": "UBERON_2", "title": "lung"}],
+        web_hits=[{"title": "Uberon lung", "link": "https://example.org"}],
+    )
+
+    assert result == response
+    call = fake_llm.calls[0]
+    assert call["prompt"].startswith(JUDGE_SEARCH_PROMPT)
+    assert "Search Stage:\nexpanded" in call["prompt"]
+    assert '"UBERON_2"' in call["prompt"]
+    assert "Uberon lung" in call["prompt"]
+    assert call["config"] == {
+        "response_mime_type": "application/json",
+        "response_schema": harmonizer._search_judge_response_schema(),
+    }
 def test_lookup_judge_prompt_prunes_derived_target_context(
     tmp_path: Path,
 ) -> None:
@@ -2447,7 +2477,15 @@ def test_harmonize_successful_lookup_passes_llm_false_to_field_harmonization() -
             calls.append(("field", llm))
             return False
 
-        def harmonize_label(self, target, *, publication_context, ontostore, strategy):
+        def harmonize_label(
+            self,
+            target,
+            *,
+            publication_context,
+            ontostore,
+            strategy,
+            search_llm_judge=True,
+        ):
             calls.append("strategy")
             return False
 
@@ -2569,8 +2607,7 @@ def test_harmonize_calls_field_harmonization_before_strategy_handler() -> None:
             publication_context,
             ontostore,
             strategy,
-            lookup_llm_judge=False,
-            lookup_llm_threshold=2,
+            search_llm_judge=True,
         ):
             calls.append(("strategy", strategy))
             return {"strategy": strategy}
@@ -2686,7 +2723,15 @@ def test_harmonize_looks_up_strategy_harmonized_label_with_stored_ontology_id(
         def harmonize_field(self, target, *, publication_context, ontostore, llm=True):
             return False
 
-        def harmonize_label(self, target, *, publication_context, ontostore, strategy):
+        def harmonize_label(
+            self,
+            target,
+            *,
+            publication_context,
+            ontostore,
+            strategy,
+            search_llm_judge=True,
+        ):
             target["hz_label"] = "lung"
             target["ontology_id"] = "uberon"
             target["ontology_strategy_result"] = {
@@ -2751,7 +2796,15 @@ def test_harmonize_post_strategy_lookup_ignores_unconfigured_ontology_id(
         def harmonize_field(self, target, *, publication_context, ontostore, llm=True):
             return False
 
-        def harmonize_label(self, target, *, publication_context, ontostore, strategy):
+        def harmonize_label(
+            self,
+            target,
+            *,
+            publication_context,
+            ontostore,
+            strategy,
+            search_llm_judge=True,
+        ):
             target["ontology_id"] = "missing"
             target["ontology_strategy_result"] = {
                 "strategy": strategy,
@@ -2808,7 +2861,15 @@ def test_harmonize_post_strategy_lookup_miss_preserves_strategy_result(
         def harmonize_field(self, target, *, publication_context, ontostore, llm=True):
             return False
 
-        def harmonize_label(self, target, *, publication_context, ontostore, strategy):
+        def harmonize_label(
+            self,
+            target,
+            *,
+            publication_context,
+            ontostore,
+            strategy,
+            search_llm_judge=True,
+        ):
             target["hz_label"] = "not in store"
             target["ontology_strategy_result"] = {
                 "strategy": strategy,
@@ -2996,6 +3057,128 @@ def test_websearch_strategy_uses_restricted_ols_hit_without_fallbacks() -> None:
     assert store.ontology_frameworks["uberon"]["title"] == "Uber-anatomy ontology"
     assert store.ontology_frameworks["uberon"]["version"] == "2026-06-19"
     assert store.ontology_frameworks["uberon"]["url"] == "https://example.org/uberon.owl"
+
+
+def test_websearch_strategy_judge_selects_non_first_restricted_hit() -> None:
+    terms = [
+        {
+            "iri": f"https://example.org/{index}",
+            "ontology_name": "uberon",
+            "short_form": f"UBERON_{index}",
+            "obo_id": f"UBERON:{index}",
+            "label": label,
+        }
+        for index, label in (("1", "wrong"), ("2", "right"))
+    ]
+    ols_client = FakeOlsClient(
+        search_results=[terms],
+        ontology_metadata={
+            "uberon": {
+                "config": {
+                    "id": "uberon",
+                    "title": "Uberon",
+                    "description": "Anatomy.",
+                    "version": "v1",
+                    "versionIri": "https://example.org/uberon.owl",
+                }
+            }
+        },
+    )
+    calls = []
+
+    def judge(**kwargs):
+        calls.append(kwargs)
+        return {"decision": "UBERON_2", "confidence": "high", "reason": "Best."}
+
+    target = {"id": "target-0", "hz_label": "right", "ontology_id": "uberon"}
+    result = WebsearchStrategyHandler(
+        ols_client=ols_client,
+        search_judge=judge,
+    ).handle(target, publication_context="context", ontostore=OntoStore())
+
+    assert result["decision"] == "UBERON_2"
+    assert target["ontology_lookup"]["title"] == "right"
+    assert target["search_llm_judgements"] == [
+        {"stage": "restricted", "decision": "UBERON_2", "confidence": "high", "reason": "Best."}
+    ]
+    assert calls[0]["stage"] == "restricted"
+    assert calls[0]["restricted_hits"][0]["id"] == "UBERON_1"
+    assert calls[0]["unrestricted_hits"] == []
+    assert calls[0]["web_hits"] == []
+
+
+def test_websearch_strategy_judge_rejects_restricted_then_selects_expanded_hit() -> None:
+    restricted = {
+        "iri": "https://example.org/wrong",
+        "ontology_name": "efo",
+        "short_form": "EFO_WRONG",
+        "label": "wrong",
+    }
+    expanded = {
+        "iri": "https://example.org/right",
+        "ontology_name": "uberon",
+        "short_form": "UBERON_RIGHT",
+        "label": "right",
+    }
+    ols_client = FakeOlsClient(
+        search_results=[[restricted], [expanded]],
+        ontology_metadata={
+            "uberon": {
+                "config": {
+                    "id": "uberon",
+                    "title": "Uberon",
+                    "description": "Anatomy.",
+                    "version": "v1",
+                    "versionIri": "https://example.org/uberon.owl",
+                }
+            }
+        },
+    )
+    search_client = FakeSearchClient(results=[{"title": "support"}])
+    stages = []
+
+    def judge(**kwargs):
+        stages.append(kwargs)
+        if kwargs["stage"] == "restricted":
+            return {"decision": "false", "confidence": "none", "reason": "Poor."}
+        return {"decision": "UBERON_RIGHT", "confidence": "high", "reason": "Supported."}
+
+    target = {"id": "target-0", "hz_label": "right", "ontology_id": "efo"}
+    result = WebsearchStrategyHandler(
+        ols_client=ols_client,
+        search_client=search_client,
+        search_judge=judge,
+    ).handle(target, publication_context="context", ontostore=OntoStore())
+
+    assert result["decision"] == "UBERON_RIGHT"
+    assert [call["stage"] for call in stages] == ["restricted", "expanded"]
+    assert stages[1]["restricted_hits"][0]["id"] == "EFO_WRONG"
+    assert stages[1]["unrestricted_hits"][0]["id"] == "UBERON_RIGHT"
+    assert stages[1]["web_hits"] == [{"title": "support"}]
+    assert len(result["search_llm_judgements"]) == 2
+
+
+def test_websearch_strategy_judge_error_fails_closed() -> None:
+    term = {
+        "iri": "https://example.org/wrong",
+        "ontology_name": "efo",
+        "short_form": "EFO_WRONG",
+        "label": "wrong",
+    }
+
+    def judge(**kwargs):
+        raise ValueError("unknown decision")
+
+    target = {"id": "target-0", "hz_label": "right", "ontology_id": "efo"}
+    result = WebsearchStrategyHandler(
+        ols_client=FakeOlsClient(search_results=[[term]]),
+        search_judge=judge,
+    ).handle(target, publication_context=None, ontostore=OntoStore())
+
+    assert result["status"] == "not_harmonized"
+    assert result["search_llm_judge_error"] == "unknown decision"
+    assert target["ontology_match"] is False
+    assert "ontology_lookup" not in target
 
 
 def test_websearch_strategy_falls_back_to_unrestricted_ols_and_web_search() -> None:
@@ -3194,6 +3377,7 @@ def test_harmonize_skips_strategy_handler_when_lookup_label_succeeds() -> None:
             publication_context,
             ontostore,
             strategy,
+            search_llm_judge=True,
         ):
             calls.append(target)
 
@@ -3812,6 +3996,7 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
             target_paths=None,
             lookup_llm_judge=False,
             lookup_llm_threshold=2,
+            search_llm_judge=True,
             llm=True,
         ):
             calls.append(
@@ -3824,6 +4009,7 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
                     "target_paths": target_paths,
                     "lookup_llm_judge": lookup_llm_judge,
                     "lookup_llm_threshold": lookup_llm_threshold,
+                    "search_llm_judge": search_llm_judge,
                     "llm": llm,
                 }
             )
@@ -3886,6 +4072,7 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
             "target_paths": ["/sample"],
             "lookup_llm_judge": False,
             "lookup_llm_threshold": 2,
+            "search_llm_judge": True,
             "llm": True,
         }
     ]
