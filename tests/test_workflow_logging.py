@@ -51,7 +51,10 @@ def test_ontology_harmonizer_logs_target_workflow(caplog) -> None:
     messages = [record.getMessage() for record in caplog.records]
     assert "Starting ontology harmonization." in messages
     assert "Ontology lookup missed for target target-1." in messages
-    assert "Completed ontology harmonization." in messages
+    assert (
+        "Completed ontology harmonization. targets=1 matched=0 unmatched=1 "
+        "strategy=websearch."
+    ) in messages
 
 
 def test_ontostore_logs_field_lookup(caplog) -> None:

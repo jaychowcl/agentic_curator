@@ -68,7 +68,9 @@ class ThematicReviewer:
             },
         )
         result = parse_json_response(response)
-        LOGGER.info("Completed evidence extraction.")
+        evidence_values = result.get("evidences", []) if isinstance(result, dict) else result
+        evidence_count = len(evidence_values) if isinstance(evidence_values, list) else 0
+        LOGGER.info("Completed evidence extraction evidence_count=%s.", evidence_count)
         return result
 
     def judge_evidence(
@@ -91,7 +93,8 @@ class ThematicReviewer:
             },
         )
         result = parse_json_response(response)
-        LOGGER.info("Completed evidence judgement.")
+        judgement = result.get("judgement") if isinstance(result, dict) else None
+        LOGGER.info("Completed evidence judgement judgement=%s.", judgement)
         return result
 
     def _llm(self) -> Any:

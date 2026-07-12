@@ -148,7 +148,14 @@ class OntologyHarmonizer:
                             ontostore=effective_ontostore,
                         )
 
-        LOGGER.info("Completed ontology harmonization.")
+        matched = sum(bool(item.get("ontology_match")) for item in normalized_targets)
+        LOGGER.info(
+            "Completed ontology harmonization. targets=%s matched=%s unmatched=%s strategy=%s.",
+            len(normalized_targets),
+            matched,
+            len(normalized_targets) - matched,
+            normalized_strategy,
+        )
         return {
             "publication_context": publication_context,
             "metadata_context": metadata_context,

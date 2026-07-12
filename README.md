@@ -205,6 +205,12 @@ short `strategy_summary`. The domain-neutral prompt prefers one comprehensive
 query made of AND-joined mandatory concept groups with extensive OR synonyms;
 more queries require an unbridgeable logical, semantic, syntax, or length gap.
 It adds `(HAS_DATA:y OR HAS_LABSLINKS:y)` programmatically to every query.
+
+At DEBUG/INFO, shared LLM telemetry reports platform/model, prompt and response
+sizes, tool/citation counts, duration, and failures. Curators add aggregate
+query, evidence, judgement, ontology-target, and cache-framework statistics.
+Prompt/response bodies, publication and metadata contexts, credentials, and
+headers are not logged.
 The curator does not call Europe PMC or estimate hit counts.
 
 ### Query Generator CLI

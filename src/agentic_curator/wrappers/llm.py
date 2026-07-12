@@ -9,7 +9,12 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class LLM:
@@ -51,13 +56,48 @@ class LLM:
         **extra_options: Any,
     ) -> dict[str, Any]:
         platform = self._platform_for_model(model)
-        return platform.generate_response_with_metadata(
-            prompt,
-            model=model,
-            config=config,
-            tools=tools,
-            **extra_options,
+        platform_name = (
+            "claude_vertex"
+            if platform is self._routed_platforms.get("claude_vertex")
+            else self.platform_name
         )
+        effective_model = model or getattr(platform, "model", None)
+        started = time.monotonic()
+        LOGGER.debug(
+            "LLM call started platform=%s model=%s prompt_characters=%s tools=%s structured=%s",
+            platform_name,
+            effective_model,
+            len(prompt),
+            len(tools or []),
+            bool((config or {}).get("response_schema")),
+        )
+        try:
+            response = platform.generate_response_with_metadata(
+                prompt,
+                model=model,
+                config=config,
+                tools=tools,
+                **extra_options,
+            )
+        except Exception:
+            LOGGER.exception(
+                "LLM call failed platform=%s model=%s elapsed_seconds=%.3f",
+                platform_name,
+                effective_model,
+                time.monotonic() - started,
+            )
+            raise
+        text = str(response.get("text", ""))
+        LOGGER.info(
+            "LLM call completed platform=%s model=%s response_characters=%s citations=%s tool_calls=%s elapsed_seconds=%.3f",
+            response.get("provider", platform_name),
+            effective_model,
+            len(text),
+            len(response.get("citations") or []),
+            len(response.get("tool_calls") or []),
+            time.monotonic() - started,
+        )
+        return response
 
     def _platform_for_model(self, model: str | None) -> Any:
         if (

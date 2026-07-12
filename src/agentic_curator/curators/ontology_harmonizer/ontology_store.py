@@ -574,9 +574,16 @@ class OntoStore:
         if unknown:
             raise KeyError(f"Unknown selected ontology frameworks: {sorted(unknown)}")
 
-        for name in names:
+        LOGGER.info("Ontology cache started frameworks=%s force=%s.", len(names), force)
+        for position, name in enumerate(names, start=1):
             started = time.monotonic()
             framework_result: dict[str, Any] = {"framework": name}
+            LOGGER.info(
+                "Ontology cache progress framework=%s position=%s total=%s.",
+                name,
+                position,
+                len(names),
+            )
             try:
                 owl_path = self._target_path(name)
                 json_path = self._json_target_path(name)
@@ -623,9 +630,20 @@ class OntoStore:
                 time.monotonic() - started, 3
             )
             results["frameworks"][name] = framework_result
+            LOGGER.info(
+                "Ontology cache framework completed framework=%s status=%s elapsed_seconds=%s.",
+                name,
+                framework_result["status"],
+                framework_result["elapsed_seconds"],
+            )
 
         if results["failed"] and fail_on_error:
             raise OntologyCacheError(results)
+        LOGGER.info(
+            "Ontology cache completed successful=%s failed=%s.",
+            len(results["successful"]),
+            len(results["failed"]),
+        )
         return results
 
     @staticmethod

@@ -1895,6 +1895,13 @@ a Claude Vertex platform. Unknown platform names raise `ValueError`.
 `generate_response(...)` remains the text-only compatibility API.
 `generate_response_with_metadata(...)` returns a provider-normalized dictionary
 with `text`, `raw_response`, `citations`, `tool_calls`, and `provider`.
+The facade emits safe structured telemetry: DEBUG logs call start with
+platform/model, prompt character count, tool count, and structured-output flag;
+INFO logs completion with response character count, citation/tool-call counts,
+and elapsed time; failures log platform/model/duration with a traceback. Prompt
+text, response bodies, contexts, credentials, and request headers are never
+logged. Curators add query-length, evidence-count, judgement, target-match, and
+ontology-cache framework progress statistics.
 
 If a call-level `model` starts with `claude-` and the default platform is not
 already `claude_vertex`, `LLM` lazily routes that call to a Claude Vertex

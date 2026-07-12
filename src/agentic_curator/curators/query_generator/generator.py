@@ -48,7 +48,11 @@ class QueryGenerator:
         )
         result = parse_json_response(response)
         validated = self._validated_response(result, max_queries=max_queries)
-        LOGGER.info("Generated %d Europe PMC queries.", len(validated["queries"]))
+        LOGGER.info(
+            "Generated Europe PMC query stats queries=%d query_characters=%s.",
+            len(validated["queries"]),
+            [len(query) for query in validated["queries"]],
+        )
         return validated
 
     def _llm(self) -> Any:
@@ -159,4 +163,3 @@ class QueryGenerator:
             },
             "required": ["details", "strategy_summary"],
         }
-

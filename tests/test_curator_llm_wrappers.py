@@ -128,6 +128,26 @@ def test_llm_generate_response_with_metadata_delegates_to_platform() -> None:
     ]
 
 
+def test_llm_logs_safe_call_metrics_without_prompt_or_response(caplog) -> None:
+    llm = LLM(client=FakeClient())
+
+    with caplog.at_level("DEBUG", logger="agentic_curator.wrappers.llm"):
+        llm.generate_response_with_metadata(
+            "secret prompt body",
+            model="gemini-test",
+            tools=[{"type": "google_search"}],
+        )
+
+    output = caplog.text
+    assert "LLM call started platform=gemini_enterprise model=gemini-test" in output
+    assert "prompt_characters=18" in output
+    assert "LLM call completed platform=gemini_enterprise model=gemini-test" in output
+    assert "response_characters=2" in output
+    assert "elapsed_seconds=" in output
+    assert "secret prompt body" not in output
+    assert '"response": "ok"' not in output
+
+
 def test_model_adapter_parses_text_attribute() -> None:
     response = SimpleNamespace(text="generated text")
 
