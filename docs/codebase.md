@@ -338,10 +338,10 @@ from the configured `json_path`, normalizes the query with
 `harmonize_key(...)`, and searches `terms["label"]`, `terms["id"]`,
 `terms["accession"]`, and `terms["iri"]` in that order. It returns a list of all
 matched term dicts with `ontology_id` added, flattening list-valued index
-entries and deduping hits while preserving search order. Existing cached JSON
-with raw keys remains usable because lookup normalizes stored index keys when a
-direct normalized-key lookup misses. It returns `[]` when no index contains the
-normalized label.
+entries and deduping hits while preserving search order. Ontology JSON index
+keys are expected to be pre-normalized by `Owl2json`; lookup uses direct
+dictionary membership and returns `[]` when no index contains the normalized
+label.
 `OntoStore.download(name)` downloads only URL-backed frameworks with
 `requests.get(url, timeout=30)`, calls `raise_for_status()`, and returns the
 configured `owl_path`. Path-backed frameworks validate and return the configured

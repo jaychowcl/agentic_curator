@@ -361,10 +361,6 @@ class OntoStore:
         if lookup_label in index:
             return self._lookup_value_hits(index[lookup_label])
 
-        for key, value in index.items():
-            if self.harmonize_key(key) == lookup_label:
-                return self._lookup_value_hits(value)
-
         return []
 
     def _lookup_value_hits(self, value: Any) -> list[Any]:

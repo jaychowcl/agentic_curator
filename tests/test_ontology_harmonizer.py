@@ -1082,7 +1082,7 @@ def test_lookup_returns_all_hits_across_indexes_with_deduplication(
     ]
 
 
-def test_lookup_normalizes_existing_raw_json_index_keys(tmp_path: Path) -> None:
+def test_lookup_requires_normalized_json_index_keys(tmp_path: Path) -> None:
     term = {
         "iri": "http://purl.obolibrary.org/obo/UBERON_0002048",
         "accession": "UBERON:0002048",
@@ -1100,9 +1100,7 @@ def test_lookup_normalizes_existing_raw_json_index_keys(tmp_path: Path) -> None:
         storage_dir=tmp_path,
     )
 
-    assert store.lookup(" oral   buccal mucosa ", "uberon") == [
-        {**term, "ontology_id": "uberon"}
-    ]
+    assert store.lookup(" oral   buccal mucosa ", "uberon") == []
 
 
 def test_lookup_label_matches_available_store_framework(
