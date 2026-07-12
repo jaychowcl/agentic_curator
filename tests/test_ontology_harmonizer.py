@@ -2262,6 +2262,7 @@ def test_harmonize_returns_targets_wrapper() -> None:
 
     result = OntologyHarmonizer(llm=FakeLLM()).harmonize(
         publication_context="Full publication context",
+        metadata_context="Study: Oral disease | tissue=buccal mucosa",
         harmonization_targets=harmonization_targets,
         ontostore=ontostore,
         target_paths=["/sample"],
@@ -2269,6 +2270,7 @@ def test_harmonize_returns_targets_wrapper() -> None:
 
     assert result == {
         "publication_context": "Full publication context",
+        "metadata_context": "Study: Oral disease | tissue=buccal mucosa",
         "harmonization_targets": harmonization_targets,
         "strategy": "websearch",
         "target_paths": ["/sample"],
@@ -4022,12 +4024,18 @@ def test_apply_targets_resolves_escaped_paths_and_skips_missing_paths() -> None:
 
 def test_harmonize_miniml_json_extracts_default_targets() -> None:
     miniml_json = miniml_metadata()
+    miniml_json["series"] = {"title": "Oral disease transcriptomics"}
     result = OntologyHarmonizer(llm=FakeLLM()).harmonize_miniml_json(
         publication_context="Full publication context",
         miniml_json=miniml_json,
     )
 
     assert result["publication_context"] == "Full publication context"
+    assert result["metadata_context"] == (
+        "Study: Oral disease transcriptomics | source=Oral buccal mucosa; "
+        "molecule=total RNA; organism=Homo sapiens; disease state=Normal; "
+        "tissue=Oral buccal mucosa; disease state=Disease"
+    )
     assert result["miniml_json"] is miniml_json
     assert result["target_paths"] == [
         {"path": "/sample/0/channel/0/source", "mode": "field_value"},
@@ -4083,6 +4091,36 @@ def test_harmonize_miniml_json_extracts_default_targets() -> None:
         {"tag": "hz_disease_state", "value": "normal"},
         {"tag": "hz_tissue", "value": "oral_buccal_mucosa"},
     ]
+
+
+def test_metadata_context_is_deterministic_deduplicated_and_limited() -> None:
+    targets = [
+        {"pre_hz_field": "tissue", "pre_hz_label": "lung"},
+        {"pre_hz_field": "tissue", "pre_hz_label": "lung"},
+        {"pre_hz_field": "description", "pre_hz_label": "x" * 600},
+    ]
+    miniml_json = [{"series": {"title": "Unicode study β"}}]
+
+    context = OntologyHarmonizer()._metadata_context_from_miniml(
+        miniml_json,
+        targets,
+    )
+
+    assert context.startswith("Study: Unicode study β | tissue=lung; description=")
+    assert context.endswith("…")
+    assert len(context) == 500
+    assert context.count("tissue=lung") == 1
+
+
+def test_metadata_context_omits_empty_or_malformed_values() -> None:
+    assert OntologyHarmonizer()._metadata_context_from_miniml(
+        {"series": {"title": ""}},
+        [
+            {"pre_hz_field": None, "pre_hz_label": "lung"},
+            {"pre_hz_field": "tissue", "pre_hz_label": None},
+            "not-a-target",
+        ],
+    ) is None
 
 
 def test_harmonize_miniml_json_accepts_explicit_target_paths(tmp_path: Path) -> None:

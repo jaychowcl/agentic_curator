@@ -41,6 +41,7 @@ class RecordingHarmonizer:
     def harmonize(
         self,
         publication_context=None,
+        metadata_context=None,
         harmonization_targets=None,
         target=None,
         strategy="websearch",
@@ -55,6 +56,7 @@ class RecordingHarmonizer:
             {
                 "method": "harmonize",
                 "publication_context": publication_context,
+                "metadata_context": metadata_context,
                 "harmonization_targets": harmonization_targets,
                 "target": target,
                 "strategy": strategy,
@@ -118,6 +120,8 @@ def test_cli_harmonize_passes_all_options_to_harmonizer(
                 "harmonize",
                 "--publication-context",
                 "Publication text",
+                "--metadata-context",
+                "Study: compact metadata",
                 "--target",
                 '{"id": "target-1", "pre_hz_label": "lung"}',
                 "--target-paths",
@@ -153,6 +157,7 @@ def test_cli_harmonize_passes_all_options_to_harmonizer(
         {
             "method": "harmonize",
             "publication_context": "Publication text",
+            "metadata_context": "Study: compact metadata",
             "harmonization_targets": None,
             "target": {"id": "target-1", "pre_hz_label": "lung"},
             "strategy": "rag",
