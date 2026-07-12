@@ -138,7 +138,7 @@ intentionally absent after the curator subpackage refactor.
 `agentic_curator.curators.ontology_harmonizer` exports ontology-specific helper
 classes including `OntoStore`, `Owl2json`, `OlsClient`,
 `NullSearchClient`, `GeminiGroundedSearchClient`, `WebsearchStrategyHandler`,
-and `RagStrategyHandler`.
+`RagStrategyHandler`, and `RequestPolicy`.
 
 `ThematicReviewer(llm=None)` accepts an optional LLM-like object. If no object is
 provided, the reviewer lazily creates `agentic_curator.wrappers.LLM()` on the
@@ -167,8 +167,8 @@ Public methods:
 - `apply_targets(miniml_json, harmonization_targets) -> dict | list | None`
 - `assign_field(target, *, publication_context, ontostore) -> dict`
 - `assign_onto_framework(target, *, publication_context, ontostore) -> dict`
-- `harmonize_miniml_json(publication_context=None, miniml_json=None, ontostore=None, target_paths=None, strategy="websearch", lookup_llm_judge=False, lookup_llm_threshold=2, search_llm_judge=True, llm=True) -> dict`
-- `harmonize(publication_context=None, harmonization_targets=None, target=None, strategy="websearch", ontostore=None, target_paths=None, lookup_llm_judge=False, lookup_llm_threshold=2, search_llm_judge=True, llm=True) -> dict`
+- `harmonize_miniml_json(publication_context=None, miniml_json=None, ontostore=None, target_paths=None, strategy="websearch", lookup_llm_judge=True, lookup_llm_threshold=2, search_llm_judge=True, llm=True) -> dict`
+- `harmonize(publication_context=None, harmonization_targets=None, target=None, strategy="websearch", ontostore=None, target_paths=None, lookup_llm_judge=True, lookup_llm_threshold=2, search_llm_judge=True, llm=True) -> dict`
 - `harmonize_field(target, *, publication_context, ontostore) -> Any`
 - `harmonize_label(target, *, publication_context, ontostore, strategy, search_llm_judge=True) -> dict`
 - `judge_lookup(target, *, publication_context, hits) -> dict`
@@ -246,22 +246,21 @@ the first ontology lookup matched or missed. Field harmonization uses
 `OntoStore.lookup_fields(...)` and falls back to LLM-backed
 `assign_field(...)` only when `llm=True`. When the first lookup missed,
 `harmonize(...)` calls `harmonize_label(...)` only for `websearch` and `rag`.
-After a matched strategy handler returns, the harmonizer performs a post-strategy
-`OntoStore.lookup(...)` for the current `hz_label`, preferring the target's
-stored `ontology_id` when that framework exists in `OntoStore`. If that lookup
-finds hits, it refreshes `ontology_id`, `ontology_lookup`,
-`ontology_lookup_hits`, and `ontology_match=True`; if it misses, the existing
-strategy result remains unchanged. This second lookup uses normal
-`OntoStore.lookup(...)` behavior, including download/parse for URL-backed
-configured frameworks. The websearch handler uses OLS4 restricted to the
+After a matched strategy handler returns, identifier-only local enrichment
+looks up the judged term's `id`, `accession`, or `iri` in its selected
+framework. Local metadata can enrich that term but cannot replace its identity
+or select a same-label alternative. The outcome is traced in
+`ontology_local_enrichment`; URL-backed frameworks may still be downloaded and
+indexed for enrichment. The websearch handler uses OLS4 restricted to the
 assigned `ontology_id`. With the default `search_llm_judge=True`, an LLM
 selects one supplied candidate or returns `false`. A restricted-stage rejection
 continues to unrestricted OLS plus Gemini grounded web evidence and a second
 judgement over the unrestricted candidates and compact web evidence. Rejected
 restricted candidates are not resent. Unknown decisions and judge failures fail
 closed; ordered decisions are stored in `search_llm_judgements`, with failures
-in `search_llm_judge_error`. Web evidence supports selection but cannot
-introduce an ID absent from OLS. `search_llm_judge=False` preserves first-hit
+in `search_llm_judge_error`. Grounded web evidence can introduce a candidate ID
+only after that extracted ID resolves successfully through OLS.
+`search_llm_judge=False` preserves first-hit
 behavior, and `llm=False` disables the judge and grounded search.
 `GeminiGroundedSearchClient` calls
 `generate_response_with_metadata(..., tools=[{"type": "google_search"}])`,
@@ -328,6 +327,20 @@ strategy routing. `lookup_fields(field)` normalizes the incoming field and
 matches it against field keys plus each metadata dict's `label` and `aliases`.
 It returns matched metadata with a `field` key for the canonical field ID, or
 `False` when no configured field matches.
+
+Exact normalized term lookup runs before SQLite FTS5 over labels, synonyms,
+complete descriptions, IDs, accessions, and IRIs. Ambiguous exact hits are
+judged by default. FTS results are always judged; when LLM judging is disabled,
+the candidates remain in the trace and no FTS match is accepted.
+
+The shared SQLite database also owns a persistent controlled field registry and
+external-response cache. `add_field`, `update_field`, `remove_field`,
+`get_field`, `list_fields`, and `set_field_review_status` provide field CRUD.
+LLM-created fields are active immediately with `review_status="unreviewed"`.
+Successful OLS and grounded-search responses are cached for seven days by
+default. `RequestPolicy` controls timeout, retry attempts, exponential jittered
+backoff, cache TTL, and force refresh; transient network, 429, and 5xx failures
+are retried and clients expose request traces.
 
 Framework config uses a nested dictionary:
 
@@ -1855,13 +1868,15 @@ Ontology inputs include:
 - `--miniml-json` or `--miniml-json-file`
 - `--target-paths` or `--target-paths-file`
 - `--strategy websearch|rag`
-- `--lookup-llm-judge`
+- `--lookup-llm-judge` or `--no-lookup-llm-judge` (enabled by default)
 - `--lookup-llm-threshold`
 - `--search-llm-judge` or `--no-search-llm-judge` (enabled by default)
 - `--llm` or `--no-llm`
 - `--ontology-frameworks` or `--ontology-frameworks-file`
 - `--fields` or `--fields-file`
 - `--storage-dir`
+- `--request-timeout`, `--request-max-attempts`, and `--request-backoff`
+- `--cache-ttl-seconds` and `--force-refresh`
 
 By default the CLI writes pretty JSON to stdout. When `--out` is provided, it
 writes pretty JSON to that file and keeps stdout quiet.

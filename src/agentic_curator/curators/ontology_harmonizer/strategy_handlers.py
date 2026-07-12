@@ -15,6 +15,7 @@ from typing import Any
 import requests
 
 from agentic_curator.curators.ontology_harmonizer.ontology_store import OntoStore
+from agentic_curator.curators.ontology_harmonizer.request_policy import RequestPolicy, request_with_retry
 from agentic_curator.wrappers import LLM
 
 
@@ -49,9 +50,12 @@ class OlsClient:
 
     BASE_URL = "https://www.ebi.ac.uk/ols4/api"
 
-    def __init__(self, *, base_url: str = BASE_URL, timeout: int = 30) -> None:
+    def __init__(self, *, base_url: str = BASE_URL, timeout: int | None = None, request_policy: RequestPolicy | None = None, cache_store: OntoStore | None = None) -> None:
         self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
+        self.request_policy = request_policy or RequestPolicy(timeout_seconds=timeout or 30)
+        self.timeout = self.request_policy.timeout_seconds
+        self.cache_store = cache_store
+        self.last_request_trace: dict[str, Any] | None = None
 
     def search(
         self,
@@ -63,25 +67,45 @@ class OlsClient:
         params: dict[str, Any] = {"q": label, "rows": rows}
         if ontology_id:
             params["ontology"] = ontology_id
-
-        response = requests.get(
-            f"{self.base_url}/search",
-            params=params,
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
-        payload = response.json()
+        key = {"base_url": self.base_url, **params}
+        cached = self._cached("search", key)
+        if cached is not None:
+            return cached
+        def operation():
+            response = requests.get(f"{self.base_url}/search", params=params, timeout=self.timeout)
+            response.raise_for_status()
+            return response.json()
+        payload, self.last_request_trace = request_with_retry(operation, self.request_policy)
         docs = payload.get("response", {}).get("docs", [])
-        return docs if isinstance(docs, list) else []
+        result = docs if isinstance(docs, list) else []
+        self._store("search", key, result)
+        return result
 
     def ontology(self, ontology_id: str) -> dict[str, Any]:
-        response = requests.get(
-            f"{self.base_url}/ontologies/{ontology_id}",
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        return payload if isinstance(payload, dict) else {}
+        key = {"base_url": self.base_url, "ontology_id": ontology_id}
+        cached = self._cached("ontology", key)
+        if cached is not None:
+            return cached
+        def operation():
+            response = requests.get(f"{self.base_url}/ontologies/{ontology_id}", timeout=self.timeout)
+            response.raise_for_status()
+            return response.json()
+        payload, self.last_request_trace = request_with_retry(operation, self.request_policy)
+        result = payload if isinstance(payload, dict) else {}
+        self._store("ontology", key, result)
+        return result
+
+    def _cached(self, operation: str, key: dict[str, Any]) -> Any:
+        if self.cache_store is None:
+            return None
+        result = self.cache_store.get_cached_response("ols", operation, key, ttl_seconds=self.request_policy.cache_ttl_seconds, force_refresh=self.request_policy.force_refresh)
+        if result is not None:
+            self.last_request_trace = {"status": "cache_hit", "attempts": 0, "errors": [], "elapsed_seconds": 0}
+        return result
+
+    def _store(self, operation: str, key: dict[str, Any], result: Any) -> None:
+        if self.cache_store is not None:
+            self.cache_store.set_cached_response("ols", operation, key, result)
 
 
 class NullSearchClient:
@@ -103,13 +127,18 @@ class GeminiGroundedSearchClient:
         llm: Any | None = None,
         model: str | None = None,
         request_budget: int | None = 100,
+        request_policy: RequestPolicy | None = None,
+        cache_store: OntoStore | None = None,
     ) -> None:
         self.llm = LLM() if llm is None else llm
         self.model = model
         self.request_budget = request_budget
+        self.request_policy = request_policy or RequestPolicy()
+        self.cache_store = cache_store
         self.requests_made = 0
         self.last_response: dict[str, Any] | None = None
         self.last_error: str | None = None
+        self.last_request_trace: dict[str, Any] | None = None
 
     def search(self, query: str, *, max_results: int = 25) -> list[dict[str, Any]]:
         if self.request_budget is not None and self.requests_made >= self.request_budget:
@@ -119,11 +148,17 @@ class GeminiGroundedSearchClient:
         self.requests_made += 1
         self.last_error = None
         prompt = self._prompt(query)
+        key = {"query": query, "model": self.model, "max_results": max_results}
+        if self.cache_store is not None:
+            cached = self.cache_store.get_cached_response("gemini_google_search", "search", key, ttl_seconds=self.request_policy.cache_ttl_seconds, force_refresh=self.request_policy.force_refresh)
+            if cached is not None:
+                self.last_response = cached
+                self.last_request_trace = {"status": "cache_hit", "attempts": 0, "errors": [], "elapsed_seconds": 0}
+                return self._hits(cached)[:max_results]
         try:
-            response = self.llm.generate_response_with_metadata(
-                prompt,
-                model=self.model,
-                tools=[self.GOOGLE_SEARCH_TOOL],
+            response, self.last_request_trace = request_with_retry(
+                lambda: self.llm.generate_response_with_metadata(prompt, model=self.model, tools=[self.GOOGLE_SEARCH_TOOL]),
+                self.request_policy,
             )
         except Exception as exc:
             self.last_response = None
@@ -131,6 +166,9 @@ class GeminiGroundedSearchClient:
             return []
 
         self.last_response = response
+        if self.cache_store is not None:
+            cacheable = {key: response.get(key) for key in ("text", "citations", "tool_calls", "provider")}
+            self.cache_store.set_cached_response("gemini_google_search", "search", key, cacheable)
         return self._hits(response)[:max_results]
 
     def _prompt(self, query: str) -> str:
@@ -266,15 +304,17 @@ class WebsearchStrategyHandler:
             self._web_query(target),
             max_results=self.max_results,
         )[: self.max_results]
+        web_resolved_hits = self._resolve_web_candidates(web_hits)
         web_search_error = getattr(self.search_client, "last_error", None)
-        if unrestricted_hits:
-            all_hits = [*restricted_hits, *unrestricted_hits]
+        expanded_hits = self._unique_hits([*unrestricted_hits, *web_resolved_hits])
+        if expanded_hits:
+            all_hits = [*restricted_hits, *expanded_hits]
             if self.search_judge is None:
                 return self._accept_hit(
                     target,
                     ontostore=ontostore,
-                    hit=unrestricted_hits[0],
-                    hits=unrestricted_hits,
+                    hit=expanded_hits[0],
+                    hits=expanded_hits,
                     web_hits=web_hits,
                     reason="Unrestricted OLS search returned a usable ontology hit.",
                     web_search_error=web_search_error,
@@ -285,7 +325,7 @@ class WebsearchStrategyHandler:
                     publication_context=publication_context,
                     stage="expanded",
                     restricted_hits=[],
-                    unrestricted_hits=unrestricted_hits[
+                    unrestricted_hits=expanded_hits[
                         : self.judge_candidate_limit
                     ],
                     web_hits=web_hits,
@@ -303,7 +343,7 @@ class WebsearchStrategyHandler:
             judgements.append({"stage": "expanded", **judgement})
             target["search_llm_judgements"] = judgements
             if str(judgement["decision"]).lower() != "false":
-                hit = self._selected_hit(unrestricted_hits, judgement["decision"])
+                hit = self._selected_hit(expanded_hits, judgement["decision"])
                 return self._accept_hit(
                     target,
                     ontostore=ontostore,
@@ -332,6 +372,32 @@ class WebsearchStrategyHandler:
             web_search_error=web_search_error,
             search_llm_judgements=judgements,
         )
+
+    def _resolve_web_candidates(self, web_hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        identifiers: set[str] = set()
+        pattern = re.compile(r"(?:https?://purl\.obolibrary\.org/obo/[A-Za-z][A-Za-z0-9]+_[0-9]+|\b[A-Za-z][A-Za-z0-9_]+[:_][0-9]{2,}\b)")
+        for hit in web_hits:
+            evidence = " ".join(str(hit.get(key, "")) for key in ("title", "snippet", "link"))
+            identifiers.update(pattern.findall(evidence))
+
+        resolved: list[dict[str, Any]] = []
+        for identifier in sorted(identifiers):
+            docs = self.ols_client.search(identifier, rows=10)
+            for hit in self._hits_from_docs(docs):
+                values = {str(hit.get(key, "")).lower() for key in ("id", "accession", "iri")}
+                normalized = identifier.lower()
+                iri_tail = normalized.rsplit("/", 1)[-1].replace("_", ":", 1)
+                if normalized in values or iri_tail in values:
+                    resolved.append(hit)
+        return self._unique_hits(resolved)
+
+    @staticmethod
+    def _unique_hits(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        unique: dict[str, dict[str, Any]] = {}
+        for hit in hits:
+            key = str(hit.get("id") or hit.get("iri") or hit.get("accession"))
+            unique.setdefault(key, hit)
+        return list(unique.values())
 
     def _accept_hit(
         self,

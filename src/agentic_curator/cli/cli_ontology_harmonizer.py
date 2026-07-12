@@ -21,7 +21,7 @@ from agentic_curator.cli.common import (
     json_input,
     write_json_output,
 )
-from agentic_curator.curators.ontology_harmonizer import OntoStore
+from agentic_curator.curators.ontology_harmonizer import OntoStore, RequestPolicy
 
 
 LOGGER = logging.getLogger(__name__)
@@ -44,7 +44,8 @@ def _add_harmonize_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--strategy", choices=["websearch", "rag"], default="websearch")
     parser.add_argument("--target-paths", default=None)
     parser.add_argument("--target-paths-file", default=None)
-    parser.add_argument("--lookup-llm-judge", action="store_true", default=False)
+    parser.add_argument("--lookup-llm-judge", dest="lookup_llm_judge", action="store_true", default=True)
+    parser.add_argument("--no-lookup-llm-judge", dest="lookup_llm_judge", action="store_false")
     parser.add_argument("--lookup-llm-threshold", type=int, default=2)
     parser.add_argument(
         "--search-llm-judge",
@@ -59,6 +60,11 @@ def _add_harmonize_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--llm", dest="llm", action="store_true", default=True)
     parser.add_argument("--no-llm", dest="llm", action="store_false")
+    parser.add_argument("--request-timeout", type=float, default=30)
+    parser.add_argument("--request-max-attempts", type=int, default=3)
+    parser.add_argument("--request-backoff", type=float, default=1)
+    parser.add_argument("--cache-ttl-seconds", type=int, default=7 * 24 * 60 * 60)
+    parser.add_argument("--force-refresh", action="store_true")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -114,11 +120,20 @@ def _store_from_args(
         file=args.fields_file,
         name="fields",
     )
-    return OntoStore(
+    policy = RequestPolicy(
+        timeout_seconds=args.request_timeout,
+        max_attempts=args.request_max_attempts,
+        backoff_base_seconds=args.request_backoff,
+        cache_ttl_seconds=args.cache_ttl_seconds,
+        force_refresh=args.force_refresh,
+    )
+    store = OntoStore(
         ontology_frameworks=ontology_frameworks,
         fields=fields,
         storage_dir=args.storage_dir,
     )
+    store.request_policy = policy
+    return store
 
 
 def _target_paths(

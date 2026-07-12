@@ -1210,7 +1210,7 @@ def test_lookup_returns_all_hits_across_indexes_with_deduplication(
     ]
 
 
-def test_lookup_requires_normalized_json_index_keys(tmp_path: Path) -> None:
+def test_lookup_fts_recovers_non_normalized_json_label_keys(tmp_path: Path) -> None:
     term = {
         "iri": "http://purl.obolibrary.org/obo/UBERON_0002048",
         "accession": "UBERON:0002048",
@@ -1228,7 +1228,9 @@ def test_lookup_requires_normalized_json_index_keys(tmp_path: Path) -> None:
         storage_dir=tmp_path,
     )
 
-    assert store.lookup(" oral   buccal mucosa ", "uberon") == []
+    assert store.lookup(" oral   buccal mucosa ", "uberon") == [
+        {**term, "ontology_id": "uberon"}
+    ]
 
 
 def test_lookup_label_matches_available_store_framework(
@@ -1320,7 +1322,7 @@ def test_lookup_label_uses_existing_hz_label_after_harmonizing_it(
     assert target["hz_label"] == "lung"
 
 
-def test_lookup_label_selects_first_hit_without_llm_judge_by_default(
+def test_lookup_label_judges_ambiguous_exact_hits_by_default(
     tmp_path: Path,
 ) -> None:
     first_hit = {
@@ -1346,7 +1348,15 @@ def test_lookup_label_selects_first_hit_without_llm_judge_by_default(
         },
         storage_dir=tmp_path,
     )
-    fake_llm = FakeLLM()
+    fake_llm = FakeLLM(
+        response=json.dumps(
+            {
+                "decision": "UBERON:2",
+                "confidence": "high",
+                "reason": "Second is specific.",
+            }
+        )
+    )
     target = {"id": "target-0", "pre_hz_label": "lung"}
 
     result = OntologyHarmonizer(llm=fake_llm).lookup_label(
@@ -1360,11 +1370,11 @@ def test_lookup_label_selects_first_hit_without_llm_judge_by_default(
         {**first_hit, "ontology_id": "uberon"},
         {**second_hit, "ontology_id": "uberon"},
     ]
-    assert result == expected_hits[0]
-    assert target["ontology_lookup"] == expected_hits[0]
+    assert result == expected_hits[1]
+    assert target["ontology_lookup"] == expected_hits[1]
     assert target["ontology_lookup_hits"] == expected_hits
-    assert "ontology_lookup_judgement" not in target
-    assert fake_llm.calls == []
+    assert target["ontology_lookup_judgement"]["decision"] == "UBERON:2"
+    assert len(fake_llm.calls) == 1
 
 
 def test_lookup_label_llm_judge_is_not_called_below_threshold(
@@ -2039,6 +2049,8 @@ def test_assign_field_generates_json_response_and_adds_new_field(
         "source": "llm",
         "confidence": "medium",
         "reason": "The source field describes sample development stage.",
+        "aliases": [],
+        "review_status": "unreviewed",
     }
     assert len(fake_llm.calls) == 1
     assert fake_llm.calls[0]["config"] == {
@@ -2783,7 +2795,11 @@ def test_harmonize_looks_up_strategy_harmonized_label_with_stored_ontology_id(
         "title": "lung",
         "description": "Respiration organ.",
     }
-    json_path = ontology_json_file(tmp_path, "uberon", {"label": {"lung": [term]}})
+    json_path = ontology_json_file(
+        tmp_path,
+        "uberon",
+        {"label": {"lung": [term]}, "accession": {"uberon:0002048": [term]}},
+    )
     store = OntoStore(
         ontology_frameworks={
             "uberon": {"path": tmp_path / "missing.owl", "json_path": json_path},
@@ -2835,6 +2851,7 @@ def test_harmonize_looks_up_strategy_harmonized_label_with_stored_ontology_id(
         ):
             target["hz_label"] = "lung"
             target["ontology_id"] = "uberon"
+            target["ontology_lookup"] = {**term, "ontology_id": "uberon"}
             target["ontology_strategy_result"] = {
                 "strategy": strategy,
                 "status": "matched",
@@ -2854,7 +2871,7 @@ def test_harmonize_looks_up_strategy_harmonized_label_with_stored_ontology_id(
     assert target["ontology_match"] is True
     assert target["ontology_id"] == "uberon"
     assert target["ontology_lookup"] == {**term, "ontology_id": "uberon"}
-    assert target["ontology_lookup_hits"] == [{**term, "ontology_id": "uberon"}]
+    assert target["ontology_local_enrichment"]["status"] == "matched"
     assert target["ontology_strategy_result"] == {
         "strategy": "websearch",
         "status": "matched",
@@ -4068,9 +4085,11 @@ def test_harmonize_miniml_json_extracts_default_targets() -> None:
     ]
 
 
-def test_harmonize_miniml_json_accepts_explicit_target_paths() -> None:
+def test_harmonize_miniml_json_accepts_explicit_target_paths(tmp_path: Path) -> None:
     miniml_json = {"sample": {"tissue": "lung"}}
-    result = OntologyHarmonizer(llm=FakeLLM()).harmonize_miniml_json(
+    result = OntologyHarmonizer(
+        llm=FakeLLM(), ontostore=OntoStore(storage_dir=tmp_path)
+    ).harmonize_miniml_json(
         miniml_json=miniml_json,
         target_paths=["/sample"],
     )
@@ -4214,7 +4233,7 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
             "strategy": "websearch",
             "ontostore": store,
             "target_paths": ["/sample"],
-            "lookup_llm_judge": False,
+            "lookup_llm_judge": True,
             "lookup_llm_threshold": 2,
             "search_llm_judge": True,
             "llm": True,

@@ -21,8 +21,10 @@ from agentic_curator.curators.ontology_harmonizer.harmonization_target_extractor
     StartPathSpec,
 )
 from agentic_curator.curators.ontology_harmonizer.ontology_store import OntoStore
+from agentic_curator.curators.ontology_harmonizer.request_policy import RequestPolicy, request_with_retry
 from agentic_curator.curators.ontology_harmonizer.strategy_handlers import (
     GeminiGroundedSearchClient,
+    OlsClient,
     RagStrategyHandler,
     WebsearchStrategyHandler,
 )
@@ -51,8 +53,10 @@ class OntologyHarmonizer:
         self,
         ontostore: OntoStore | None = None,
         llm: Any | None = None,
+        request_policy: RequestPolicy | None = None,
     ) -> None:
-        self.ontostore = OntoStore() if ontostore is None else ontostore
+        self.request_policy = request_policy or getattr(ontostore, "request_policy", None) or RequestPolicy()
+        self.ontostore = OntoStore(request_policy=self.request_policy) if ontostore is None else ontostore
         self.llm = llm
         self.target_extractor = HarmonizationTargetExtractor()
 
@@ -64,7 +68,7 @@ class OntologyHarmonizer:
         strategy: str = "websearch",
         ontostore: OntoStore | None = None,
         target_paths: list[StartPathSpec] | None = None,
-        lookup_llm_judge: bool = False,
+        lookup_llm_judge: bool = True,
         lookup_llm_threshold: int = 2,
         search_llm_judge: bool = True,
         llm: bool = True,
@@ -88,7 +92,7 @@ class OntologyHarmonizer:
                 publication_context=publication_context,
                 ontostore=effective_ontostore,
                 strategy=normalized_strategy,
-                lookup_llm_judge=lookup_llm_judge,
+                lookup_llm_judge=lookup_llm_judge and llm,
                 lookup_llm_threshold=lookup_llm_threshold,
             )
             if not lookup:
@@ -150,7 +154,7 @@ class OntologyHarmonizer:
         ontostore: OntoStore | None = None,
         target_paths: list[StartPathSpec] | None = None,
         strategy: str = "websearch",
-        lookup_llm_judge: bool = False,
+        lookup_llm_judge: bool = True,
         lookup_llm_threshold: int = 2,
         search_llm_judge: bool = True,
         llm: bool = True,
@@ -502,7 +506,7 @@ class OntologyHarmonizer:
         publication_context: str | None,
         ontostore: OntoStore,
         strategy: str,
-        lookup_llm_judge: bool = False,
+        lookup_llm_judge: bool = True,
         lookup_llm_threshold: int = 2,
     ) -> Any:
         del strategy
@@ -513,7 +517,9 @@ class OntologyHarmonizer:
             LOGGER.info("Skipping ontology lookup because target has no hz_label.")
             return False
 
-        hits: list[dict[str, Any]] = []
+        exact_hits: list[dict[str, Any]] = []
+        fts_hits: list[dict[str, Any]] = []
+        ranking: list[dict[str, Any]] = []
         candidate_ontology_ids = self._candidate_ontology_ids(target, ontostore)
         LOGGER.debug(
             "Looking up label %r across ontology IDs: %s.",
@@ -521,17 +527,35 @@ class OntologyHarmonizer:
             candidate_ontology_ids,
         )
         for ontology_id in candidate_ontology_ids:
-            hits.extend(ontostore.lookup(str(label), ontology_id))
+            details = ontostore.lookup_with_metadata(str(label), ontology_id)
+            if details["match_type"] == "exact":
+                exact_hits.extend(details["hits"])
+            elif details["match_type"] == "fts":
+                fts_hits.extend(details["hits"])
+                ranking.extend(details["ranking"])
+
+        match_type = "exact" if exact_hits else "fts" if fts_hits else "none"
+        hits = exact_hits or fts_hits
 
         if not hits:
+            return False
+
+        target["ontology_lookup_match_type"] = match_type
+        if ranking:
+            target["ontology_lookup_ranking"] = ranking
+        if match_type == "fts" and not lookup_llm_judge:
+            target["ontology_lookup_candidates"] = hits
             return False
 
         lookup = self._select_lookup_hit(
             target=target,
             publication_context=publication_context,
             hits=hits,
-            lookup_llm_judge=lookup_llm_judge,
-            lookup_llm_threshold=lookup_llm_threshold,
+            lookup_llm_judge=(
+                lookup_llm_judge
+                and (match_type == "fts" or len(hits) >= lookup_llm_threshold)
+            ),
+            lookup_llm_threshold=1 if match_type == "fts" else lookup_llm_threshold,
         )
         target["ontology_id"] = lookup["ontology_id"]
         target["ontology_lookup"] = lookup
@@ -585,7 +609,7 @@ class OntologyHarmonizer:
             publication_context=publication_context,
             hits=hits,
         )
-        response = self._llm().generate_response(
+        response = self._generate_response(
             prompt,
             config={
                 "response_mime_type": "application/json",
@@ -614,7 +638,7 @@ class OntologyHarmonizer:
             unrestricted_hits=unrestricted_hits,
             web_hits=web_hits,
         )
-        response = self._llm().generate_response(
+        response = self._generate_response(
             prompt,
             config={
                 "response_mime_type": "application/json",
@@ -640,7 +664,7 @@ class OntologyHarmonizer:
             publication_context=publication_context,
             ontology_frameworks=framework_configs,
         )
-        response = self._llm().generate_response(
+        response = self._generate_response(
             prompt,
             config={
                 "response_mime_type": "application/json",
@@ -700,7 +724,7 @@ class OntologyHarmonizer:
             publication_context=publication_context,
             fields=ontostore.fields,
         )
-        response = self._llm().generate_response(
+        response = self._generate_response(
             prompt,
             config={
                 "response_mime_type": "application/json",
@@ -714,12 +738,13 @@ class OntologyHarmonizer:
         decision = ontostore.harmonize_key(assignment["decision"])
         target["hz_field"] = decision
         if assignment["new_field"]:
-            ontostore.fields[decision] = {
+            ontostore.add_field(decision, {
                 "label": decision,
                 "source": "llm",
                 "confidence": assignment["confidence"],
                 "reason": assignment["reason"],
-            }
+                "review_status": "unreviewed",
+            }, replace=True)
 
         return assignment
 
@@ -743,7 +768,8 @@ class OntologyHarmonizer:
         LOGGER.info("Running ontology harmonization strategy %s.", strategy)
         if handler_class is WebsearchStrategyHandler and search_llm_judge:
             handler = handler_class(
-                search_client=GeminiGroundedSearchClient(llm=self._llm()),
+                ols_client=OlsClient(request_policy=self.request_policy, cache_store=ontostore),
+                search_client=GeminiGroundedSearchClient(llm=self._llm(), request_policy=self.request_policy, cache_store=ontostore),
                 search_judge=self.judge_search_results,
             )
         else:
@@ -759,6 +785,14 @@ class OntologyHarmonizer:
             self.llm = LLM()
 
         return self.llm
+
+    def _generate_response(self, *args: Any, **kwargs: Any) -> Any:
+        response, trace = request_with_retry(
+            lambda: self._llm().generate_response(*args, **kwargs),
+            self.request_policy,
+        )
+        self.last_request_trace = trace
+        return response
 
     def _effective_ontostore(self, ontostore: OntoStore | None = None) -> OntoStore:
         effective_ontostore = self.ontostore if ontostore is None else ontostore
@@ -794,35 +828,48 @@ class OntologyHarmonizer:
         *,
         ontostore: OntoStore,
     ) -> Any:
-        label = target.get("hz_label")
-        if label is None:
-            LOGGER.info(
-                "Skipping post-strategy ontology lookup because target has no hz_label."
-            )
+        selected = target.get("ontology_lookup")
+        if not isinstance(selected, dict):
+            target["ontology_local_enrichment"] = {"status": "skipped", "reason": "no_selected_term"}
             return False
 
-        for ontology_id in self._post_strategy_ontology_ids(target, ontostore):
-            hits = ontostore.lookup(str(label), ontology_id)
-            if hits:
-                break
-        else:
-            hits = []
-
-        if not hits:
-            LOGGER.info("Post-strategy ontology lookup returned no hits.")
+        ontology_id = str(selected.get("ontology_id") or target.get("ontology_id") or "")
+        identifiers = self._term_identifiers(selected)
+        if not ontology_id or not identifiers:
+            target["ontology_local_enrichment"] = {"status": "skipped", "reason": "no_selected_identifier"}
             return False
 
-        lookup = hits[0]
-        target["ontology_id"] = lookup["ontology_id"]
-        target["ontology_lookup"] = lookup
-        target["ontology_lookup_hits"] = hits
-        target["ontology_match"] = True
-        LOGGER.info(
-            "Post-strategy ontology lookup matched target %s with %d hits.",
-            target.get("id"),
-            len(hits),
-        )
-        return lookup
+        for identifier in identifiers:
+            for candidate in ontostore.lookup_exact(identifier, ontology_id):
+                if identifiers.isdisjoint(self._term_identifiers(candidate)):
+                    continue
+                # Local data may enrich the selected term, but the judged identity wins.
+                enriched = {**candidate, **selected}
+                target["ontology_lookup"] = enriched
+                target["ontology_id"] = ontology_id
+                target["ontology_match"] = True
+                target["ontology_local_enrichment"] = {
+                    "status": "matched",
+                    "identifier": identifier,
+                    "ontology_id": ontology_id,
+                }
+                return enriched
+
+        target["ontology_local_enrichment"] = {
+            "status": "missed",
+            "ontology_id": ontology_id,
+            "identifiers": sorted(identifiers),
+        }
+        return False
+
+    @staticmethod
+    def _term_identifiers(term: dict[str, Any]) -> set[str]:
+        values = []
+        for key in ("id", "accession", "iri"):
+            value = term.get(key)
+            if isinstance(value, str) and value.strip():
+                values.append(value.strip().lower())
+        return set(values)
 
     def _post_strategy_ontology_ids(
         self,

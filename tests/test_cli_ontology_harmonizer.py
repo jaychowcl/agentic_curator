@@ -198,7 +198,7 @@ def test_cli_harmonize_miniml_json_passes_json_file_inputs(
             "ontostore": None,
             "target_paths": None,
             "strategy": "websearch",
-            "lookup_llm_judge": False,
+            "lookup_llm_judge": True,
             "lookup_llm_threshold": 2,
             "search_llm_judge": True,
             "llm": True,

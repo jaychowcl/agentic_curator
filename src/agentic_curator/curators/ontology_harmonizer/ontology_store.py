@@ -14,7 +14,9 @@ import hashlib
 import json
 import logging
 from pathlib import Path
+import re
 import sqlite3
+import time
 from typing import Any, Iterable, Iterator
 from urllib.parse import urlparse
 
@@ -24,6 +26,7 @@ from agentic_curator.curators.ontology_harmonizer.normalization import (
     harmonize_key as normalize_key,
 )
 from agentic_curator.curators.ontology_harmonizer.owl2json import Owl2json
+from agentic_curator.curators.ontology_harmonizer.request_policy import RequestPolicy, request_with_retry
 
 
 OntologyFrameworkConfig = dict[str, dict[str, Any]]
@@ -102,7 +105,7 @@ class OntoStore:
         },
     }
     DEFAULT_STORAGE_DIR = Path(__file__).resolve().parent / "ontology_frameworks"
-    SQLITE_SCHEMA_VERSION = "1"
+    SQLITE_SCHEMA_VERSION = "2"
     LOOKUP_INDEXES = ("label", "id", "accession", "iri")
 
     def __init__(
@@ -111,6 +114,7 @@ class OntoStore:
         fields: dict[str, dict[str, Any]] | None = None,
         storage_dir: str | Path | None = None,
         sqlite_path: str | Path | None = None,
+        request_policy: RequestPolicy | None = None,
     ) -> None:
         self.storage_dir = (
             self.DEFAULT_STORAGE_DIR if storage_dir is None else Path(storage_dir)
@@ -121,12 +125,16 @@ class OntoStore:
                 **(ontology_frameworks or {}),
             }
         )
-        self.fields = self._normalize_fields(fields or {})
         self.sqlite_path = (
             self.storage_dir / "sqlite" / "ontologies.sqlite3"
             if sqlite_path is None
             else Path(sqlite_path)
         )
+        self.request_policy = request_policy or RequestPolicy()
+        with self._sqlite_connection():
+            pass
+        self.fields = self._load_persisted_fields()
+        self.fields.update(self._normalize_fields(fields or {}))
 
     def configure_framework(
         self,
@@ -292,8 +300,66 @@ class OntoStore:
         return result
 
     def lookup(self, label: str, ontology_id: str) -> list[dict[str, Any]]:
+        return self.lookup_with_metadata(label, ontology_id)["hits"]
+
+    def lookup_with_metadata(
+        self,
+        label: str,
+        ontology_id: str,
+    ) -> dict[str, Any]:
         LOGGER.info("Looking up ontology label.")
         self.index_framework(ontology_id)
+        result = self.lookup_exact(label, ontology_id, ensure_index=False)
+        if result:
+            return {"match_type": "exact", "hits": result, "ranking": []}
+
+        self._ensure_fts_framework(ontology_id)
+        query = self._fts_query(label)
+        if not query:
+            return {"match_type": "none", "hits": [], "ranking": []}
+        with self._sqlite_connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT terms.payload, term_search.term_key, bm25(term_search)
+                FROM term_search
+                JOIN terms
+                  ON terms.ontology_id = term_search.ontology_id
+                 AND terms.term_key = term_search.term_key
+                WHERE term_search MATCH ? AND term_search.ontology_id = ?
+                ORDER BY bm25(term_search)
+                LIMIT 25
+                """,
+                (query, ontology_id),
+            ).fetchall()
+        fts_hits = self._dedupe_lookup_hits(
+            self._metadata_with_ontology_id(
+                [json.loads(row[0]) for row in rows], ontology_id
+            )
+        )
+        ranking = [
+            {"term_key": row[1], "score": float(row[2])}
+            for row in rows[: len(fts_hits)]
+        ]
+        LOGGER.info(
+            "Ontology label lookup returned %d hits for %s.",
+            len(fts_hits),
+            ontology_id,
+        )
+        return {
+            "match_type": "fts" if fts_hits else "none",
+            "hits": fts_hits,
+            "ranking": ranking,
+        }
+
+    def lookup_exact(
+        self,
+        label: str,
+        ontology_id: str,
+        *,
+        ensure_index: bool = True,
+    ) -> list[dict[str, Any]]:
+        if ensure_index:
+            self.index_framework(ontology_id)
         lookup_label = self.harmonize_key(label)
         with self._sqlite_connection() as connection:
             rows = connection.execute(
@@ -310,14 +376,8 @@ class OntoStore:
                 (ontology_id, lookup_label),
             ).fetchall()
         hits = [json.loads(row[0]) for row in rows]
-
         result = self._dedupe_lookup_hits(
             self._metadata_with_ontology_id(hits, ontology_id)
-        )
-        LOGGER.info(
-            "Ontology label lookup returned %d hits for %s.",
-            len(result),
-            ontology_id,
         )
         return result
 
@@ -344,6 +404,9 @@ class OntoStore:
             try:
                 connection.execute(
                     "DELETE FROM frameworks WHERE ontology_id = ?", (ontology_id,)
+                )
+                connection.execute(
+                    "DELETE FROM term_search WHERE ontology_id = ?", (ontology_id,)
                 )
                 connection.execute(
                     """
@@ -459,6 +522,36 @@ class OntoStore:
                     ON lookup_entries(
                         ontology_id, lookup_key, index_rank, source_order
                     );
+                CREATE VIRTUAL TABLE IF NOT EXISTS term_search USING fts5(
+                    ontology_id UNINDEXED,
+                    term_key UNINDEXED,
+                    title,
+                    synonyms,
+                    description,
+                    identifiers,
+                    tokenize='unicode61 remove_diacritics 2'
+                );
+                CREATE TABLE IF NOT EXISTS field_registry (
+                    field_id TEXT PRIMARY KEY,
+                    payload TEXT NOT NULL,
+                    review_status TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS field_aliases (
+                    alias TEXT PRIMARY KEY,
+                    field_id TEXT NOT NULL,
+                    FOREIGN KEY (field_id) REFERENCES field_registry(field_id)
+                        ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS external_response_cache (
+                    provider TEXT NOT NULL,
+                    operation TEXT NOT NULL,
+                    cache_key TEXT NOT NULL,
+                    response_json TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    PRIMARY KEY (provider, operation, cache_key)
+                );
                 """
             )
             connection.execute(
@@ -494,6 +587,8 @@ class OntoStore:
     ) -> None:
         term_rows: list[tuple[str, str, str]] = []
         lookup_rows: list[tuple[str, str, int, str, str, int]] = []
+        fts_rows: list[tuple[str, str, str, str, str, str]] = []
+        indexed_terms: set[str] = set()
 
         def flush() -> None:
             connection.executemany(
@@ -512,8 +607,17 @@ class OntoStore:
                 """,
                 lookup_rows,
             )
+            connection.executemany(
+                """
+                INSERT INTO term_search(
+                    ontology_id, term_key, title, synonyms, description, identifiers
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                fts_rows,
+            )
             term_rows.clear()
             lookup_rows.clear()
+            fts_rows.clear()
 
         for index_rank, index_name in enumerate(self.LOOKUP_INDEXES):
             index = indexes.get(index_name, {})
@@ -528,6 +632,9 @@ class OntoStore:
                     )
                     term_key = hashlib.sha256(payload.encode("utf-8")).hexdigest()
                     term_rows.append((ontology_id, term_key, payload))
+                    if term_key not in indexed_terms:
+                        indexed_terms.add(term_key)
+                        fts_rows.append(self._fts_row(ontology_id, term_key, hit))
                     lookup_rows.append(
                         (
                             ontology_id,
@@ -542,6 +649,73 @@ class OntoStore:
                         flush()
         if lookup_rows:
             flush()
+
+    def _ensure_fts_framework(self, ontology_id: str) -> None:
+        with self._sqlite_connection() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM term_search WHERE ontology_id = ? LIMIT 1",
+                (ontology_id,),
+            ).fetchone()
+            if exists:
+                return
+            rows = connection.execute(
+                "SELECT term_key, payload FROM terms WHERE ontology_id = ?",
+                (ontology_id,),
+            )
+            batch = []
+            for term_key, payload in rows:
+                hit = json.loads(payload)
+                batch.append(self._fts_row(ontology_id, term_key, hit))
+                if len(batch) >= 5_000:
+                    connection.executemany(
+                        "INSERT INTO term_search VALUES (?, ?, ?, ?, ?, ?)", batch
+                    )
+                    batch.clear()
+            if batch:
+                connection.executemany(
+                    "INSERT INTO term_search VALUES (?, ?, ?, ?, ?, ?)", batch
+                )
+            connection.commit()
+
+    @staticmethod
+    def _fts_row(
+        ontology_id: str,
+        term_key: str,
+        hit: dict[str, Any],
+    ) -> tuple[str, str, str, str, str, str]:
+        synonyms = hit.get("synonyms", {})
+        if isinstance(synonyms, dict):
+            synonym_values = [
+                str(value)
+                for values in synonyms.values()
+                if isinstance(values, list)
+                for value in values
+            ]
+        elif isinstance(synonyms, list):
+            synonym_values = [str(value) for value in synonyms]
+        else:
+            synonym_values = [str(synonyms)] if synonyms else []
+        description = hit.get("description", [])
+        if isinstance(description, list):
+            description_text = " ".join(str(value) for value in description)
+        else:
+            description_text = str(description or "")
+        identifiers = " ".join(
+            str(hit.get(key) or "") for key in ("id", "accession", "iri")
+        )
+        return (
+            ontology_id,
+            term_key,
+            str(hit.get("title") or ""),
+            " ".join(synonym_values),
+            description_text,
+            identifiers,
+        )
+
+    @staticmethod
+    def _fts_query(value: Any) -> str:
+        tokens = re.findall(r"[\w]+", str(value).lower(), flags=re.UNICODE)
+        return " OR ".join(f'"{token}"*' for token in tokens if token)
 
     def lookup_fields(self, field: Any) -> Any:
         LOGGER.info("Looking up ontology field.")
@@ -563,6 +737,190 @@ class OntoStore:
 
         LOGGER.info("Ontology field lookup missed.")
         return False
+
+    def _load_persisted_fields(self) -> dict[str, dict[str, Any]]:
+        with self._sqlite_connection() as connection:
+            rows = connection.execute(
+                "SELECT field_id, payload, review_status FROM field_registry"
+            ).fetchall()
+        fields = {}
+        for field_id, payload, review_status in rows:
+            metadata = json.loads(payload)
+            metadata["review_status"] = review_status
+            fields[field_id] = metadata
+        return fields
+
+    def list_fields(self, review_status: str | None = None) -> list[dict[str, Any]]:
+        values = []
+        for field_id in sorted(self.fields):
+            item = {"field": field_id, **self.fields[field_id]}
+            if review_status is None or item.get("review_status") == review_status:
+                values.append(item)
+        return values
+
+    def get_field(self, field_id: str) -> dict[str, Any] | None:
+        key = self.harmonize_key(field_id)
+        metadata = self.fields.get(key)
+        return None if metadata is None else {"field": key, **metadata}
+
+    def add_field(
+        self,
+        field_id: str,
+        metadata: dict[str, Any],
+        *,
+        replace: bool = False,
+    ) -> dict[str, Any]:
+        key = self.harmonize_key(field_id)
+        if not key:
+            raise ValueError("field_id cannot be empty.")
+        if key in self.fields and not replace:
+            raise ValueError(f"Field {key!r} already exists.")
+        normalized = dict(metadata)
+        aliases = [str(alias) for alias in normalized.pop("aliases", []) if str(alias)]
+        alias_keys = [self.harmonize_key(alias) for alias in aliases]
+        status = str(normalized.pop("review_status", "unreviewed"))
+        self._validate_field_metadata(normalized, status)
+        now = time.time()
+        with self._sqlite_connection() as connection:
+            for alias in alias_keys:
+                owner = connection.execute(
+                    "SELECT field_id FROM field_aliases WHERE alias = ?", (alias,)
+                ).fetchone()
+                if owner and owner[0] != key:
+                    raise ValueError(f"Field alias {alias!r} already belongs to {owner[0]!r}.")
+            created = connection.execute(
+                "SELECT created_at FROM field_registry WHERE field_id = ?", (key,)
+            ).fetchone()
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO field_registry(
+                    field_id, payload, review_status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    key,
+                    json.dumps({**normalized, "aliases": aliases}, sort_keys=True),
+                    status,
+                    created[0] if created else now,
+                    now,
+                ),
+            )
+            connection.execute("DELETE FROM field_aliases WHERE field_id = ?", (key,))
+            connection.executemany(
+                "INSERT INTO field_aliases(alias, field_id) VALUES (?, ?)",
+                [(alias, key) for alias in alias_keys],
+            )
+            connection.commit()
+        self.fields[key] = {**normalized, "aliases": aliases, "review_status": status}
+        return {"field": key, **self.fields[key]}
+
+    def update_field(self, field_id: str, **changes: Any) -> dict[str, Any]:
+        current = self.get_field(field_id)
+        if current is None:
+            raise KeyError(field_id)
+        current.pop("field")
+        current.update(changes)
+        return self.add_field(field_id, current, replace=True)
+
+    def remove_field(self, field_id: str) -> bool:
+        key = self.harmonize_key(field_id)
+        with self._sqlite_connection() as connection:
+            cursor = connection.execute(
+                "DELETE FROM field_registry WHERE field_id = ?", (key,)
+            )
+            connection.commit()
+        self.fields.pop(key, None)
+        return cursor.rowcount > 0
+
+    def set_field_review_status(self, field_id: str, status: str) -> dict[str, Any]:
+        return self.update_field(field_id, review_status=status)
+
+    @staticmethod
+    def _validate_field_metadata(metadata: dict[str, Any], status: str) -> None:
+        if status not in {"unreviewed", "approved", "rejected"}:
+            raise ValueError("review_status must be unreviewed, approved, or rejected.")
+        for key in ("expected_ontologies", "allowed_modes"):
+            value = metadata.get(key, [])
+            if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+                raise ValueError(f"{key} must be a list of strings.")
+
+    @staticmethod
+    def _cache_key(parameters: Any) -> str:
+        payload = json.dumps(parameters, sort_keys=True, separators=(",", ":"), default=str)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def get_cached_response(
+        self,
+        provider: str,
+        operation: str,
+        parameters: Any,
+        *,
+        ttl_seconds: int,
+        now: float | None = None,
+        force_refresh: bool = False,
+    ) -> Any:
+        if force_refresh:
+            return None
+        current = time.time() if now is None else now
+        with self._sqlite_connection() as connection:
+            row = connection.execute(
+                """
+                SELECT response_json, created_at FROM external_response_cache
+                WHERE provider = ? AND operation = ? AND cache_key = ?
+                """,
+                (provider, operation, self._cache_key(parameters)),
+            ).fetchone()
+        if row is None or current - row[1] > ttl_seconds:
+            return None
+        return json.loads(row[0])
+
+    def set_cached_response(
+        self,
+        provider: str,
+        operation: str,
+        parameters: Any,
+        response: Any,
+        *,
+        now: float | None = None,
+    ) -> None:
+        with self._sqlite_connection() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO external_response_cache(
+                    provider, operation, cache_key, response_json, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    provider,
+                    operation,
+                    self._cache_key(parameters),
+                    json.dumps(response, ensure_ascii=False, default=str),
+                    time.time() if now is None else now,
+                ),
+            )
+            connection.commit()
+
+    def clear_cached_responses(
+        self,
+        *,
+        provider: str | None = None,
+        operation: str | None = None,
+    ) -> int:
+        clauses = []
+        values = []
+        if provider is not None:
+            clauses.append("provider = ?")
+            values.append(provider)
+        if operation is not None:
+            clauses.append("operation = ?")
+            values.append(operation)
+        sql = "DELETE FROM external_response_cache"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        with self._sqlite_connection() as connection:
+            cursor = connection.execute(sql, values)
+            connection.commit()
+        return cursor.rowcount
 
     @staticmethod
     def harmonize_key(value: Any) -> str:
@@ -644,8 +1002,12 @@ class OntoStore:
         LOGGER.info("Downloading ontology framework %s to %s.", name, target)
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         url = self._framework_url(name)
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
+        def operation():
+            response = requests.get(url, timeout=self.request_policy.timeout_seconds)
+            response.raise_for_status()
+            return response
+
+        response, _trace = request_with_retry(operation, self.request_policy)
         target.write_bytes(response.content)
         LOGGER.info("Downloaded ontology framework %s.", name)
         return target
