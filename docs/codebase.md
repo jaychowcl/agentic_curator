@@ -234,15 +234,11 @@ context and returns `decision`, `confidence`, and `reason`; the judgement is
 stored at `ontology_lookup_judgement`. When `lookup_label(...)` returns
 `False`, `harmonize(...)` marks the target unmatched and, when `llm=True`, calls
 `assign_onto_framework(...)` as the fallback assignment step. The fallback
-prompts the LLM with sanitized target context, publication context, and
-sanitized candidate ontology framework metadata. Framework prompt metadata
-includes only `id`, `title`, `description`, and `version`; download URLs and
-configured file paths remain internal to `OntoStore`. Ontology LLM prompts do
-not serialize the full mutable target. They keep identity, source,
-pre-harmonized and harmonized field/label values, relevant ontology constraints
-or IDs, and compact occurrence path/value coordinates. They omit prior lookup
-metadata, strategy results, match flags, and previous field or framework
-assignments. `assign_onto_framework(...)` parses JSON with `decision`,
+prompts the LLM with task-specific compact target and framework projections.
+Framework prompt metadata includes only `id`, `title`, and complete
+`description`; versions, download URLs, and configured file paths remain
+internal to `OntoStore`. Ontology LLM prompts never serialize the full mutable
+target or occurrence paths. `assign_onto_framework(...)` parses JSON with `decision`,
 `confidence`, and `reason`, stores it at `ontology_framework_assignment`, and
 sets `ontology_id` when `decision` is a configured framework ID.
 `harmonize(...)` then calls `harmonize_field(...)` for every target, whether
@@ -261,7 +257,8 @@ configured frameworks. The websearch handler uses OLS4 restricted to the
 assigned `ontology_id`. With the default `search_llm_judge=True`, an LLM
 selects one supplied candidate or returns `false`. A restricted-stage rejection
 continues to unrestricted OLS plus Gemini grounded web evidence and a second
-judgement over both OLS result sets. Unknown decisions and judge failures fail
+judgement over the unrestricted candidates and compact web evidence. Rejected
+restricted candidates are not resent. Unknown decisions and judge failures fail
 closed; ordered decisions are stored in `search_llm_judgements`, with failures
 in `search_llm_judge_error`. Web evidence supports selection but cannot
 introduce an ID absent from OLS. `search_llm_judge=False` preserves first-hit
@@ -275,6 +272,38 @@ unbounded requests against Gemini project-level RPM/TPM/RPD quotas. Strategy
 results always include `strategy`, `status`, `decision`, `confidence`, and
 `reason`, and include `web_search_error` when the search client reports one.
 The `rag` strategy currently routes to a placeholder handler.
+
+### Ontology LLM Context Contracts
+
+User-supplied `publication_context` is preserved in full for every structured
+ontology LLM call and omitted only when empty. The grounded-search provider call
+uses its own compact search query. All structured calls use a semantic target
+projection with original human-readable values:
+
+```json
+{"field": "source", "label": "100-200 cell embryos"}
+```
+
+Field and search calls add `ontology_id` only when available and relevant.
+Target IDs, source markers, normalized duplicates, ontology constraints,
+occurrences, JSON Pointer paths, match flags, prior assignments, and prior
+strategy/lookup traces are excluded from prompts but retained in outputs.
+
+| LLM call | Model-facing context |
+| --- | --- |
+| Framework assignment | Full publication context; semantic target; candidate framework `id`, `title`, and complete `description`. |
+| Field assignment | Full publication context; semantic target plus current `ontology_id`; configured field key with `label`, `aliases`, and complete `description`. Field provenance, confidence, and reasons are excluded. |
+| Local lookup judge | Full publication context; semantic target; top 10 ranked hits with `id`, `accession`, `iri`, `title`, complete `description`, and `ontology_id`. |
+| Restricted search judge | Full publication context; semantic target plus assigned `ontology_id`; stage name; top 10 restricted OLS candidates in the same compact hit shape. Empty unrestricted/web sections are omitted. |
+| Gemini grounded search | Original field and label in `{field}: {label} ontology`; no full target, publication context, or OLS candidates. |
+| Expanded search judge | Full publication context; semantic target plus initial `ontology_id`; stage name; top 10 unrestricted OLS candidates; one grounded response summary plus source title/URL pairs. Rejected restricted candidates are omitted. |
+
+Candidate descriptions are never truncated: string values and every entry in
+list-valued descriptions are passed completely. Candidate `ontology_prefix`,
+`type`, parents, xrefs, synonyms, and internal search metadata are excluded
+from prompts. Search-judge decisions may still use a supplied candidate's
+`id`, `accession`, or `iri`. Top-10 limits affect prompts only; complete local
+and OLS hit lists remain in `ontology_lookup_hits` and strategy traces.
 
 `OntologyHarmonizer(ontostore=None, llm=None)` creates a default `OntoStore`
 when no store is supplied and lazily creates `LLM()` only when framework
@@ -755,6 +784,7 @@ class OntologyHarmonizer:
         target_paths=None,
         lookup_llm_judge=False,
         lookup_llm_threshold=2,
+        search_llm_judge=True,
         llm=True,
     ):
         effective_ontostore = self._effective_ontostore(ontostore)
@@ -845,7 +875,7 @@ class OntologyHarmonizer:
     ):
         self._mark_ontology_miss(target)
         framework_configs = self._assignment_candidate_frameworks(target, ontostore)
-        framework_configs contains only id, title, description, and version
+        framework_configs contains only id, title, and complete description
         prompt = self._assign_onto_framework_prompt(
             target=target,
             publication_context=publication_context,
@@ -917,9 +947,13 @@ class OntologyHarmonizer:
         publication_context,
         ontostore,
         strategy,
+        search_llm_judge=True,
     ):
-        handler_class = self.STRATEGY_HANDLERS[strategy]
-        return handler_class().handle(
+        handler = WebsearchStrategyHandler(
+            search_client=GeminiGroundedSearchClient(llm=self._llm()),
+            search_judge=self.judge_search_results,
+        ) if strategy == "websearch" and search_llm_judge else self.STRATEGY_HANDLERS[strategy]()
+        return handler.handle(
             target,
             publication_context=publication_context,
             ontostore=ontostore,
@@ -928,18 +962,20 @@ class OntologyHarmonizer:
     class WebsearchStrategyHandler:
         restricted_hits = OLS search(label, ontology=target["ontology_id"], rows=25)
         if restricted_hits:
-            require OLS ontology metadata has id, title, description, version, url
-            ontostore.configure_framework(...)
-            set target ontology lookup fields
-            return matched strategy result with decision, confidence, reason
+            judgement = judge top 10 compact restricted hits
+            if judgement selects a supplied id, accession, or iri:
+                accept selected hit
+            if judgement fails: return not_harmonized
+            if judgement is false: continue expanded search
 
         unrestricted_hits = OLS search(label, rows=25)
-        web_hits = search_client.search(f"{hz_field}: {hz_label} ontology", max_results=25)
+        web_hits = search_client.search(f"{pre_hz_field}: {pre_hz_label} ontology", max_results=25)
         web_search_error = search_client.last_error if available
-        if unrestricted_hits and complete framework metadata is available:
-            ontostore.configure_framework(...)
-            set target ontology lookup fields
-            return matched strategy result, including web_search_error when present
+        if unrestricted_hits:
+            judgement = judge top 10 compact unrestricted hits plus compact web evidence
+            if judgement selects a supplied id, accession, or iri:
+                require complete framework metadata, configure store, and accept hit
+            otherwise return not_harmonized with judgement trace
         return not_harmonized strategy result, including web_search_error when present
 
     class GeminiGroundedSearchClient:

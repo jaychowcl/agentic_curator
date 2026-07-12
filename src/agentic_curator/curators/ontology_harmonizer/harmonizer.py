@@ -37,29 +37,7 @@ class OntologyHarmonizer:
     """Curator for harmonizing publication metadata against ontologies."""
 
     DEFAULT_TARGET_PATHS = HarmonizationTargetExtractor.DEFAULT_TARGET_PATHS
-    TARGET_PROMPT_CONTEXT_KEYS = (
-        "id",
-        "source",
-        "pre_hz_field",
-        "pre_hz_label",
-        "hz_field",
-        "hz_label",
-        "ontology_ids",
-        "ontology_frameworks",
-    )
-    ONTOLOGY_ID_TARGET_PROMPT_CONTEXT_KEYS = (
-        *TARGET_PROMPT_CONTEXT_KEYS,
-        "ontology_id",
-    )
-    OCCURRENCE_PROMPT_CONTEXT_KEYS = (
-        "pre_hz_field_path",
-        "pre_hz_label_path",
-        "parent_path",
-        "pre_hz_field",
-        "pre_hz_label",
-        "hz_field",
-        "hz_label",
-    )
+    LLM_CANDIDATE_LIMIT = 10
     STRATEGY_ALIASES = {
         "rag": "rag",
         "websearch": "websearch",
@@ -579,14 +557,15 @@ class OntologyHarmonizer:
             return hits[0]
 
         LOGGER.info("Judging %d ontology lookup hits with LLM.", len(hits))
+        judged_hits = hits[: self.LLM_CANDIDATE_LIMIT]
         judgement = self.judge_lookup(
             target,
             publication_context=publication_context,
-            hits=hits,
+            hits=judged_hits,
         )
         target["ontology_lookup_judgement"] = judgement
         decision = str(judgement["decision"])
-        for hit in hits:
+        for hit in judged_hits:
             if str(hit.get("id")) == decision:
                 return hit
 
@@ -897,7 +876,6 @@ class OntologyHarmonizer:
             "id": ontology_id,
             "title": framework.get("title"),
             "description": framework.get("description"),
-            "version": framework.get("version"),
         }
 
     def _normalize_ontology_ids(self, ontology_ids: Any) -> list[str]:
@@ -944,20 +922,12 @@ class OntologyHarmonizer:
         initial_prompt = files(PROMPT_PACKAGE).joinpath(
             "prompts/assign_onto_framework.md"
         ).read_text(encoding="utf-8").strip()
-        prompt_parts = [
+        return self._structured_prompt(
             initial_prompt,
-            "Publication Context:",
-            self._prompt_text(publication_context),
-            "",
-            "Harmonization Target:",
-            self._prompt_text(
-                self._assignment_target_prompt_context(target)
-            ),
-            "",
-            "Ontology Framework Config:",
-            self._prompt_text(ontology_frameworks),
-        ]
-        return "\n".join(prompt_parts).lstrip("\n")
+            ("Publication Context", publication_context),
+            ("Harmonization Target", self._semantic_target_context(target)),
+            ("Ontology Framework Config", ontology_frameworks),
+        )
 
     def _assign_field_prompt(
         self,
@@ -969,18 +939,15 @@ class OntologyHarmonizer:
         initial_prompt = files(PROMPT_PACKAGE).joinpath(
             "prompts/assign_field.md"
         ).read_text(encoding="utf-8").strip()
-        prompt_parts = [
+        return self._structured_prompt(
             initial_prompt,
-            "Publication Context:",
-            self._prompt_text(publication_context),
-            "",
-            "Harmonization Target:",
-            self._prompt_text(self._field_target_prompt_context(target)),
-            "",
-            "Fields:",
-            self._prompt_text(fields),
-        ]
-        return "\n".join(prompt_parts).lstrip("\n")
+            ("Publication Context", publication_context),
+            (
+                "Harmonization Target",
+                self._semantic_target_context(target, include_ontology_id=True),
+            ),
+            ("Fields", self._field_prompt_context(fields)),
+        )
 
     def _judge_lookup_prompt(
         self,
@@ -992,18 +959,12 @@ class OntologyHarmonizer:
         initial_prompt = files(PROMPT_PACKAGE).joinpath(
             "prompts/judge_lookup.md"
         ).read_text(encoding="utf-8").strip()
-        prompt_parts = [
+        return self._structured_prompt(
             initial_prompt,
-            "Publication Context:",
-            self._prompt_text(publication_context),
-            "",
-            "Harmonization Target:",
-            self._prompt_text(self._lookup_target_prompt_context(target)),
-            "",
-            "Lookup Hits:",
-            self._prompt_text(hits),
-        ]
-        return "\n".join(prompt_parts).lstrip("\n")
+            ("Publication Context", publication_context),
+            ("Harmonization Target", self._semantic_target_context(target)),
+            ("Lookup Hits", self._candidate_prompt_context(hits)),
+        )
 
     def _judge_search_prompt(
         self,
@@ -1018,91 +979,101 @@ class OntologyHarmonizer:
         initial_prompt = files(PROMPT_PACKAGE).joinpath(
             "prompts/judge_search.md"
         ).read_text(encoding="utf-8").strip()
-        prompt_parts = [
-            initial_prompt,
-            "Publication Context:",
-            self._prompt_text(publication_context),
-            "",
-            "Harmonization Target:",
-            self._prompt_text(self._lookup_target_prompt_context(target)),
-            "",
-            "Search Stage:",
-            stage,
-            "",
-            "Restricted OLS Hits:",
-            self._prompt_text(restricted_hits),
-            "",
-            "Unrestricted OLS Hits:",
-            self._prompt_text(unrestricted_hits),
-            "",
-            "Grounded Web Evidence:",
-            self._prompt_text(web_hits),
+        sections: list[tuple[str, Any]] = [
+            ("Publication Context", publication_context),
+            (
+                "Harmonization Target",
+                self._semantic_target_context(target, include_ontology_id=True),
+            ),
+            ("Search Stage", stage),
         ]
-        return "\n".join(prompt_parts).lstrip("\n")
+        if stage == "restricted":
+            sections.append(
+                ("Restricted OLS Hits", self._candidate_prompt_context(restricted_hits))
+            )
+        else:
+            sections.extend(
+                [
+                    (
+                        "Unrestricted OLS Hits",
+                        self._candidate_prompt_context(unrestricted_hits),
+                    ),
+                    ("Grounded Web Evidence", self._web_prompt_context(web_hits)),
+                ]
+            )
+        return self._structured_prompt(initial_prompt, *sections)
 
-    def _assignment_target_prompt_context(
-        self,
-        target: dict[str, Any],
-    ) -> dict[str, Any]:
-        return self._target_prompt_context(
-            target,
-            keys=self.TARGET_PROMPT_CONTEXT_KEYS,
-        )
-
-    def _field_target_prompt_context(
-        self,
-        target: dict[str, Any],
-    ) -> dict[str, Any]:
-        return self._target_prompt_context(
-            target,
-            keys=self.ONTOLOGY_ID_TARGET_PROMPT_CONTEXT_KEYS,
-        )
-
-    def _lookup_target_prompt_context(
-        self,
-        target: dict[str, Any],
-    ) -> dict[str, Any]:
-        return self._target_prompt_context(
-            target,
-            keys=self.ONTOLOGY_ID_TARGET_PROMPT_CONTEXT_KEYS,
-        )
-
-    def _target_prompt_context(
+    def _semantic_target_context(
         self,
         target: dict[str, Any],
         *,
-        keys: tuple[str, ...],
+        include_ontology_id: bool = False,
     ) -> dict[str, Any]:
         context = {
-            key: target[key]
-            for key in keys
-            if key in target
+            "field": target.get("pre_hz_field", target.get("hz_field", "")),
+            "label": target.get("pre_hz_label", target.get("hz_label", "")),
         }
-        occurrences = self._occurrences_prompt_context(target.get("occurrences"))
-        if occurrences is not None:
-            context["occurrences"] = occurrences
+        if include_ontology_id and target.get("ontology_id") is not None:
+            context["ontology_id"] = target["ontology_id"]
         return context
 
-    def _occurrences_prompt_context(self, occurrences: Any) -> dict[str, Any] | None:
-        if not isinstance(occurrences, list):
-            return None
-
-        items = []
-        for occurrence in occurrences:
-            if not isinstance(occurrence, dict):
-                continue
-            item = {
-                key: occurrence[key]
-                for key in self.OCCURRENCE_PROMPT_CONTEXT_KEYS
-                if key in occurrence
-            }
-            if item:
-                items.append(item)
-
+    def _field_prompt_context(
+        self,
+        fields: dict[str, Any],
+    ) -> dict[str, dict[str, Any]]:
+        allowed = ("label", "aliases", "description")
         return {
-            "count": len(occurrences),
-            "items": items,
+            field_id: {
+                key: metadata[key]
+                for key in allowed
+                if isinstance(metadata, dict) and key in metadata
+            }
+            for field_id, metadata in fields.items()
         }
+
+    def _candidate_prompt_context(
+        self,
+        hits: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        allowed = ("id", "accession", "iri", "title", "description", "ontology_id")
+        return [
+            {key: hit[key] for key in allowed if key in hit}
+            for hit in hits[: self.LLM_CANDIDATE_LIMIT]
+            if isinstance(hit, dict)
+        ]
+
+    def _web_prompt_context(self, hits: list[dict[str, Any]]) -> dict[str, Any]:
+        summaries = [
+            str(hit["snippet"])
+            for hit in hits
+            if isinstance(hit, dict) and hit.get("snippet")
+        ]
+        sources = [
+            {
+                "title": hit.get("title"),
+                "url": hit.get("link", hit.get("url")),
+            }
+            for hit in hits
+            if isinstance(hit, dict) and (hit.get("link") or hit.get("url"))
+        ]
+        context: dict[str, Any] = {}
+        if summaries:
+            context["summary"] = summaries[0]
+        if sources:
+            context["sources"] = sources
+        return context
+
+    def _structured_prompt(
+        self,
+        initial_prompt: str,
+        *sections: tuple[str, Any],
+    ) -> str:
+        prompt_parts = [initial_prompt]
+        for heading, value in sections:
+            if value is None or value == "" or value == [] or value == {}:
+                continue
+            prompt_parts.extend(["", f"{heading}:", self._prompt_text(value)])
+        return "\n".join(prompt_parts)
 
     def _assign_onto_framework_response_schema(self) -> dict[str, Any]:
         return {

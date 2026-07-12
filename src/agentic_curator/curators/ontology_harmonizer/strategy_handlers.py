@@ -166,6 +166,7 @@ class GeminiGroundedSearchClient:
 class WebsearchStrategyHandler:
     strategy = "websearch"
     max_results = 25
+    judge_candidate_limit = 10
 
     def __init__(
         self,
@@ -227,7 +228,7 @@ class WebsearchStrategyHandler:
                     target=target,
                     publication_context=publication_context,
                     stage="restricted",
-                    restricted_hits=restricted_hits,
+                    restricted_hits=restricted_hits[: self.judge_candidate_limit],
                     unrestricted_hits=[],
                     web_hits=[],
                 )
@@ -283,8 +284,10 @@ class WebsearchStrategyHandler:
                     target=target,
                     publication_context=publication_context,
                     stage="expanded",
-                    restricted_hits=restricted_hits,
-                    unrestricted_hits=unrestricted_hits,
+                    restricted_hits=[],
+                    unrestricted_hits=unrestricted_hits[
+                        : self.judge_candidate_limit
+                    ],
                     web_hits=web_hits,
                 )
             except Exception as exc:  # noqa: BLE001 - preserve judge failure trace.
@@ -300,7 +303,7 @@ class WebsearchStrategyHandler:
             judgements.append({"stage": "expanded", **judgement})
             target["search_llm_judgements"] = judgements
             if str(judgement["decision"]).lower() != "false":
-                hit = self._selected_hit(all_hits, judgement["decision"])
+                hit = self._selected_hit(unrestricted_hits, judgement["decision"])
                 return self._accept_hit(
                     target,
                     ontostore=ontostore,
@@ -532,8 +535,8 @@ class WebsearchStrategyHandler:
         return None
 
     def _web_query(self, target: dict[str, Any]) -> str:
-        field = target.get("hz_field", target.get("pre_hz_field", "field"))
-        label = target.get("hz_label", target.get("pre_hz_label", "label"))
+        field = target.get("pre_hz_field", target.get("hz_field", "field"))
+        label = target.get("pre_hz_label", target.get("hz_label", "label"))
         return f"{field}: {label} ontology"
 
     def _hit_decision(self, hit: dict[str, Any]) -> str:

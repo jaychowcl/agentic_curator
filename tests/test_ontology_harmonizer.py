@@ -158,7 +158,7 @@ class FakeLLM:
             return self.response
 
         if prompt.startswith(ASSIGN_FIELD_PROMPT):
-            field_match = re.search(r'"hz_field": "([^"]+)"', prompt)
+            field_match = re.search(r'"(?:hz_)?field": "([^"]+)"', prompt)
             decision = field_match.group(1) if field_match else "field"
             return {
                 "decision": decision,
@@ -1465,7 +1465,9 @@ def test_lookup_label_llm_judge_selects_best_hit_by_id(
     assert "Publication Context:\nsample is oral buccal tissue" in fake_llm.calls[0][
         "prompt"
     ]
-    assert '"id": "target-0"' in fake_llm.calls[0]["prompt"]
+    assert '"field": "tissue"' in fake_llm.calls[0]["prompt"]
+    assert '"label": "lung"' in fake_llm.calls[0]["prompt"]
+    assert '"id": "target-0"' not in fake_llm.calls[0]["prompt"]
 
 
 def test_judge_search_results_builds_structured_prompt() -> None:
@@ -1482,8 +1484,36 @@ def test_judge_search_results_builds_structured_prompt() -> None:
         publication_context="lung sample",
         stage="expanded",
         restricted_hits=[{"id": "EFO_1", "title": "wrong"}],
-        unrestricted_hits=[{"id": "UBERON_2", "title": "lung"}],
-        web_hits=[{"title": "Uberon lung", "link": "https://example.org"}],
+        unrestricted_hits=[
+            {
+                "id": f"UBERON_{index}",
+                "accession": f"UBERON:{index}",
+                "iri": f"https://example.org/{index}",
+                "title": "lung",
+                "description": ["Complete definition one.", "Complete definition two."],
+                "ontology_id": "uberon",
+                "ontology_prefix": "UBERON",
+                "type": "class",
+                "synonyms": ["pulmo"],
+            }
+            for index in range(12)
+        ],
+        web_hits=[
+            {
+                "title": "Uberon lung",
+                "link": "https://example.org",
+                "snippet": "Shared grounded summary.",
+                "source": "gemini_google_search",
+                "provider": "gemini_enterprise",
+            },
+            {
+                "title": "Second source",
+                "link": "https://example.org/2",
+                "snippet": "Shared grounded summary.",
+                "source": "gemini_google_search",
+                "provider": "gemini_enterprise",
+            },
+        ],
     )
 
     assert result == response
@@ -1491,6 +1521,15 @@ def test_judge_search_results_builds_structured_prompt() -> None:
     assert call["prompt"].startswith(JUDGE_SEARCH_PROMPT)
     assert "Search Stage:\nexpanded" in call["prompt"]
     assert '"UBERON_2"' in call["prompt"]
+    assert '"UBERON_10"' not in call["prompt"]
+    assert "Complete definition one." in call["prompt"]
+    assert "Complete definition two." in call["prompt"]
+    assert '"ontology_prefix"' not in call["prompt"]
+    assert '"type"' not in call["prompt"]
+    assert '"synonyms"' not in call["prompt"]
+    assert "Restricted OLS Hits:" not in call["prompt"]
+    assert call["prompt"].count("Shared grounded summary.") == 1
+    assert '"provider"' not in call["prompt"]
     assert "Uberon lung" in call["prompt"]
     assert call["config"] == {
         "response_mime_type": "application/json",
@@ -1555,11 +1594,11 @@ def test_lookup_judge_prompt_prunes_derived_target_context(
     )
 
     prompt = fake_llm.calls[0]["prompt"]
-    assert '"pre_hz_field": "tissue"' in prompt
-    assert '"pre_hz_label": "lung"' in prompt
-    assert '"hz_field": "tissue"' in prompt
-    assert '"hz_label": "lung"' in prompt
-    assert '"ontology_ids": [' in prompt
+    assert '"field": "tissue"' in prompt
+    assert '"label": "lung"' in prompt
+    assert '"pre_hz_field"' not in prompt
+    assert '"hz_field"' not in prompt
+    assert '"ontology_ids"' not in prompt
     assert '"id": "UBERON:2"' in prompt
     assert '"ontology_lookup"' not in prompt
     assert '"ontology_lookup_hits"' not in prompt
@@ -1570,6 +1609,42 @@ def test_lookup_judge_prompt_prunes_derived_target_context(
     assert '"field_lookup"' not in prompt
     assert '"field_assignment"' not in prompt
     assert "polluting" not in prompt
+
+
+def test_lookup_judge_prompt_limits_and_compacts_candidates() -> None:
+    hits = [
+        {
+            "id": f"TERM_{index}",
+            "accession": f"TERM:{index}",
+            "iri": f"https://example.org/{index}",
+            "title": f"term {index}",
+            "description": ["Complete first definition.", "Complete second definition."],
+            "ontology_id": "test",
+            "ontology_prefix": "TEST",
+            "type": "class",
+            "synonyms": ["extra"],
+        }
+        for index in range(12)
+    ]
+    fake_llm = FakeLLM(
+        response={"decision": "TERM_0", "confidence": "high", "reason": "Best."}
+    )
+
+    OntologyHarmonizer(llm=fake_llm).judge_lookup(
+        {"pre_hz_field": "tissue", "pre_hz_label": "lung"},
+        publication_context="complete user context",
+        hits=hits,
+    )
+
+    prompt = fake_llm.calls[0]["prompt"]
+    assert '"TERM_9"' in prompt
+    assert '"TERM_10"' not in prompt
+    assert "Complete first definition." in prompt
+    assert "Complete second definition." in prompt
+    assert '"ontology_prefix"' not in prompt
+    assert '"type"' not in prompt
+    assert '"synonyms"' not in prompt
+    assert "Publication Context:\ncomplete user context" in prompt
 
 
 def test_lookup_label_llm_judge_rejects_unknown_decision(
@@ -1744,12 +1819,14 @@ def test_assign_onto_framework_uses_llm_framework_decision(tmp_path: Path) -> No
     assert "Publication Context:\nsample is from lung tissue" in fake_llm.calls[0][
         "prompt"
     ]
-    assert '"id": "target-0"' in fake_llm.calls[0]["prompt"]
+    assert '"field": ""' in fake_llm.calls[0]["prompt"]
+    assert '"label": "lung"' in fake_llm.calls[0]["prompt"]
+    assert '"id": "target-0"' not in fake_llm.calls[0]["prompt"]
     assert '"anatomy"' in fake_llm.calls[0]["prompt"]
     assert '"id": "anatomy"' in fake_llm.calls[0]["prompt"]
     assert '"title": "Anatomy Ontology"' in fake_llm.calls[0]["prompt"]
     assert '"description": "Anatomical entities."' in fake_llm.calls[0]["prompt"]
-    assert '"version": "2026-01-01"' in fake_llm.calls[0]["prompt"]
+    assert '"version"' not in fake_llm.calls[0]["prompt"]
     assert '"url"' not in fake_llm.calls[0]["prompt"]
     assert '"path"' not in fake_llm.calls[0]["prompt"]
     assert '"owl_path"' not in fake_llm.calls[0]["prompt"]
@@ -1817,14 +1894,13 @@ def test_assign_onto_framework_prompt_prunes_derived_target_context(
     )
 
     prompt = fake_llm.calls[0]["prompt"]
-    assert '"pre_hz_field": "tissue"' in prompt
-    assert '"pre_hz_label": "lung"' in prompt
-    assert '"hz_field": "tissue"' in prompt
-    assert '"hz_label": "lung"' in prompt
-    assert '"ontology_ids": [' in prompt
-    assert '"occurrences": {' in prompt
-    assert '"count": 1' in prompt
-    assert '"pre_hz_field_path": "/sample/characteristics/0/tag"' in prompt
+    assert '"field": "tissue"' in prompt
+    assert '"label": "lung"' in prompt
+    assert '"pre_hz_field"' not in prompt
+    assert '"hz_field"' not in prompt
+    assert '"ontology_ids"' not in prompt
+    assert '"occurrences"' not in prompt
+    assert '"pre_hz_field_path"' not in prompt
     assert '"ontology_lookup"' not in prompt
     assert '"ontology_lookup_hits"' not in prompt
     assert '"ontology_lookup_judgement"' not in prompt
@@ -1930,7 +2006,16 @@ def test_assign_field_generates_json_response_and_adds_new_field(
     }
     fake_llm = FakeLLM(response=json.dumps(response))
     store = OntoStore(
-        fields={"tissue": {"label": "Tissue"}},
+        fields={
+            "tissue": {
+                "label": "Tissue",
+                "aliases": ["sample source"],
+                "description": "Complete field description.",
+                "source": "llm",
+                "confidence": "high",
+                "reason": "Internal provenance.",
+            }
+        },
         storage_dir=tmp_path,
     )
     target = {
@@ -1964,7 +2049,9 @@ def test_assign_field_generates_json_response_and_adds_new_field(
     assert "Publication Context:\nsample metadata context" in fake_llm.calls[0][
         "prompt"
     ]
-    assert '"id": "target-0"' in fake_llm.calls[0]["prompt"]
+    assert '"field": "developmental stage"' in fake_llm.calls[0]["prompt"]
+    assert '"label": "adult"' in fake_llm.calls[0]["prompt"]
+    assert '"id": "target-0"' not in fake_llm.calls[0]["prompt"]
     assert '"tissue"' in fake_llm.calls[0]["prompt"]
 
 
@@ -1979,7 +2066,16 @@ def test_assign_field_prompt_prunes_lookup_and_strategy_context(
     }
     fake_llm = FakeLLM(response=response)
     store = OntoStore(
-        fields={"tissue": {"label": "Tissue"}},
+        fields={
+            "tissue": {
+                "label": "Tissue",
+                "aliases": ["sample source"],
+                "description": "Complete field description.",
+                "source": "llm",
+                "confidence": "high",
+                "reason": "Internal provenance.",
+            }
+        },
         storage_dir=tmp_path,
     )
     target = {
@@ -2007,12 +2103,17 @@ def test_assign_field_prompt_prunes_lookup_and_strategy_context(
     )
 
     prompt = fake_llm.calls[0]["prompt"]
-    assert '"pre_hz_field": "sample source"' in prompt
-    assert '"pre_hz_label": "lung"' in prompt
-    assert '"hz_field": "sample_source"' in prompt
-    assert '"hz_label": "lung"' in prompt
+    assert '"field": "sample source"' in prompt
+    assert '"label": "lung"' in prompt
+    assert '"pre_hz_field"' not in prompt
+    assert '"hz_field"' not in prompt
     assert '"ontology_id": "uberon"' in prompt
     assert '"tissue"' in prompt
+    assert '"aliases"' in prompt
+    assert "Complete field description." in prompt
+    assert '"source"' not in prompt
+    assert '"confidence"' not in prompt
+    assert "Internal provenance." not in prompt
     assert '"ontology_lookup"' not in prompt
     assert '"ontology_lookup_hits"' not in prompt
     assert '"ontology_lookup_judgement"' not in prompt
@@ -3107,6 +3208,47 @@ def test_websearch_strategy_judge_selects_non_first_restricted_hit() -> None:
     assert calls[0]["web_hits"] == []
 
 
+def test_websearch_strategy_keeps_full_hits_while_judging_top_ten() -> None:
+    terms = [
+        {
+            "iri": f"https://example.org/{index}",
+            "ontology_name": "uberon",
+            "short_form": f"UBERON_{index}",
+            "label": f"term {index}",
+        }
+        for index in range(12)
+    ]
+    ols_client = FakeOlsClient(
+        search_results=[terms],
+        ontology_metadata={
+            "uberon": {
+                "config": {
+                    "id": "uberon",
+                    "title": "Uberon",
+                    "description": "Anatomy.",
+                    "version": "v1",
+                    "versionIri": "https://example.org/uberon.owl",
+                }
+            }
+        },
+    )
+    judged = []
+
+    def judge(**kwargs):
+        judged.extend(kwargs["restricted_hits"])
+        return {"decision": "UBERON_0", "confidence": "high", "reason": "Best."}
+
+    target = {"hz_label": "term", "ontology_id": "uberon"}
+    result = WebsearchStrategyHandler(
+        ols_client=ols_client,
+        search_judge=judge,
+    ).handle(target, publication_context=None, ontostore=OntoStore())
+
+    assert len(judged) == 10
+    assert len(result["ols_hits"]) == 12
+    assert len(target["ontology_lookup_hits"]) == 12
+
+
 def test_websearch_strategy_judge_rejects_restricted_then_selects_expanded_hit() -> None:
     restricted = {
         "iri": "https://example.org/wrong",
@@ -3152,7 +3294,7 @@ def test_websearch_strategy_judge_rejects_restricted_then_selects_expanded_hit()
 
     assert result["decision"] == "UBERON_RIGHT"
     assert [call["stage"] for call in stages] == ["restricted", "expanded"]
-    assert stages[1]["restricted_hits"][0]["id"] == "EFO_WRONG"
+    assert stages[1]["restricted_hits"] == []
     assert stages[1]["unrestricted_hits"][0]["id"] == "UBERON_RIGHT"
     assert stages[1]["web_hits"] == [{"title": "support"}]
     assert len(result["search_llm_judgements"]) == 2
@@ -3213,6 +3355,8 @@ def test_websearch_strategy_falls_back_to_unrestricted_ols_and_web_search() -> N
     )
     target = {
         "id": "target-0",
+        "pre_hz_field": "Cell Type",
+        "pre_hz_label": "Cell",
         "hz_field": "cell type",
         "hz_label": "cell",
         "ontology_id": "uberon",
@@ -3238,7 +3382,7 @@ def test_websearch_strategy_falls_back_to_unrestricted_ols_and_web_search() -> N
         {"label": "cell", "ontology_id": None, "rows": 25},
     ]
     assert search_client.calls == [
-        {"query": "cell type: cell ontology", "max_results": 25}
+        {"query": "Cell Type: Cell ontology", "max_results": 25}
     ]
     assert store.ontology_frameworks["cl"]["title"] == "Cell Ontology"
     assert store.ontology_frameworks["cl"]["version"] == "2026-06-08"
