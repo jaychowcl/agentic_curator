@@ -272,7 +272,15 @@ results always include `strategy`, `status`, `decision`, `confidence`, and
 `reason`, and include `web_search_error` when the search client reports one.
 The `rag` strategy currently routes to a placeholder handler.
 
-### Ontology LLM Context Contracts
+### Ontology LLM Calls Per Target And Context Contracts
+
+With the default `websearch` strategy, `llm=True`, and both lookup judges
+enabled, one target makes between zero and five logical LLM calls. Six call
+types exist, but the local lookup judge and the external fallback sequence are
+mutually exclusive after a successful local match. A transient failure may
+cause up to three physical provider attempts for one logical call under the
+default `RequestPolicy`. A grounded-search cache hit makes no new Gemini
+provider call.
 
 User-supplied `publication_context` is preserved in full for every structured
 ontology LLM call and omitted only when empty. The grounded-search provider call
@@ -288,14 +296,32 @@ Target IDs, source markers, normalized duplicates, ontology constraints,
 occurrences, JSON Pointer paths, match flags, prior assignments, and prior
 strategy/lookup traces are excluded from prompts but retained in outputs.
 
-| LLM call | Model-facing context |
-| --- | --- |
-| Framework assignment | Full publication context; semantic target; candidate framework `id`, `title`, and complete `description`. |
-| Field assignment | Full publication context; semantic target plus current `ontology_id`; configured field key with `label`, `aliases`, and complete `description`. Field provenance, confidence, and reasons are excluded. |
-| Local lookup judge | Full publication context; semantic target; top 10 ranked hits with `id`, `accession`, `iri`, `title`, complete `description`, and `ontology_id`. |
-| Restricted search judge | Full publication context; semantic target plus assigned `ontology_id`; stage name; top 10 restricted OLS candidates in the same compact hit shape. Empty unrestricted/web sections are omitted. |
-| Gemini grounded search | Original field and label in `{field}: {label} ontology`; no full target, publication context, or OLS candidates. |
-| Expanded search judge | Full publication context; semantic target plus initial `ontology_id`; stage name; top 10 unrestricted OLS candidates; one grounded response summary plus source title/URL pairs. Rejected restricted candidates are omitted. |
+| LLM call | When it runs | Model-facing context |
+| --- | --- | --- |
+| Local lookup judge | Exact lookup has at least `lookup_llm_threshold` hits, or FTS5 returns any candidates. | Full publication context; semantic target; top 10 ranked hits with `id`, `accession`, `iri`, `title`, complete `description`, and `ontology_id`. |
+| Framework assignment | Exact and FTS lookup produce no accepted match. | Full publication context; semantic target; candidate framework `id`, `title`, and complete `description`. |
+| Field assignment | `OntoStore.lookup_fields(...)` cannot resolve the field. | Full publication context; semantic target plus current `ontology_id`; configured field key with `label`, `aliases`, and complete `description`. Field provenance, confidence, and reasons are excluded. |
+| Restricted search judge | Local lookup missed, a framework was assigned, and framework-restricted OLS returned candidates. | Full publication context; semantic target plus assigned `ontology_id`; stage `restricted`; top 10 restricted OLS candidates in the same compact hit shape. Empty unrestricted/web sections are omitted. |
+| Gemini grounded search | Restricted OLS has no candidates or the restricted judge rejects every candidate. | Original field and label in `{field}: {label} ontology`; no full target, publication context, or OLS candidates. |
+| Expanded search judge | Restricted search failed or was rejected, and unrestricted OLS or safely resolved web IDs produced candidates. | Full publication context; semantic target plus initial `ontology_id`; stage `expanded`; top 10 unrestricted OLS and resolved web candidates; one grounded response summary plus source title/URL pairs. Rejected restricted candidates are omitted. |
+
+The expected logical call count per target is:
+
+| Target path | Calls |
+| --- | ---: |
+| Unique exact local match and known field | 0 |
+| Unique exact local match and unknown field | 1: field assignment |
+| Ambiguous exact or FTS match and known field | 1: local lookup judge |
+| Ambiguous exact or FTS match and unknown field | 2: local lookup judge and field assignment |
+| Local miss, known field, restricted OLS accepted | 2: framework assignment and restricted judge |
+| Local miss, unknown field, restricted OLS accepted | 3: framework assignment, field assignment, and restricted judge |
+| Local miss, known field, restricted rejected, expanded path completed | 4: framework assignment, restricted judge, grounded search, and expanded judge |
+| Local miss, unknown field, restricted rejected, expanded path completed | 5: framework assignment, field assignment, restricted judge, grounded search, and expanded judge |
+
+When restricted OLS returns no candidates, the restricted judge is skipped, so
+the expanded paths use one fewer call. If framework assignment returns no usable
+framework, external strategy calls are skipped. If expanded search produces no
+resolved candidates, its judge is also skipped.
 
 Candidate descriptions are never truncated: string values and every entry in
 list-valued descriptions are passed completely. Candidate `ontology_prefix`,
@@ -303,6 +329,9 @@ list-valued descriptions are passed completely. Candidate `ontology_prefix`,
 from prompts. Search-judge decisions may still use a supplied candidate's
 `id`, `accession`, or `iri`. Top-10 limits affect prompts only; complete local
 and OLS hit lists remain in `ontology_lookup_hits` and strategy traces.
+OLS requests, SQLite exact/FTS lookup, ontology downloads, web-ID resolution,
+and post-strategy local enrichment are internal API or storage operations, not
+LLM calls.
 
 `OntologyHarmonizer(ontostore=None, llm=None)` creates a default `OntoStore`
 when no store is supplied and lazily creates `LLM()` only when framework
