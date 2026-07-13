@@ -25,6 +25,7 @@ from agentic_curator.cli.common import (
 
 LOGGER = logging.getLogger(__name__)
 COMMANDS = {"review", "extract-evidence", "judge-evidence"}
+REVIEW_STRATEGIES = ("direct", "evidence_then_judgement")
 
 
 def _add_reviewer_inputs(parser: argparse.ArgumentParser) -> None:
@@ -42,6 +43,15 @@ def _add_common_outputs(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--out", default=None)
 
 
+def _add_review_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--accession", action="append", default=[])
+    parser.add_argument(
+        "--strategy",
+        choices=REVIEW_STRATEGIES,
+        default="direct",
+    )
+
+
 def _build_parser(*, include_legacy_options: bool) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cli_thematic_reviewer",
@@ -50,6 +60,7 @@ def _build_parser(*, include_legacy_options: bool) -> argparse.ArgumentParser:
     add_verbosity_argument(parser)
     if include_legacy_options:
         _add_reviewer_inputs(parser)
+        _add_review_options(parser)
         _add_common_outputs(parser)
 
     subparsers = parser.add_subparsers(dest="command")
@@ -60,6 +71,7 @@ def _build_parser(*, include_legacy_options: bool) -> argparse.ArgumentParser:
     )
     add_verbosity_argument(review, default=None, dest="command_verbosity")
     _add_reviewer_inputs(review)
+    _add_review_options(review)
     _add_common_outputs(review)
 
     extract_evidence = subparsers.add_parser(
@@ -114,7 +126,11 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Any:
     reviewer = ThematicReviewer()
 
     if command == "review":
-        return reviewer.review_relevancy(**_reviewer_inputs(args))
+        return reviewer.review_relevancy(
+            **_reviewer_inputs(args),
+            accessions=args.accession,
+            strategy=args.strategy,
+        )
 
     if command == "extract-evidence":
         return reviewer.extract_evidence(**_reviewer_inputs(args))

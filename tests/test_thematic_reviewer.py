@@ -245,6 +245,7 @@ def test_judge_evidence_accepts_expected_inputs_and_returns_json() -> None:
         "judgement": "relevant",
         "reasoning": "Evidence supports the theme.",
         "confidence": "high",
+        "accessions_to_remove": [],
     }
     result = ThematicReviewer(llm=FakeLLM(response=json.dumps(response))).judge_evidence(
         evidences="matched evidence",
@@ -260,6 +261,7 @@ def test_judge_evidence_generates_json_response_from_prompt() -> None:
         "judgement": "relevant",
         "reasoning": "Evidence supports the theme.",
         "confidence": "high",
+        "accessions_to_remove": [],
     }
     fake_llm = FakeLLM(response=json.dumps(response))
     reviewer = ThematicReviewer(llm=fake_llm)
@@ -295,15 +297,13 @@ def test_judge_evidence_generates_json_response_from_prompt() -> None:
 def test_judge_evidence_response_schema_requires_judgement_fields() -> None:
     schema = ThematicReviewer()._judge_evidence_response_schema()
 
-    assert schema == {
-        "type": "OBJECT",
-        "properties": {
-            "judgement": {"type": "STRING"},
-            "reasoning": {"type": "STRING"},
-            "confidence": {"type": "STRING"},
-        },
-        "required": ["judgement", "reasoning", "confidence"],
-    }
+    assert schema == ThematicReviewer()._review_response_schema()
+    assert schema["required"] == [
+        "judgement",
+        "reasoning",
+        "confidence",
+        "accessions_to_remove",
+    ]
 
 
 def test_judge_evidence_raises_value_error_for_invalid_json_response() -> None:
@@ -414,6 +414,7 @@ def test_extract_evidence_builds_evidence_prompt_before_generation() -> None:
             theme=None,
             metadata=None,
             title=None,
+            accessions=None,
         ):
             self.__class__.calls.append(
                 {
@@ -421,6 +422,7 @@ def test_extract_evidence_builds_evidence_prompt_before_generation() -> None:
                     "theme": theme,
                     "metadata": metadata,
                     "title": title,
+                    "accessions": accessions,
                 }
             )
             return "prompt"
@@ -441,6 +443,7 @@ def test_extract_evidence_builds_evidence_prompt_before_generation() -> None:
             "theme": "fibrosis",
             "metadata": metadata,
             "title": "Fibrosis atlas publication",
+            "accessions": None,
         }
     ]
 
@@ -454,12 +457,14 @@ def test_judge_evidence_builds_judge_prompt_before_generation() -> None:
             evidences=None,
             theme=None,
             title=None,
+            accessions=None,
         ):
             self.__class__.calls.append(
                 {
                     "evidences": evidences,
                     "theme": theme,
                     "title": title,
+                    "accessions": accessions,
                 }
             )
             return "prompt"
@@ -472,12 +477,18 @@ def test_judge_evidence_builds_judge_prompt_before_generation() -> None:
         evidences=evidences,
         theme="fibrosis",
         title="Fibrosis atlas publication",
-    ) == {"response": "ok"}
+    ) == {
+        "judgement": "",
+        "reasoning": "",
+        "confidence": "",
+        "accessions_to_remove": [],
+    }
     assert RecordingReviewer.calls == [
         {
             "evidences": evidences,
             "theme": "fibrosis",
             "title": "Fibrosis atlas publication",
+            "accessions": None,
         }
     ]
 
@@ -503,7 +514,10 @@ def test_evidence_prompt_uses_labeled_blocks_with_string_metadata() -> None:
         "Full publication text\n"
         "\n"
         "Metadata:\n"
-        "metadata text"
+        "metadata text\n"
+        "\n"
+        "Accessions:\n"
+        "[]"
     )
 
 
@@ -528,7 +542,10 @@ def test_evidence_prompt_formats_dict_metadata_as_sorted_json() -> None:
         "{\n"
         '  "organism": "human",\n'
         '  "tissue": "lung"\n'
-        "}"
+        "}\n"
+        "\n"
+        "Accessions:\n"
+        "[]"
     )
 
 
