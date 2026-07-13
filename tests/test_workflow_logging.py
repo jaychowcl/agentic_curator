@@ -20,14 +20,24 @@ class StaticReviewerLlm:
         required = schema.get("required", [])
         if "evidences" in required:
             return '{"evidences": []}'
-        return '{"judgement": "relevant", "reasoning": "ok", "confidence": "high", "accessions_to_remove": []}'
+        return '''{"accession_assessments": [{
+            "accession": "GSE1",
+            "human_samples": {"status": "meets", "evidence": "human"},
+            "transcriptomics_assay": {"status": "meets", "evidence": "RNA-seq"},
+            "established_fibrosis": {"status": "meets", "evidence": "fibrosis"},
+            "accession_linkage": {"status": "meets", "evidence": "GSE1"},
+            "confidence": "high",
+            "reason": "All criteria meet."
+        }]}'''
 
 
 def test_thematic_reviewer_logs_orchestrator_steps(caplog) -> None:
     reviewer = ThematicReviewer(llm=StaticReviewerLlm())
 
     with caplog.at_level(logging.INFO):
-        reviewer.review_relevancy(publication_text="Text", theme="fibrosis")
+        reviewer.review_relevancy(
+            publication_text="Text", theme="fibrosis", accessions=["GSE1"]
+        )
 
     messages = [record.getMessage() for record in caplog.records]
     assert "Starting thematic relevance review strategy=direct." in messages
