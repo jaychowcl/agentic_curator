@@ -45,6 +45,30 @@ class FakeLLM:
         return self.response
 
 
+def accession_assessment(
+    accession: str,
+    *,
+    human_samples: str = "meets",
+    transcriptomics_assay: str = "meets",
+    established_fibrosis: str = "meets",
+    accession_linkage: str = "meets",
+    confidence: str = "high",
+    reason: str = "The publication directly links the accession to eligible samples.",
+) -> dict:
+    def criterion(status: str) -> dict:
+        return {"status": status, "evidence": f"Publication evidence: {status}."}
+
+    return {
+        "accession": accession,
+        "human_samples": criterion(human_samples),
+        "transcriptomics_assay": criterion(transcriptomics_assay),
+        "established_fibrosis": criterion(established_fibrosis),
+        "accession_linkage": criterion(accession_linkage),
+        "confidence": confidence,
+        "reason": reason,
+    }
+
+
 def test_thematic_reviewer_can_be_instantiated() -> None:
     assert isinstance(ThematicReviewer(), ThematicReviewer)
 
@@ -54,18 +78,13 @@ def test_thematic_reviewer_remains_exported_from_package_root() -> None:
 
 
 def test_review_relevancy_directly_reviews_publication_and_accessions_once() -> None:
-    decision = {
-        "judgement": "relevant",
-        "reasoning": "The human IPF dataset satisfies the theme.",
-        "confidence": "high",
-        "accessions_to_remove": [
-            {
-                "accession": "GSE2",
-                "reason": "The publication identifies this as mouse-only.",
-                "confidence": "high",
-            }
-        ],
-    }
+    gse1 = accession_assessment("GSE1")
+    gse2 = accession_assessment(
+        "GSE2",
+        human_samples="fails",
+        reason="The publication identifies this accession as mouse-only.",
+    )
+    decision = {"accession_assessments": [gse1, gse2]}
     fake_llm = FakeLLM(response=json.dumps(decision))
 
     result = ThematicReviewer(llm=fake_llm).review_relevancy(
@@ -76,14 +95,30 @@ def test_review_relevancy_directly_reviews_publication_and_accessions_once() -> 
         accessions=["GSE1", "GSE2", "GSE1"],
     )
 
-    assert result == {**decision, "strategy": "direct"}
+    assert result == {
+        "judgement": "relevant",
+        "reasoning": "1 of 2 supplied accessions meets all theme criteria.",
+        "confidence": "high",
+        "accessions_to_remove": [
+            {
+                "accession": "GSE2",
+                "reason": "The publication identifies this accession as mouse-only.",
+                "confidence": "high",
+            }
+        ],
+        "accession_assessments": [
+            {**gse1, "decision": "qualifies"},
+            {**gse2, "decision": "exclude"},
+        ],
+        "strategy": "direct",
+    }
     assert len(fake_llm.calls) == 1
     assert "Publication Text:\nGSE1 profiles human IPF. GSE2 profiles mice." in (
         fake_llm.calls[0]["prompt"]
     )
     assert 'Accessions:\n[\n  "GSE1",\n  "GSE2"\n]' in fake_llm.calls[0]["prompt"]
     assert fake_llm.calls[0]["config"]["response_schema"] == (
-        ThematicReviewer()._review_response_schema()
+        ThematicReviewer()._direct_review_response_schema()
     )
 
 
@@ -212,19 +247,15 @@ def test_review_relevancy_rejects_unknown_strategy() -> None:
         )
 
 
-def test_direct_review_drops_unknown_and_duplicate_accession_rejections(
+def test_direct_review_drops_unknown_and_duplicate_accession_assessments(
     caplog,
 ) -> None:
-    decision = {
-        "judgement": "relevant",
-        "reasoning": "One supplied accession qualifies.",
-        "confidence": "high",
-        "accessions_to_remove": [
-            {"accession": "GSE2", "reason": "mouse", "confidence": "high"},
-            {"accession": "GSE2", "reason": "duplicate", "confidence": "low"},
-            {"accession": "GSE999", "reason": "invented", "confidence": "high"},
-        ],
-    }
+    gse2 = accession_assessment("GSE2", human_samples="fails", reason="mouse")
+    decision = {"accession_assessments": [
+        gse2,
+        accession_assessment("GSE2", human_samples="fails", reason="duplicate"),
+        accession_assessment("GSE999", reason="invented"),
+    ]}
 
     result = ThematicReviewer(
         llm=FakeLLM(response=json.dumps(decision))
@@ -237,7 +268,76 @@ def test_direct_review_drops_unknown_and_duplicate_accession_rejections(
     assert result["accessions_to_remove"] == [
         {"accession": "GSE2", "reason": "mouse", "confidence": "high"}
     ]
-    assert "unknown accession rejection" in caplog.text
+    assert result["accession_assessments"][0]["accession"] == "GSE1"
+    assert result["accession_assessments"][0]["decision"] == "uncertain"
+    assert "unknown accession assessment" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("assessments", "judgement", "confidence"),
+    [
+        ([accession_assessment("GSE1")], "relevant", "high"),
+        (
+            [accession_assessment("GSE1", established_fibrosis="fails", confidence="medium")],
+            "not_relevant",
+            "medium",
+        ),
+        (
+            [accession_assessment("GSE1", accession_linkage="uncertain", confidence="low")],
+            "unsure",
+            "low",
+        ),
+    ],
+)
+def test_direct_review_derives_publication_judgement_from_accession_criteria(
+    assessments, judgement, confidence
+) -> None:
+    result = ThematicReviewer(
+        llm=FakeLLM(response=json.dumps({"accession_assessments": assessments}))
+    ).review_relevancy(
+        publication_text="publication",
+        theme="fibrosis",
+        accessions=["GSE1"],
+    )
+
+    assert result["judgement"] == judgement
+    assert result["confidence"] == confidence
+
+
+def test_direct_review_schema_constrains_criteria_and_confidence() -> None:
+    schema = ThematicReviewer()._direct_review_response_schema()
+    assert schema["required"] == ["accession_assessments"]
+    item = schema["properties"]["accession_assessments"]["items"]
+    assert item["required"] == [
+        "accession",
+        "human_samples",
+        "transcriptomics_assay",
+        "established_fibrosis",
+        "accession_linkage",
+        "confidence",
+        "reason",
+    ]
+    assert item["properties"]["confidence"]["enum"] == ["low", "medium", "high"]
+    assert item["properties"]["human_samples"]["properties"]["status"]["enum"] == [
+        "meets",
+        "fails",
+        "uncertain",
+    ]
+
+
+def test_direct_prompt_forbids_external_accession_knowledge_and_cohort_transfer() -> None:
+    reviewer = ThematicReviewer()
+    prompt = reviewer._direct_review_prompt(
+        publication_text="A paper.",
+        theme="fibrosis",
+        metadata=[{"accession": "GSE1", "context": "Study: Compact context"}],
+        accessions=["GSE1"],
+    )
+
+    assert "Never use remembered or external knowledge" in prompt
+    assert "Never transfer evidence between cohorts" in prompt
+    assert '"accession": "GSE1"' in prompt
+    assert "Study: Compact context" in prompt
 
 
 def test_judge_evidence_accepts_expected_inputs_and_returns_json() -> None:
