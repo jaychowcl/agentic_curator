@@ -53,7 +53,41 @@ def test_thematic_reviewer_remains_exported_from_package_root() -> None:
     assert RootThematicReviewer is ThematicReviewer
 
 
-def test_review_relevancy_returns_evidence_decision() -> None:
+def test_review_relevancy_directly_reviews_publication_and_accessions_once() -> None:
+    decision = {
+        "judgement": "relevant",
+        "reasoning": "The human IPF dataset satisfies the theme.",
+        "confidence": "high",
+        "accessions_to_remove": [
+            {
+                "accession": "GSE2",
+                "reason": "The publication identifies this as mouse-only.",
+                "confidence": "high",
+            }
+        ],
+    }
+    fake_llm = FakeLLM(response=json.dumps(decision))
+
+    result = ThematicReviewer(llm=fake_llm).review_relevancy(
+        publication_text="GSE1 profiles human IPF. GSE2 profiles mice.",
+        theme="fibrosis",
+        metadata={"organism": "human", "tissue": "lung"},
+        title="Fibrosis atlas publication",
+        accessions=["GSE1", "GSE2", "GSE1"],
+    )
+
+    assert result == {**decision, "strategy": "direct"}
+    assert len(fake_llm.calls) == 1
+    assert "Publication Text:\nGSE1 profiles human IPF. GSE2 profiles mice." in (
+        fake_llm.calls[0]["prompt"]
+    )
+    assert 'Accessions:\n[\n  "GSE1",\n  "GSE2"\n]' in fake_llm.calls[0]["prompt"]
+    assert fake_llm.calls[0]["config"]["response_schema"] == (
+        ThematicReviewer()._review_response_schema()
+    )
+
+
+def test_review_relevancy_returns_evidence_decision_for_legacy_strategy() -> None:
     evidences = {
         "evidences": [
             {
@@ -68,6 +102,7 @@ def test_review_relevancy_returns_evidence_decision() -> None:
         "judgement": "relevant",
         "reasoning": "The evidence directly supports the theme.",
         "confidence": "high",
+        "accessions_to_remove": [],
     }
     result = ThematicReviewer(
         llm=FakeLLM(responses=[json.dumps(evidences), json.dumps(judgement)])
@@ -76,12 +111,16 @@ def test_review_relevancy_returns_evidence_decision() -> None:
         theme="fibrosis",
         metadata={"organism": "human", "tissue": "lung"},
         title="Fibrosis atlas publication",
+        accessions=["GSE1"],
+        strategy="evidence_then_judgement",
     )
 
     assert result == {
+        **judgement,
+        "strategy": "evidence_then_judgement",
         "evidences": evidences,
-        "judgement": judgement,
     }
+    assert len(result["evidences"]["evidences"]) == 1
 
 
 def test_review_relevancy_passes_inputs_to_extract_evidence() -> None:
@@ -95,6 +134,7 @@ def test_review_relevancy_passes_inputs_to_extract_evidence() -> None:
             theme=None,
             metadata=None,
             title=None,
+            accessions=None,
         ):
             self.__class__.calls.append(
                 {
@@ -102,19 +142,26 @@ def test_review_relevancy_passes_inputs_to_extract_evidence() -> None:
                     "theme": theme,
                     "metadata": metadata,
                     "title": title,
+                    "accessions": accessions,
                 }
             )
             return {"evidence": "matched"}
 
-        def judge_evidence(self, evidences, theme=None, title=None):
+        def judge_evidence(self, evidences, theme=None, title=None, accessions=None):
             self.__class__.judge_calls.append(
                 {
                     "evidences": evidences,
                     "theme": theme,
                     "title": title,
+                    "accessions": accessions,
                 }
             )
-            return {"judgement": "relevant"}
+            return {
+                "judgement": "relevant",
+                "reasoning": "matched",
+                "confidence": "high",
+                "accessions_to_remove": [],
+            }
 
     metadata = {"organism": "human", "tissue": "lung"}
     RecordingReviewer.calls = []
@@ -125,11 +172,17 @@ def test_review_relevancy_passes_inputs_to_extract_evidence() -> None:
         theme="fibrosis",
         metadata=metadata,
         title="Fibrosis atlas publication",
+        accessions=["GSE1"],
+        strategy="evidence_then_judgement",
     )
 
     assert result == {
+        "judgement": "relevant",
+        "reasoning": "matched",
+        "confidence": "high",
+        "accessions_to_remove": [],
+        "strategy": "evidence_then_judgement",
         "evidences": {"evidence": "matched"},
-        "judgement": {"judgement": "relevant"},
     }
     assert RecordingReviewer.calls == [
         {
@@ -137,6 +190,7 @@ def test_review_relevancy_passes_inputs_to_extract_evidence() -> None:
             "theme": "fibrosis",
             "metadata": metadata,
             "title": "Fibrosis atlas publication",
+            "accessions": ["GSE1"],
         }
     ]
     assert RecordingReviewer.judge_calls == [
@@ -144,8 +198,46 @@ def test_review_relevancy_passes_inputs_to_extract_evidence() -> None:
             "evidences": {"evidence": "matched"},
             "theme": "fibrosis",
             "title": "Fibrosis atlas publication",
+            "accessions": ["GSE1"],
         }
     ]
+
+
+def test_review_relevancy_rejects_unknown_strategy() -> None:
+    with pytest.raises(ValueError, match="Unsupported thematic review strategy"):
+        ThematicReviewer(llm=FakeLLM()).review_relevancy(
+            publication_text="text",
+            theme="fibrosis",
+            strategy="unknown",
+        )
+
+
+def test_direct_review_drops_unknown_and_duplicate_accession_rejections(
+    caplog,
+) -> None:
+    decision = {
+        "judgement": "relevant",
+        "reasoning": "One supplied accession qualifies.",
+        "confidence": "high",
+        "accessions_to_remove": [
+            {"accession": "GSE2", "reason": "mouse", "confidence": "high"},
+            {"accession": "GSE2", "reason": "duplicate", "confidence": "low"},
+            {"accession": "GSE999", "reason": "invented", "confidence": "high"},
+        ],
+    }
+
+    result = ThematicReviewer(
+        llm=FakeLLM(response=json.dumps(decision))
+    ).review_relevancy(
+        publication_text="text",
+        theme="fibrosis",
+        accessions=["GSE1", "GSE2"],
+    )
+
+    assert result["accessions_to_remove"] == [
+        {"accession": "GSE2", "reason": "mouse", "confidence": "high"}
+    ]
+    assert "unknown accession rejection" in caplog.text
 
 
 def test_judge_evidence_accepts_expected_inputs_and_returns_json() -> None:
