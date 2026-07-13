@@ -699,15 +699,25 @@ labels, and scalar start paths are skipped.
 `review_relevancy()` supports two strategies. `direct` is the default and makes
 one model call over the complete publication. Its prompt appends labeled
 `Theme`, `Title`, `Publication Text`, `Metadata`, and deduplicated `Accessions`
-blocks. `evidence_then_judgement` retains two legacy model calls:
+blocks. Metadata may contain an accession-keyed compact MINiML context when it
+was collected before review; the prompt forbids transferring that evidence to
+another accession or using remembered accession knowledge.
+`evidence_then_judgement` retains two legacy model calls:
 
 1. `extract_evidence()` reads `prompts/evidence_extraction.md`, then appends
    labeled `Theme`, `Title`, `Publication Text`, and `Metadata` blocks.
 2. `judge_evidence()` reads `prompts/judge_evidence.md`, then appends labeled
    `Theme`, `Title`, and `Evidences` blocks.
 
-Both strategies return a flat decision. The legacy strategy additionally
-stores its evidence object under `evidences`:
+Direct review requires one assessment for every supplied accession. Each
+assessment contains `human_samples`, `transcriptomics_assay`,
+`established_fibrosis`, and `accession_linkage` criterion objects with a
+`meets`, `fails`, or `uncertain` status and supporting evidence. Normalization
+drops unknown/duplicate assessments, supplies uncertain entries for missing
+accessions, and derives the accession decisions, publication judgement,
+confidence, and removal list. The legacy strategy continues to return its
+model-authored flat decision and stores its evidence object under `evidences`.
+Direct output has this shape:
 
 ```python
 {
@@ -715,6 +725,18 @@ stores its evidence object under `evidences`:
     "reasoning": "...",
     "confidence": "high",
     "accessions_to_remove": [],
+    "accession_assessments": [
+        {
+            "accession": "GSE1",
+            "human_samples": {"status": "meets", "evidence": "..."},
+            "transcriptomics_assay": {"status": "meets", "evidence": "..."},
+            "established_fibrosis": {"status": "meets", "evidence": "..."},
+            "accession_linkage": {"status": "meets", "evidence": "..."},
+            "confidence": "high",
+            "reason": "...",
+            "decision": "qualifies",
+        }
+    ],
     "strategy": "direct",
 }
 ```
@@ -724,12 +746,11 @@ indented JSON. `None` prompt values become empty strings and all other values
 are converted with `str(...)`.
 
 All model calls pass `response_mime_type="application/json"` and a response
-schema. The evidence schema asks for an object with a required `evidences`
-array. Each evidence item requires `evidence`, `judgement`, `confidence`, and
-`reason` string fields. Decision schemas require `judgement`, `reasoning`,
-`confidence`, and `accessions_to_remove`; each removal requires `accession`,
-`reason`, and `confidence`. Unknown and duplicate accession rejections are
-discarded so only supplied identifiers remain in the trace.
+schema. The direct schema requires `accession_assessments`, enumerates criterion
+statuses and confidence levels, and does not ask the model for a publication
+verdict or removal list. The legacy evidence schema asks for an object with a
+required `evidences` array, while its decision schema retains `judgement`,
+`reasoning`, `confidence`, and `accessions_to_remove`.
 
 <a id="code-flow"></a>
 ## Code Flow
