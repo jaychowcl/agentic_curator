@@ -78,6 +78,7 @@ result = ThematicReviewer().review_relevancy(
     theme="fibrosis",
     metadata={"organism": "human", "tissue": "lung"},
     title="Publication title",
+    accessions=["GSE110147", "GSE102674"],
 )
 print(result["judgement"])
 ```
@@ -157,18 +158,17 @@ Query generation accepts a non-empty theme and returns final Europe PMC query
 strings alongside matching purposes and a strategy summary. Each final query
 includes the dataset-link filter used by ThematicAtlases.
 
-The thematic reviewer accepts publication text, a theme, optional metadata, and
-an optional title. `review_relevancy(...)` returns parsed evidence and judgement
-objects:
+The thematic reviewer accepts publication text, a theme, optional metadata and
+title, and accession identifiers. Direct review is the default and returns one
+flat structured decision over the complete publication:
 
 ```json
 {
-  "evidences": {"evidences": []},
-  "judgement": {
-    "judgement": "relevant",
-    "reasoning": "...",
-    "confidence": "high"
-  }
+  "judgement": "relevant",
+  "reasoning": "...",
+  "confidence": "high",
+  "accessions_to_remove": [],
+  "strategy": "direct"
 }
 ```
 
@@ -229,9 +229,9 @@ creates `LLM()`.
 
 | Method | Inputs | Output |
 | --- | --- | --- |
-| `review_relevancy(publication_text=None, theme=None, metadata=None, title=None)` | Text/theme plus optional string, dict, or list metadata and title | Evidence and judgement wrapper |
-| `extract_evidence(publication_text=None, theme=None, metadata=None, title=None)` | Reviewer source inputs | Parsed evidence dict/list |
-| `judge_evidence(evidences, theme=None, title=None)` | Evidence object plus optional theme/title | Parsed judgement dict/list |
+| `review_relevancy(..., accessions=None, strategy="direct")` | Text/theme, optional metadata/title, accessions, and `direct` or `evidence_then_judgement` | Flat judgement with trace-only accession exclusions |
+| `extract_evidence(..., accessions=None)` | Legacy reviewer source inputs | Parsed evidence dict/list |
+| `judge_evidence(..., accessions=None)` | Legacy evidence object plus theme/title/accessions | Flat parsed judgement |
 
 The methods load packaged Markdown prompts, request schema-constrained JSON,
 and parse provider text with `parse_json_response(...)`. Invalid JSON raises
@@ -418,13 +418,11 @@ calls `google.genai.Client.models.generate_content(...)`.
 
 ```python
 def review_relevancy(inputs):
-    evidences = extract_evidence(inputs)
-    # _evidence_prompt -> LLM.generate_response -> provider SDK
-    # -> parse_json_response
-    judgement = judge_evidence(evidences, theme=inputs.theme, title=inputs.title)
-    # _judge_evidence_prompt -> LLM.generate_response -> provider SDK
-    # -> parse_json_response
-    return {"evidences": evidences, "judgement": judgement}
+    if inputs.strategy == "direct":
+        return direct_whole_publication_judgement(inputs)  # one LLM call
+    evidences = extract_evidence(inputs)                   # legacy call one
+    judgement = judge_evidence(evidences, inputs)          # legacy call two
+    return {**judgement, "evidences": evidences}
 ```
 
 #### Ontology harmonizer

@@ -153,16 +153,17 @@ first generation call.
 
 Main methods:
 
-- `review_relevancy(publication_text=None, theme=None, metadata=None, title=None) -> dict`
-- `extract_evidence(publication_text=None, theme=None, metadata=None, title=None) -> dict | list`
-- `judge_evidence(evidences, theme=None, title=None) -> dict | list`
+- `review_relevancy(..., accessions=None, strategy="direct") -> dict`
+- `extract_evidence(..., accessions=None) -> dict | list` (legacy)
+- `judge_evidence(..., accessions=None) -> dict | list` (legacy)
 
 `metadata` may be a string, dictionary, list, or `None` when used by reviewer
 prompt helpers. The reviewer asks providers for JSON output, passes dict/list
 responses through, parses JSON text with `json.loads(...)`, and raises
 `ValueError` for invalid JSON text.
 
-Evidence extraction and final judgement request `max_output_tokens=16384`.
+Direct review, evidence extraction, and final judgement request
+`max_output_tokens=16384`.
 Gemini counts internal thinking against this budget, so the reviewer overrides
 the wrapper's smaller general default for long full-text evidence responses.
 Invalid or truncated consumed responses still raise and are not regenerated
@@ -695,19 +696,26 @@ labels, and scalar start paths are skipped.
 <a id="reviewer-workflow"></a>
 ## Reviewer Workflow
 
-`review_relevancy()` performs two model calls:
+`review_relevancy()` supports two strategies. `direct` is the default and makes
+one model call over the complete publication. Its prompt appends labeled
+`Theme`, `Title`, `Publication Text`, `Metadata`, and deduplicated `Accessions`
+blocks. `evidence_then_judgement` retains two legacy model calls:
 
 1. `extract_evidence()` reads `prompts/evidence_extraction.md`, then appends
    labeled `Theme`, `Title`, `Publication Text`, and `Metadata` blocks.
 2. `judge_evidence()` reads `prompts/judge_evidence.md`, then appends labeled
    `Theme`, `Title`, and `Evidences` blocks.
 
-`review_relevancy()` returns:
+Both strategies return a flat decision. The legacy strategy additionally
+stores its evidence object under `evidences`:
 
 ```python
 {
-    "evidences": evidence_result,
-    "judgement": judgement_result,
+    "judgement": "relevant",
+    "reasoning": "...",
+    "confidence": "high",
+    "accessions_to_remove": [],
+    "strategy": "direct",
 }
 ```
 
@@ -715,11 +723,13 @@ Prompt values that are dictionaries or lists are serialized as sorted,
 indented JSON. `None` prompt values become empty strings and all other values
 are converted with `str(...)`.
 
-Both model calls pass `response_mime_type="application/json"` and a response
+All model calls pass `response_mime_type="application/json"` and a response
 schema. The evidence schema asks for an object with a required `evidences`
 array. Each evidence item requires `evidence`, `judgement`, `confidence`, and
-`reason` string fields. The judge schema asks for required `judgement`,
-`reasoning`, and `confidence` string fields.
+`reason` string fields. Decision schemas require `judgement`, `reasoning`,
+`confidence`, and `accessions_to_remove`; each removal requires `accession`,
+`reason`, and `confidence`. Unknown and duplicate accession rejections are
+discarded so only supplied identifiers remain in the trace.
 
 <a id="code-flow"></a>
 ## Code Flow
@@ -733,8 +743,9 @@ Major orchestration flow:
    from `--verbosity`, and write pretty JSON to stdout or `--out`.
 2. `QueryGenerator.generate_queries()` validates its inputs, requests topical
    query details once, validates parsed JSON, and adds the dataset-link filter.
-3. `review_relevancy()` calls `extract_evidence(...)`, then passes that parsed
-   evidence result into `judge_evidence(...)`.
+3. `review_relevancy()` either judges the complete publication directly once,
+   or calls `extract_evidence(...)` followed by `judge_evidence(...)` for the
+   legacy strategy.
 4. Each reviewer primitive loads its packaged Markdown prompt, appends labeled
    input blocks, then calls `self._llm().generate_response(...)` with a JSON
    response schema.
