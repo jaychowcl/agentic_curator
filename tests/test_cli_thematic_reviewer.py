@@ -23,6 +23,8 @@ class RecordingReviewer:
         theme=None,
         metadata=None,
         title=None,
+        accessions=None,
+        strategy="direct",
     ):
         self.__class__.calls.append(
             {
@@ -30,6 +32,8 @@ class RecordingReviewer:
                 "theme": theme,
                 "metadata": metadata,
                 "title": title,
+                "accessions": accessions,
+                "strategy": strategy,
             }
         )
         return {}
@@ -101,6 +105,8 @@ def test_cli_direct_inputs_prints_json_to_stdout(
             "theme": "fibrosis",
             "metadata": "metadata text",
             "title": "Publication title",
+            "accessions": [],
+            "strategy": "direct",
         }
     ]
 
@@ -146,6 +152,8 @@ def test_cli_file_inputs_are_read_as_strings(
             "theme": "Theme from file",
             "metadata": '{"organism": "human"}',
             "title": "Title from file",
+            "accessions": [],
+            "strategy": "direct",
         }
     ]
 
@@ -180,6 +188,8 @@ def test_cli_file_inputs_override_direct_values(
             "theme": "Theme from file",
             "metadata": None,
             "title": None,
+            "accessions": [],
+            "strategy": "direct",
         }
     ]
 
@@ -229,6 +239,42 @@ def test_cli_review_subcommand_calls_review_relevancy(
             "theme": "fibrosis",
             "metadata": None,
             "title": None,
+            "accessions": [],
+            "strategy": "direct",
+        }
+    ]
+
+
+def test_cli_review_accepts_accessions_and_legacy_strategy(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch,
+) -> None:
+    RecordingReviewer.calls = []
+    monkeypatch.setattr(cli_thematic_reviewer, "ThematicReviewer", RecordingReviewer)
+
+    assert cli_thematic_reviewer.main(
+        [
+            "review",
+            "--publication-text",
+            "Publication text",
+            "--accession",
+            "GSE1",
+            "--accession",
+            "GSE2",
+            "--strategy",
+            "evidence_then_judgement",
+        ]
+    ) == 0
+
+    assert json.loads(capsys.readouterr().out) == {}
+    assert RecordingReviewer.calls == [
+        {
+            "publication_text": "Publication text",
+            "theme": None,
+            "metadata": None,
+            "title": None,
+            "accessions": ["GSE1", "GSE2"],
+            "strategy": "evidence_then_judgement",
         }
     ]
 

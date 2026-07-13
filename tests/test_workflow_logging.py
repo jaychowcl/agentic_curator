@@ -20,7 +20,7 @@ class StaticReviewerLlm:
         required = schema.get("required", [])
         if "evidences" in required:
             return '{"evidences": []}'
-        return '{"judgement": "relevant", "reasoning": "ok", "confidence": "high"}'
+        return '{"judgement": "relevant", "reasoning": "ok", "confidence": "high", "accessions_to_remove": []}'
 
 
 def test_thematic_reviewer_logs_orchestrator_steps(caplog) -> None:
@@ -30,8 +30,11 @@ def test_thematic_reviewer_logs_orchestrator_steps(caplog) -> None:
         reviewer.review_relevancy(publication_text="Text", theme="fibrosis")
 
     messages = [record.getMessage() for record in caplog.records]
-    assert "Starting thematic relevance review." in messages
-    assert "Completed thematic relevance review." in messages
+    assert "Starting thematic relevance review strategy=direct." in messages
+    assert (
+        "Completed thematic relevance review strategy=direct judgement=relevant "
+        "accession_rejections=0."
+    ) in messages
 
 
 def test_ontology_harmonizer_logs_target_workflow(caplog) -> None:
