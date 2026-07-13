@@ -29,6 +29,14 @@ class ThematicReviewer:
     """Assess publication relevance to a thematic curation target."""
 
     MAX_OUTPUT_TOKENS = 16_384
+    ACCESSION_CRITERIA = (
+        "human_samples",
+        "transcriptomics_assay",
+        "established_fibrosis",
+        "accession_linkage",
+    )
+    CRITERION_STATUSES = ("meets", "fails", "uncertain")
+    CONFIDENCE_LEVELS = ("low", "medium", "high")
 
     def __init__(self, llm: Any | None = None) -> None:
         self.llm = llm
@@ -107,10 +115,10 @@ class ThematicReviewer:
             config={
                 "max_output_tokens": self.MAX_OUTPUT_TOKENS,
                 "response_mime_type": "application/json",
-                "response_schema": self._review_response_schema(),
+                "response_schema": self._direct_review_response_schema(),
             },
         )
-        return self._normalized_review_result(
+        return self._normalized_direct_review_result(
             parse_json_response(response),
             accessions=accessions,
         )
@@ -311,6 +319,50 @@ class ThematicReviewer:
     def _judge_evidence_response_schema(self) -> dict[str, Any]:
         return self._review_response_schema()
 
+    def _direct_review_response_schema(self) -> dict[str, Any]:
+        criterion_schema = {
+            "type": "OBJECT",
+            "properties": {
+                "status": {
+                    "type": "STRING",
+                    "enum": list(self.CRITERION_STATUSES),
+                },
+                "evidence": {"type": "STRING"},
+            },
+            "required": ["status", "evidence"],
+        }
+        assessment_properties = {
+            "accession": {"type": "STRING"},
+            **{
+                criterion: criterion_schema
+                for criterion in self.ACCESSION_CRITERIA
+            },
+            "confidence": {
+                "type": "STRING",
+                "enum": list(self.CONFIDENCE_LEVELS),
+            },
+            "reason": {"type": "STRING"},
+        }
+        return {
+            "type": "OBJECT",
+            "properties": {
+                "accession_assessments": {
+                    "type": "ARRAY",
+                    "items": {
+                        "type": "OBJECT",
+                        "properties": assessment_properties,
+                        "required": [
+                            "accession",
+                            *self.ACCESSION_CRITERIA,
+                            "confidence",
+                            "reason",
+                        ],
+                    },
+                }
+            },
+            "required": ["accession_assessments"],
+        }
+
     def _review_response_schema(self) -> dict[str, Any]:
         return {
             "type": "OBJECT",
@@ -390,3 +442,165 @@ class ThematicReviewer:
             "confidence": str(result.get("confidence", "")),
             "accessions_to_remove": removals,
         }
+
+    def _normalized_direct_review_result(
+        self,
+        result: Any,
+        *,
+        accessions: list[str] | None,
+    ) -> dict[str, Any]:
+        if not isinstance(result, dict):
+            raise ValueError("Thematic review response must be a JSON object.")
+
+        supplied = self._normalized_accessions(accessions)
+        supplied_set = set(supplied)
+        by_accession: dict[str, dict[str, Any]] = {}
+        raw_assessments = result.get("accession_assessments", [])
+        if not isinstance(raw_assessments, list):
+            raw_assessments = []
+
+        for value in raw_assessments:
+            if not isinstance(value, dict):
+                continue
+            accession = str(value.get("accession", "")).strip()
+            if accession not in supplied_set:
+                LOGGER.warning(
+                    "Ignoring unknown accession assessment accession=%r.", accession
+                )
+                continue
+            if accession in by_accession:
+                LOGGER.warning(
+                    "Ignoring duplicate accession assessment accession=%r.", accession
+                )
+                continue
+            by_accession[accession] = self._normalized_accession_assessment(
+                value,
+                accession=accession,
+            )
+
+        assessments = []
+        for accession in supplied:
+            assessment = by_accession.get(accession)
+            if assessment is None:
+                assessment = self._missing_accession_assessment(accession)
+            assessments.append(assessment)
+
+        qualifying = [
+            value for value in assessments if value["decision"] == "qualifies"
+        ]
+        excluded = [
+            value for value in assessments if value["decision"] == "exclude"
+        ]
+        uncertain = [
+            value for value in assessments if value["decision"] == "uncertain"
+        ]
+
+        if qualifying:
+            judgement = "relevant"
+            confidence = self._aggregate_confidence(qualifying, strongest=True)
+            reasoning = (
+                f"{len(qualifying)} of {len(assessments)} supplied accessions "
+                "meets all theme criteria."
+            )
+        elif assessments and len(excluded) == len(assessments):
+            judgement = "not_relevant"
+            confidence = self._aggregate_confidence(excluded, strongest=False)
+            reasoning = (
+                f"All {len(assessments)} supplied accessions explicitly fail "
+                "at least one theme criterion."
+            )
+        else:
+            judgement = "unsure"
+            confidence = self._aggregate_confidence(uncertain, strongest=False)
+            reasoning = (
+                "No supplied accession meets all theme criteria; "
+                f"{len(uncertain)} uncertain and {len(excluded)} excluded."
+            )
+
+        return {
+            "judgement": judgement,
+            "reasoning": reasoning,
+            "confidence": confidence,
+            "accessions_to_remove": [
+                {
+                    "accession": value["accession"],
+                    "reason": value["reason"],
+                    "confidence": value["confidence"],
+                }
+                for value in excluded
+            ],
+            "accession_assessments": assessments,
+        }
+
+    def _normalized_accession_assessment(
+        self,
+        value: dict[str, Any],
+        *,
+        accession: str,
+    ) -> dict[str, Any]:
+        assessment = {"accession": accession}
+        statuses = []
+        for criterion in self.ACCESSION_CRITERIA:
+            normalized = self._normalized_criterion(value.get(criterion))
+            assessment[criterion] = normalized
+            statuses.append(normalized["status"])
+
+        if "fails" in statuses:
+            decision = "exclude"
+        elif statuses and all(status == "meets" for status in statuses):
+            decision = "qualifies"
+        else:
+            decision = "uncertain"
+
+        confidence = str(value.get("confidence", "")).strip().lower()
+        if confidence not in self.CONFIDENCE_LEVELS:
+            confidence = "low"
+        reason = str(value.get("reason", "")).strip()
+        if not reason:
+            reason = "The criterion assessments determine this accession decision."
+        return {
+            **assessment,
+            "confidence": confidence,
+            "reason": reason,
+            "decision": decision,
+        }
+
+    def _normalized_criterion(self, value: Any) -> dict[str, str]:
+        if not isinstance(value, dict):
+            return {"status": "uncertain", "evidence": ""}
+        status = str(value.get("status", "")).strip().lower()
+        evidence = str(value.get("evidence", "")).strip()
+        if status not in self.CRITERION_STATUSES or (
+            status != "uncertain" and not evidence
+        ):
+            status = "uncertain"
+        return {"status": status, "evidence": evidence}
+
+    def _missing_accession_assessment(self, accession: str) -> dict[str, Any]:
+        return {
+            "accession": accession,
+            **{
+                criterion: {"status": "uncertain", "evidence": ""}
+                for criterion in self.ACCESSION_CRITERIA
+            },
+            "confidence": "low",
+            "reason": (
+                "The model did not return an assessment for this supplied accession."
+            ),
+            "decision": "uncertain",
+        }
+
+    def _aggregate_confidence(
+        self,
+        assessments: list[dict[str, Any]],
+        *,
+        strongest: bool,
+    ) -> str:
+        if not assessments:
+            return "low"
+        ranks = {value: index for index, value in enumerate(self.CONFIDENCE_LEVELS)}
+        selected = (max if strongest else min)(
+            assessments,
+            key=lambda value: ranks.get(value.get("confidence", "low"), 0),
+        )
+        return str(selected.get("confidence", "low"))

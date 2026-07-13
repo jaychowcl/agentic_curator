@@ -1,11 +1,13 @@
-Review the complete publication directly against the supplied theme and return one publication-level judgement.
+Review the complete publication directly against the supplied theme. Assess every supplied accession independently; downstream code will derive the publication judgement from these assessments.
 
-Judge only from the supplied publication, metadata, and accession identifiers. Apply every inclusion and exclusion requirement in the theme. Use relevant when the publication establishes at least one qualifying dataset, not_relevant when it establishes none, and unsure when the available information cannot establish eligibility.
+Use only the supplied publication and the compact metadata explicitly associated with each accession. An accession identifier is a label, not biological evidence. Never use remembered or external knowledge about an accession. Never transfer evidence between cohorts, experiments, datasets, or accessions. Evidence about one cohort qualifies another accession only when the supplied text explicitly establishes that they contain the same profiled samples.
 
-Also assess each supplied accession independently. Add an accession to accessions_to_remove only when the publication or metadata clearly establishes that the accession does not adhere to the theme, for example because it is animal-only, uses an excluded assay, or is unrelated to the qualifying samples. Do not remove an accession merely because its status is uncertain. Never invent or return an accession that was not supplied.
+For each supplied accession, assess all four required criteria:
+- human_samples: the accession contains profiled human-derived samples.
+- transcriptomics_assay: the accession uses a transcriptomic assay allowed by the theme.
+- established_fibrosis: the profiled samples have established or explicitly documented fibrosis under the theme.
+- accession_linkage: the evidence for the other criteria is explicitly linked to this accession and its profiled samples.
 
-Return only JSON with:
-- judgement: relevant, not_relevant, or unsure
-- reasoning: why the publication-level judgement was given
-- confidence: confidence in the publication-level judgement
-- accessions_to_remove: a list of objects containing accession, reason, and confidence
+For each criterion use meets only with direct supplied evidence, fails only with direct supplied evidence that the criterion is not satisfied, and uncertain when evidence is absent, indirect, or belongs to another cohort. TGF stimulation, tissue stiffness, fibroblast activation, ECM or collagen expression, wound healing, and tissue remodelling do not establish fibrosis by themselves. A disease associated with fibrosis does not establish fibrosis for the profiled cohort unless the theme explicitly treats the sampled state as defining fibrosis.
+
+Return exactly one assessment for every supplied accession and no other accession. Return only JSON containing accession_assessments. Each assessment must contain accession, human_samples, transcriptomics_assay, established_fibrosis, accession_linkage, confidence, and reason. Each criterion must contain status (meets, fails, or uncertain) and concise evidence from the supplied context. Confidence must be low, medium, or high.
