@@ -29,6 +29,7 @@ class ThematicReviewer:
     """Assess publication relevance to a thematic curation target."""
 
     MAX_OUTPUT_TOKENS = 16_384
+    DIRECT_REVIEW_REVISION = 2
     ACCESSION_CRITERIA = (
         "human_samples",
         "transcriptomics_assay",
@@ -530,6 +531,7 @@ class ThematicReviewer:
                 for value in excluded
             ],
             "accession_assessments": assessments,
+            "review_revision": self.DIRECT_REVIEW_REVISION,
         }
 
     def _normalized_accession_assessment(
@@ -545,16 +547,17 @@ class ThematicReviewer:
             assessment[criterion] = normalized
             statuses.append(normalized["status"])
 
-        if "fails" in statuses:
+        confidence = str(value.get("confidence", "")).strip().lower()
+        if confidence not in self.CONFIDENCE_LEVELS:
+            confidence = "low"
+
+        if "fails" in statuses and confidence in {"medium", "high"}:
             decision = "exclude"
         elif statuses and all(status == "meets" for status in statuses):
             decision = "qualifies"
         else:
             decision = "uncertain"
 
-        confidence = str(value.get("confidence", "")).strip().lower()
-        if confidence not in self.CONFIDENCE_LEVELS:
-            confidence = "low"
         reason = str(value.get("reason", "")).strip()
         if not reason:
             reason = "The criterion assessments determine this accession decision."
