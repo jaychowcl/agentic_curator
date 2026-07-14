@@ -110,6 +110,7 @@ def test_review_relevancy_directly_reviews_publication_and_accessions_once() -> 
             {**gse1, "decision": "qualifies"},
             {**gse2, "decision": "exclude"},
         ],
+        "review_revision": 2,
         "strategy": "direct",
     }
     assert len(fake_llm.calls) == 1
@@ -304,6 +305,52 @@ def test_direct_review_derives_publication_judgement_from_accession_criteria(
     assert result["confidence"] == confidence
 
 
+def test_direct_review_downgrades_low_confidence_failure_to_uncertain() -> None:
+    assessment = accession_assessment(
+        "GSE1",
+        accession_linkage="fails",
+        confidence="low",
+        reason="The accession was not explicitly mapped in the publication.",
+    )
+
+    result = ThematicReviewer(
+        llm=FakeLLM(
+            response=json.dumps({"accession_assessments": [assessment]})
+        )
+    ).review_relevancy(
+        publication_text="The accession mapping is unavailable.",
+        theme="fibrosis",
+        accessions=["GSE1"],
+    )
+
+    assert result["judgement"] == "unsure"
+    assert result["accessions_to_remove"] == []
+    assert result["accession_assessments"][0]["decision"] == "uncertain"
+    assert result["review_revision"] == 2
+
+
+def test_direct_review_keeps_medium_confidence_failure_as_exclusion() -> None:
+    assessment = accession_assessment(
+        "GSE1",
+        human_samples="fails",
+        confidence="medium",
+        reason="The publication explicitly identifies the accession as mouse-only.",
+    )
+
+    result = ThematicReviewer(
+        llm=FakeLLM(
+            response=json.dumps({"accession_assessments": [assessment]})
+        )
+    ).review_relevancy(
+        publication_text="GSE1 contains only mouse samples.",
+        theme="fibrosis",
+        accessions=["GSE1"],
+    )
+
+    assert result["judgement"] == "not_relevant"
+    assert result["accessions_to_remove"][0]["accession"] == "GSE1"
+
+
 def test_direct_review_schema_constrains_criteria_and_confidence() -> None:
     schema = ThematicReviewer()._direct_review_response_schema()
     assert schema["required"] == ["accession_assessments"]
@@ -336,6 +383,9 @@ def test_direct_prompt_forbids_external_accession_knowledge_and_cohort_transfer(
 
     assert "Never use remembered or external knowledge" in prompt
     assert "Never transfer evidence between cohorts" in prompt
+    assert "not mentioned or not mapped" in prompt
+    assert "explicitly belongs to a different" in prompt
+    assert "Assess every criterion independently" in prompt
     assert '"accession": "GSE1"' in prompt
     assert "Study: Compact context" in prompt
 
