@@ -717,6 +717,13 @@ drops unknown/duplicate assessments, supplies uncertain entries for missing
 accessions, and derives the accession decisions, publication judgement,
 confidence, and removal list. The legacy strategy continues to return its
 model-authored flat decision and stores its evidence object under `evidences`.
+Direct review revision 2 evaluates all four criteria independently, requires
+absent or unmapped accession linkage to remain uncertain, and reserves linkage
+failure for an explicitly different or ineligible cohort. Any failed criterion
+at low overall assessment confidence is normalized to an uncertain accession
+decision; only medium- or high-confidence failures produce exclusions. New
+direct outputs carry `review_revision=2` so selectively rerun checkpoints can
+be distinguished from earlier schema-compatible direct results.
 Direct output has this shape:
 
 ```python
@@ -738,6 +745,7 @@ Direct output has this shape:
         }
     ],
     "strategy": "direct",
+    "review_revision": 2,
 }
 ```
 
