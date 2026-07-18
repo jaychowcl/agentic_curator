@@ -21,6 +21,7 @@ import time
 from typing import Any, Iterable, Iterator
 from urllib.parse import urlparse
 
+import ijson
 import requests
 
 from agentic_curator.curators.ontology_harmonizer.normalization import (
@@ -301,7 +302,7 @@ class OntoStore:
         json_path = self._json_target_path(name)
         if json_path.exists() and not force:
             LOGGER.debug("Using cached ontology JSON %s.", json_path)
-            return self._ensure_json_ontology_id(json_path, name)
+            return json_path
 
         if force and self._is_url_framework(name):
             LOGGER.info("Redownloading ontology framework %s.", name)
@@ -329,16 +330,72 @@ class OntoStore:
         if self._cached_framework_path(ontology_id) is None:
             return []
         index_path = self.build_rag_index(ontology_id)
-        provider = self._embedding_provider()
-        query = provider.embed_query(str(label))
+        query = self._embedding_provider().embed_query(str(label))
+        return self._search_rag_index(
+            query=query,
+            ontology_id=ontology_id,
+            index_path=index_path,
+            top_k=top_k,
+        )
 
+    def lookup_rag_many(
+        self,
+        label: str,
+        ontology_ids: Iterable[str],
+        top_k: int = 10,
+    ) -> dict[str, Any]:
+        """Search cached ontology indexes sequentially with one query embedding."""
+        if top_k < 1:
+            raise ValueError("top_k must be positive.")
+
+        prepared: list[tuple[str, Path]] = []
+        errors: list[dict[str, str]] = []
+        for raw_ontology_id in ontology_ids:
+            ontology_id = str(raw_ontology_id)
+            try:
+                if self._cached_framework_path(ontology_id) is None:
+                    continue
+                prepared.append((ontology_id, self.build_rag_index(ontology_id)))
+            except Exception as exc:  # noqa: BLE001 - isolate framework failures.
+                errors.append({"ontology_id": ontology_id, "error": str(exc)})
+
+        if not prepared:
+            return {"hits": [], "errors": errors}
+
+        query = self._embedding_provider().embed_query(str(label))
+        hits: list[dict[str, Any]] = []
+        for ontology_id, index_path in prepared:
+            try:
+                hits.extend(
+                    self._search_rag_index(
+                        query=query,
+                        ontology_id=ontology_id,
+                        index_path=index_path,
+                        top_k=top_k,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - isolate framework failures.
+                errors.append({"ontology_id": ontology_id, "error": str(exc)})
+        return {"hits": hits, "errors": errors}
+
+    def _search_rag_index(
+        self,
+        *,
+        query: list[float],
+        ontology_id: str,
+        index_path: Path,
+        top_k: int,
+    ) -> list[dict[str, Any]]:
+        """Memory-map and search one prepared semantic index."""
         import numpy as np
         from usearch.index import Index
 
         index = Index(
-            ndim=int(provider.dimensions), metric="cos", dtype="f32"
+            ndim=int(self._embedding_provider().dimensions),
+            metric="cos",
+            dtype="f32",
         )
-        index.load(index_path)
+        index.view(index_path)
         matches = index.search(
             np.asarray(query, dtype=np.float32), min(top_k, len(index))
         )
@@ -657,11 +714,6 @@ class OntoStore:
             ):
                 return self.sqlite_path
 
-        ontology = self._load_ontology_json(json_path)
-        terms = ontology.get("terms", {})
-        if not isinstance(terms, dict):
-            terms = {}
-
         with self._sqlite_connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
@@ -685,8 +737,15 @@ class OntoStore:
                         stat.st_mtime_ns,
                     ),
                 )
-                self._insert_lookup_terms(connection, ontology_id, terms)
+                self._insert_streamed_lookup_terms(
+                    connection,
+                    ontology_id,
+                    json_path,
+                )
                 connection.commit()
+            except ijson.JSONError as exc:
+                connection.rollback()
+                raise json.JSONDecodeError(str(exc), "", 0) from exc
             except Exception:
                 connection.rollback()
                 raise
@@ -898,10 +957,6 @@ class OntoStore:
             len(results["failed"]),
         )
         return results
-
-    @staticmethod
-    def _load_ontology_json(json_path: Path) -> dict[str, Any]:
-        return json.loads(json_path.read_text(encoding="utf-8"))
 
     @contextmanager
     def _sqlite_connection(self) -> Iterator[sqlite3.Connection]:
@@ -1167,6 +1222,92 @@ class OntoStore:
                         flush()
         if lookup_rows:
             flush()
+
+    def _insert_streamed_lookup_terms(
+        self,
+        connection: sqlite3.Connection,
+        ontology_id: str,
+        json_path: Path,
+        *,
+        batch_size: int = 5_000,
+    ) -> None:
+        """Import ontology lookup maps without materializing the JSON document."""
+        term_rows: list[tuple[str, str, str]] = []
+        lookup_rows: list[tuple[str, str, int, str, str, int]] = []
+
+        def flush_lookup_rows() -> None:
+            connection.executemany(
+                """
+                INSERT OR IGNORE INTO terms(ontology_id, term_key, payload)
+                VALUES (?, ?, ?)
+                """,
+                term_rows,
+            )
+            connection.executemany(
+                """
+                INSERT OR IGNORE INTO lookup_entries(
+                    ontology_id, index_name, index_rank, lookup_key,
+                    term_key, source_order
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                lookup_rows,
+            )
+            term_rows.clear()
+            lookup_rows.clear()
+
+        for index_rank, index_name in enumerate(self.LOOKUP_INDEXES):
+            with json_path.open("rb") as handle:
+                for lookup_key, raw_hits in ijson.kvitems(
+                    handle, f"terms.{index_name}"
+                ):
+                    for source_order, hit in enumerate(
+                        self._lookup_value_hits(raw_hits)
+                    ):
+                        if not isinstance(hit, dict):
+                            continue
+                        payload = json.dumps(
+                            hit,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            ensure_ascii=False,
+                        )
+                        term_key = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+                        term_rows.append((ontology_id, term_key, payload))
+                        lookup_rows.append(
+                            (
+                                ontology_id,
+                                index_name,
+                                index_rank,
+                                str(lookup_key),
+                                term_key,
+                                source_order,
+                            )
+                        )
+                        if len(lookup_rows) >= batch_size:
+                            flush_lookup_rows()
+        if lookup_rows:
+            flush_lookup_rows()
+
+        fts_rows: list[tuple[str, str, str, str, str, str]] = []
+        cursor = connection.execute(
+            "SELECT term_key, payload FROM terms WHERE ontology_id = ?",
+            (ontology_id,),
+        )
+        for term_key, payload in cursor:
+            fts_rows.append(
+                self._fts_row(ontology_id, term_key, json.loads(payload))
+            )
+            if len(fts_rows) >= batch_size:
+                connection.executemany(
+                    "INSERT INTO term_search VALUES (?, ?, ?, ?, ?, ?)",
+                    fts_rows,
+                )
+                fts_rows.clear()
+        if fts_rows:
+            connection.executemany(
+                "INSERT INTO term_search VALUES (?, ?, ?, ?, ?, ?)",
+                fts_rows,
+            )
 
     def _ensure_fts_framework(self, ontology_id: str) -> None:
         with self._sqlite_connection() as connection:
@@ -1443,22 +1584,6 @@ class OntoStore:
     @staticmethod
     def harmonize_key(value: Any) -> str:
         return normalize_key(value)
-
-    def _ensure_json_ontology_id(self, json_path: Path, ontology_id: str) -> Path:
-        payload = json.loads(json_path.read_text(encoding="utf-8"))
-        ontology = payload.get("ontology")
-        if not isinstance(ontology, dict):
-            payload["ontology"] = {"id": ontology_id}
-        elif ontology.get("id") == ontology_id:
-            return json_path
-        else:
-            ontology["id"] = ontology_id
-
-        json_path.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-        return json_path
 
     def _metadata_with_ontology_id(self, metadata: Any, ontology_id: str) -> Any:
         if isinstance(metadata, list):

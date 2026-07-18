@@ -976,9 +976,11 @@ def test_repeated_lookup_uses_sqlite_without_loading_json_again(
     assert store.lookup("lung", "uberon") == [{**term, "ontology_id": "uberon"}]
 
     monkeypatch.setattr(
-        store,
-        "_load_ontology_json",
-        lambda path: (_ for _ in ()).throw(AssertionError("JSON should not load")),
+        ontology_store.ijson,
+        "kvitems",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("current SQLite lookup must not reparse JSON")
+        ),
     )
 
     assert store.lookup("lung", "uberon") == [{**term, "ontology_id": "uberon"}]

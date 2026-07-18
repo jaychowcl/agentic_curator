@@ -93,8 +93,17 @@ def test_harmonizer_uses_fixed_local_rag_ols_workflow() -> None:
     )
 
 
-def test_lookup_judge_false_terminally_skips_search_and_field(monkeypatch) -> None:
-    store = OntoStore()
+def test_lookup_judge_false_terminally_skips_search_and_field(
+    monkeypatch, tmp_path
+) -> None:
+    json_path = tmp_path / "test.json"
+    json_path.write_text("{}", encoding="utf-8")
+    store = OntoStore(
+        ontology_frameworks={
+            "test": {"path": tmp_path / "test.owl", "json_path": json_path}
+        },
+        storage_dir=tmp_path,
+    )
     monkeypatch.setattr(
         store,
         "lookup_with_metadata",

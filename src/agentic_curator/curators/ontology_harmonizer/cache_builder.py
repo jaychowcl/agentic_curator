@@ -20,6 +20,8 @@ import sys
 import time
 from typing import Any, Iterable
 
+import ijson
+
 from agentic_curator.curators.ontology_harmonizer.ontology_store import OntoStore
 
 
@@ -165,10 +167,15 @@ def validate_successes(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
         json_path = Path(result["json_path"])
         started = time.monotonic()
         try:
-            payload = json.loads(json_path.read_text(encoding="utf-8"))
-            valid = isinstance(payload.get("ontology"), dict) and isinstance(
-                payload.get("terms"), dict
-            )
+            ontology_is_mapping = False
+            terms_is_mapping = False
+            with json_path.open("rb") as handle:
+                for prefix, event, _value in ijson.parse(handle):
+                    if prefix == "ontology" and event == "start_map":
+                        ontology_is_mapping = True
+                    elif prefix == "terms" and event == "start_map":
+                        terms_is_mapping = True
+            valid = ontology_is_mapping and terms_is_mapping
             validations.append(
                 {
                     "framework": result["framework"],

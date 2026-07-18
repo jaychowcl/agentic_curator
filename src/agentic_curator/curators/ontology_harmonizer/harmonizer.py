@@ -623,15 +623,17 @@ class OntologyHarmonizer:
         hits: list[dict[str, Any]] = []
         errors: list[dict[str, str]] = []
         frameworks = self._candidate_ontology_ids(target, ontostore)
-        for ontology_id in frameworks:
-            try:
-                hits.extend(
-                    ontostore.lookup_rag(
-                        str(label), ontology_id, top_k=self.LLM_CANDIDATE_LIMIT
-                    )
-                )
-            except Exception as exc:  # noqa: BLE001 - preserve local RAG trace.
-                errors.append({"ontology_id": ontology_id, "error": str(exc)})
+        try:
+            rag_result = ontostore.lookup_rag_many(
+                str(label), frameworks, top_k=self.LLM_CANDIDATE_LIMIT
+            )
+            hits.extend(rag_result["hits"])
+            errors.extend(rag_result["errors"])
+        except Exception as exc:  # Query embedding failures affect every framework.
+            errors.extend(
+                {"ontology_id": ontology_id, "error": str(exc)}
+                for ontology_id in frameworks
+            )
         hits = sorted(
             self._dedupe_semantic_hits(hits),
             key=lambda hit: float(hit.get("rag_score", 0.0)),
@@ -908,7 +910,14 @@ class OntologyHarmonizer:
     ) -> list[str]:
         configured_ids = target.get("ontology_frameworks", target.get("ontology_ids"))
         if configured_ids is not None:
-            return self._normalize_ontology_ids(configured_ids)
+            return [
+                ontology_id
+                for ontology_id in self._normalize_ontology_ids(configured_ids)
+                if ontology_id in ontostore.ontology_frameworks
+                and self._framework_has_local_file(
+                    ontostore.ontology_frameworks[ontology_id]
+                )
+            ]
 
         return [
             ontology_id
@@ -1337,8 +1346,6 @@ class OntologyHarmonizer:
         return str(value)
 
     def _framework_has_local_file(self, framework: dict[str, Any]) -> bool:
-        if "url" in framework:
-            return False
         return self._configured_path_exists(
             framework.get("json_path")
         ) or self._configured_path_exists(framework.get("owl_path"))
