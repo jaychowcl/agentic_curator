@@ -12,10 +12,12 @@ from __future__ import annotations
 import inspect
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from agentic_curator import OntologyHarmonizer
 from agentic_curator.curators.ontology_harmonizer import OntoStore
 from agentic_curator.cli.cli_ontology_harmonizer import _build_parser
+from agentic_curator.wrappers import GeminiEmbeddingProvider
 
 
 class FakeEmbeddingProvider:
@@ -212,3 +214,36 @@ def test_fixed_workflow_calls_local_then_rag_then_ols() -> None:
 
     assert calls == ["local", "rag", "ols", "field"]
     assert result["workflow"] == "local_rag_ols"
+
+
+def test_gemini_embeddings_use_retrieval_tasks_and_batch_documents() -> None:
+    requests: list[dict] = []
+
+    class FakeModels:
+        def embed_content(self, **kwargs):
+            requests.append(kwargs)
+            dimensions = kwargs["config"].output_dimensionality
+            return SimpleNamespace(
+                embeddings=[
+                    SimpleNamespace(values=[0.5] * dimensions)
+                    for _ in kwargs["contents"]
+                ]
+            )
+
+    provider = GeminiEmbeddingProvider(
+        dimensions=2,
+        client=SimpleNamespace(models=FakeModels()),
+    )
+
+    documents = provider.embed_documents([f"term {index}" for index in range(251)])
+    query = provider.embed_query("pulmonary structure")
+
+    assert len(documents) == 251
+    assert query == [0.5, 0.5]
+    assert [len(request["contents"]) for request in requests] == [250, 1, 1]
+    assert [str(request["config"].task_type) for request in requests] == [
+        "RETRIEVAL_DOCUMENT",
+        "RETRIEVAL_DOCUMENT",
+        "RETRIEVAL_QUERY",
+    ]
+    assert all(request["model"] == "gemini-embedding-001" for request in requests)
