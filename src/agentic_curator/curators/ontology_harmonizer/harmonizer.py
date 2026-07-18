@@ -773,7 +773,7 @@ class OntologyHarmonizer:
         publication_context: str | None,
         metadata_context: str | None = None,
         hits: list[dict[str, Any]],
-        candidate_limit: int | None = None,
+        candidate_limit: int = LLM_CANDIDATE_LIMIT,
     ) -> dict[str, Any]:
         effective_limit = (
             self.LLM_CANDIDATE_LIMIT
