@@ -51,6 +51,7 @@ class RecordingHarmonizer:
         lookup_llm_judge=False,
         search_llm_judge=True,
         llm=True,
+        target_checker=True,
     ):
         self.__class__.calls.append(
             {
@@ -64,6 +65,7 @@ class RecordingHarmonizer:
                 "lookup_llm_judge": lookup_llm_judge,
                 "search_llm_judge": search_llm_judge,
                 "llm": llm,
+                "target_checker": target_checker,
             }
         )
         return {"harmonization_targets": []}
@@ -132,6 +134,7 @@ def test_cli_harmonize_passes_all_options_to_harmonizer(
                 "--lookup-llm-judge",
                 "--no-search-llm-judge",
                 "--no-llm",
+                "--no-target-checker",
             ]
         )
         == 0
@@ -158,6 +161,7 @@ def test_cli_harmonize_passes_all_options_to_harmonizer(
             "lookup_llm_judge": True,
             "search_llm_judge": False,
             "llm": False,
+            "target_checker": False,
         }
     ]
 
@@ -218,6 +222,20 @@ def test_cli_can_disable_miniml_target_checker(
     capsys.readouterr()
 
     assert RecordingHarmonizer.calls[0]["target_checker"] is False
+
+
+def test_cli_harmonize_target_checker_is_enabled_by_default(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert (
+        cli_ontology_harmonizer.main(
+            ["harmonize", "--target", '{"pre_hz_label": "IPF lung"}']
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    assert RecordingHarmonizer.calls[0]["target_checker"] is True
 
 
 def test_cli_invalid_json_exits_with_parser_error(

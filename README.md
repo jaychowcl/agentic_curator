@@ -271,7 +271,7 @@ normalization, lookup, assignment, search, enrichment, and application.
 
 | Method | Main options |
 | --- | --- |
-| `harmonize(...)` | User `publication_context`, compact `metadata_context`, `harmonization_targets` or `target`, `ontostore`, `target_paths`, and judge/LLM controls |
+| `harmonize(...)` | User `publication_context`, compact `metadata_context`, `harmonization_targets` or `target`, `ontostore`, `target_paths`, judge/LLM controls, and `target_checker=True` |
 | `harmonize_miniml_json(...)` | User `publication_context`, `miniml_json`, `ontostore`, `target_paths`, the same judge/LLM controls, and `target_checker=True`; `metadata_context` is generated automatically |
 | `lookup_label(...)` | Target, publication context, store, and local judge toggle |
 | `lookup_rag_label(...)` | Target, contexts, store, and semantic judge toggle |
@@ -294,8 +294,9 @@ one neutral `OLS Hits` candidate section without restricted/unrestricted stage
 cues. Field-assignment context includes both the canonical `label` and the
 original `pre_hz_label` when available.
 
-Before per-target lookup, MINiML harmonization makes one target-checker LLM
-call over the complete deduplicated target list. It can append missing atomic
+Before per-target lookup, `harmonize(...)` makes one target-checker LLM call
+over its complete normalized target list, whether supplied directly or by the
+MINiML wrapper. It can append missing atomic
 concepts from compound labels while preserving every original target. Only
 medium/high-confidence additions are accepted, capped at three per source;
 equivalent additions are merged with per-source reasons and occurrence paths.
@@ -393,7 +394,7 @@ their `-file` counterparts are mutually substitutable; files take precedence.
 | `--lookup-llm-judge`, `--no-lookup-llm-judge` | Enable/disable judging every local candidate set; enabled by default |
 | `--search-llm-judge`, `--no-search-llm-judge` | Enable/disable OLS candidate judge; enabled by default |
 | `--llm`, `--no-llm` | Enable/disable assignment and judging calls; enabled by default |
-| `--target-checker`, `--no-target-checker` | Enable/disable the dataset-level compound-target check for `harmonize-miniml-json`; enabled by default |
+| `--target-checker`, `--no-target-checker` | Enable/disable compound-target checking for either harmonization command; enabled by default |
 | `--request-timeout SECONDS` | Per-request timeout; default `30` |
 | `--request-max-attempts N` | Maximum attempts; default `3` |
 | `--request-backoff SECONDS` | Exponential backoff base; default `1` |
@@ -492,7 +493,9 @@ def review_relevancy(inputs):
 
 ```python
 def harmonize(targets, publication_context):
-    for target in normalize_targets(targets):
+    targets = normalize_targets(targets)
+    targets += target_checker_additions(targets)  # one enabled-by-default call
+    for target in targets:
         normalize_working_field_and_label(target)
         local = lookup_exact_then_fts(target)
         if local:
@@ -521,8 +524,8 @@ def harmonize(targets, publication_context):
 ```
 
 `harmonize_miniml_json(...)` calls target-path discovery, extraction and
-deduplication, asks the target checker for additions, delegates the combined
-list to `harmonize(...)`, then calls `apply_targets(...)`;
+deduplication, delegates the extracted list and target-checker option to
+`harmonize(...)`, then calls `apply_targets(...)`;
 application defensively ignores every skipped target.
 
 #### Ontology store and cache

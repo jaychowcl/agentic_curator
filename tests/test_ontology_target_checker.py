@@ -29,40 +29,30 @@ class SequencedLLM:
         return response
 
 
-class PassthroughHarmonizer(OntologyHarmonizer):
-    def harmonize(
+class NoopWorkflowHarmonizer(OntologyHarmonizer):
+    def lookup_label(
         self,
-        publication_context=None,
-        metadata_context=None,
-        harmonization_targets=None,
-        target=None,
-        ontostore=None,
-        target_paths=None,
+        target,
+        *,
+        publication_context,
+        ontostore,
         lookup_llm_judge=True,
-        search_llm_judge=True,
-        llm=True,
+        metadata_context=None,
     ):
-        self.received_targets = harmonization_targets
-        return {
-            "publication_context": publication_context,
-            "metadata_context": metadata_context,
-            "harmonization_targets": harmonization_targets,
-            "workflow": self.WORKFLOW,
-            "target_paths": target_paths,
-        }
+        return True
+
+    def harmonize_field(self, target, **kwargs):
+        return None
 
 
-class ApplyingHarmonizer(PassthroughHarmonizer):
-    def harmonize(self, **kwargs):
-        targets = kwargs["harmonization_targets"]
-        for target in targets:
-            if target["source"] == "target_checker":
-                target["hz_field"] = "tissue"
-                target["hz_label"] = "lung"
-            else:
-                target["hz_field"] = "disease"
-                target["hz_label"] = "idiopathic pulmonary fibrosis"
-        return super().harmonize(**kwargs)
+class ApplyingHarmonizer(NoopWorkflowHarmonizer):
+    def harmonize_field(self, target, **kwargs):
+        if target["source"] == "target_checker":
+            target["hz_field"] = "tissue"
+            target["hz_label"] = "lung"
+        else:
+            target["hz_field"] = "disease"
+            target["hz_label"] = "idiopathic pulmonary fibrosis"
 
 
 def compound_miniml() -> list[dict]:
@@ -112,7 +102,7 @@ def test_target_checker_batches_originals_and_merges_equivalent_additions(
     )
     miniml_json = compound_miniml()
     original_json = deepcopy(miniml_json)
-    harmonizer = PassthroughHarmonizer(
+    harmonizer = NoopWorkflowHarmonizer(
         llm=llm,
         ontostore=OntoStore(
             fields={
@@ -191,7 +181,7 @@ def test_target_checker_rejects_existing_low_confidence_unknown_and_excess(
     ]
     llm = SequencedLLM([{"additions": proposals}])
     miniml_json = [{"sample": [{"channel": [{"source": "IPF lung"}]}]}]
-    harmonizer = PassthroughHarmonizer(
+    harmonizer = NoopWorkflowHarmonizer(
         llm=llm,
         ontostore=OntoStore(fields={}, storage_dir=tmp_path),
     )
@@ -213,7 +203,7 @@ def test_target_checker_retries_malformed_response_then_succeeds(
     tmp_path: Path,
 ) -> None:
     llm = SequencedLLM(["not json", {"additions": []}])
-    harmonizer = PassthroughHarmonizer(
+    harmonizer = NoopWorkflowHarmonizer(
         llm=llm,
         ontostore=OntoStore(fields={}, storage_dir=tmp_path),
     )
@@ -233,7 +223,7 @@ def test_target_checker_retries_malformed_response_then_succeeds(
 
 def test_target_checker_fails_open_after_two_call_failures(tmp_path: Path) -> None:
     llm = SequencedLLM([RuntimeError("offline"), RuntimeError("still offline")])
-    harmonizer = PassthroughHarmonizer(
+    harmonizer = NoopWorkflowHarmonizer(
         llm=llm,
         ontostore=OntoStore(fields={}, storage_dir=tmp_path),
     )
@@ -255,18 +245,18 @@ def test_target_checker_is_disabled_by_flag_or_global_llm_switch(
     tmp_path: Path,
 ) -> None:
     llm = SequencedLLM([])
-    harmonizer = PassthroughHarmonizer(
+    harmonizer = NoopWorkflowHarmonizer(
         llm=llm,
         ontostore=OntoStore(fields={}, storage_dir=tmp_path),
     )
-    miniml_json = [{"sample": [{"channel": [{"source": "lung"}]}]}]
+    target = {"pre_hz_field": "source", "pre_hz_label": "lung"}
 
-    disabled = harmonizer.harmonize_miniml_json(
-        miniml_json=deepcopy(miniml_json),
+    disabled = harmonizer.harmonize(
+        target=deepcopy(target),
         target_checker=False,
     )
-    no_llm = harmonizer.harmonize_miniml_json(
-        miniml_json=deepcopy(miniml_json),
+    no_llm = harmonizer.harmonize(
+        target=deepcopy(target),
         llm=False,
     )
 
@@ -295,3 +285,70 @@ def test_target_checker_response_schema_requires_addition_fields() -> None:
         "confidence",
         "reason",
     ]
+
+
+def test_harmonize_runs_target_checker_for_single_target_and_assigns_id(
+    tmp_path: Path,
+) -> None:
+    llm = SequencedLLM([{"additions": [addition("target-0")]}])
+    harmonizer = NoopWorkflowHarmonizer(
+        llm=llm,
+        ontostore=OntoStore(fields={}, storage_dir=tmp_path),
+    )
+
+    result = harmonizer.harmonize(
+        target={"pre_hz_field": "source", "pre_hz_label": "IPF lung"}
+    )
+
+    assert [target["id"] for target in result["harmonization_targets"]] == [
+        "target-0",
+        "target-1",
+    ]
+    assert result["harmonization_targets"][1]["pre_hz_label"] == "lung"
+    assert result["target_checker"]["added_count"] == 1
+    assert len(llm.calls) == 1
+
+
+def test_harmonize_assigns_unique_ids_before_batch_target_checking(
+    tmp_path: Path,
+) -> None:
+    llm = SequencedLLM([{"additions": []}])
+    harmonizer = NoopWorkflowHarmonizer(
+        llm=llm,
+        ontostore=OntoStore(fields={}, storage_dir=tmp_path),
+    )
+
+    result = harmonizer.harmonize(
+        harmonization_targets=[
+            {"id": "source-id", "pre_hz_field": "a", "pre_hz_label": "one"},
+            {"id": "source-id", "pre_hz_field": "b", "pre_hz_label": "two"},
+            {"pre_hz_field": "c", "pre_hz_label": "three"},
+        ]
+    )
+
+    assert [target["id"] for target in result["harmonization_targets"]] == [
+        "source-id",
+        "target-0",
+        "target-1",
+    ]
+    prompt = llm.calls[0]["prompt"]
+    assert '"id": "source-id"' in prompt
+    assert '"id": "target-0"' in prompt
+    assert '"id": "target-1"' in prompt
+
+
+def test_harmonize_skips_target_checker_when_there_are_no_targets(
+    tmp_path: Path,
+) -> None:
+    llm = SequencedLLM([])
+    result = NoopWorkflowHarmonizer(
+        llm=llm,
+        ontostore=OntoStore(fields={}, storage_dir=tmp_path),
+    ).harmonize()
+
+    assert result["target_checker"] == {
+        "status": "skipped",
+        "reason": "no_targets",
+        "added_count": 0,
+    }
+    assert llm.calls == []

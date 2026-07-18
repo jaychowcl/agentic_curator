@@ -66,6 +66,18 @@ def _add_harmonize_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--llm", dest="llm", action="store_true", default=True)
     parser.add_argument("--no-llm", dest="llm", action="store_false")
+    parser.add_argument(
+        "--target-checker",
+        dest="target_checker",
+        action="store_true",
+        default=True,
+        help="Add missing concepts from compound targets before ontology lookup.",
+    )
+    parser.add_argument(
+        "--no-target-checker",
+        dest="target_checker",
+        action="store_false",
+    )
     parser.add_argument("--request-timeout", type=float, default=30)
     parser.add_argument("--request-max-attempts", type=int, default=3)
     parser.add_argument("--request-backoff", type=float, default=1)
@@ -116,18 +128,6 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_publication_context(miniml)
     _add_store_options(miniml)
     _add_harmonize_options(miniml)
-    miniml.add_argument(
-        "--target-checker",
-        dest="target_checker",
-        action="store_true",
-        default=True,
-        help="Add missing concepts from compound targets before ontology lookup.",
-    )
-    miniml.add_argument(
-        "--no-target-checker",
-        dest="target_checker",
-        action="store_false",
-    )
     miniml.add_argument("--miniml-json", default=None)
     miniml.add_argument("--miniml-json-file", default=None)
     miniml.add_argument("--out", default=None)
@@ -243,6 +243,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Any:
             lookup_llm_judge=args.lookup_llm_judge,
             search_llm_judge=args.search_llm_judge,
             llm=args.llm,
+            target_checker=args.target_checker,
         )
 
     if args.command == "harmonize-miniml-json":

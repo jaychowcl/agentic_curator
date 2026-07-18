@@ -2623,6 +2623,7 @@ def test_harmonize_assigns_ontology_metadata_from_store(tmp_path: Path) -> None:
             "pre_hz_label": "lung",
             "ontology_ids": ["uberon"],
         },
+        target_checker=False,
         lookup_llm_judge=False,
     )
 
@@ -2666,6 +2667,7 @@ def test_harmonize_llm_false_skips_framework_and_field_assignment() -> None:
         publication_context="context",
         target=target,
         llm=False,
+        target_checker=False,
     )
 
     assert result["harmonization_targets"] == [target]
@@ -2737,6 +2739,7 @@ def test_harmonize_returns_targets_wrapper() -> None:
         harmonization_targets=harmonization_targets,
         ontostore=ontostore,
         target_paths=["/sample"],
+        target_checker=False,
     )
 
     assert result == {
@@ -2745,6 +2748,11 @@ def test_harmonize_returns_targets_wrapper() -> None:
         "harmonization_targets": harmonization_targets,
         "workflow": "local_rag_ols",
         "target_paths": ["/sample"],
+        "target_checker": {
+            "status": "disabled",
+            "reason": "target_checker_disabled",
+            "added_count": 0,
+        },
     }
 
 
@@ -2756,7 +2764,10 @@ def test_harmonize_accepts_single_target() -> None:
         "pre_hz_label": "lung",
     }
 
-    result = NoSearchOntologyHarmonizer(llm=FakeLLM()).harmonize(target=target)
+    result = NoSearchOntologyHarmonizer(llm=FakeLLM()).harmonize(
+        target=target,
+        target_checker=False,
+    )
 
     assert result == {
         "publication_context": None,
@@ -2764,6 +2775,11 @@ def test_harmonize_accepts_single_target() -> None:
         "harmonization_targets": [target],
         "workflow": "local_rag_ols",
         "target_paths": None,
+        "target_checker": {
+            "status": "disabled",
+            "reason": "target_checker_disabled",
+            "added_count": 0,
+        },
     }
 
 
@@ -2776,7 +2792,8 @@ def test_harmonize_accepts_dict_harmonization_target() -> None:
     }
 
     result = NoSearchOntologyHarmonizer(llm=FakeLLM()).harmonize(
-        harmonization_targets=target
+        harmonization_targets=target,
+        target_checker=False,
     )
 
     assert result["harmonization_targets"] == [target]
@@ -2808,6 +2825,11 @@ def test_harmonize_defaults_to_empty_targets() -> None:
         "harmonization_targets": [],
         "workflow": "local_rag_ols",
         "target_paths": None,
+        "target_checker": {
+            "status": "skipped",
+            "reason": "no_targets",
+            "added_count": 0,
+        },
     }
 
 
@@ -2864,6 +2886,11 @@ def test_harmonize_accepts_ontostore_override() -> None:
         "harmonization_targets": [],
         "workflow": "local_rag_ols",
         "target_paths": None,
+        "target_checker": {
+            "status": "skipped",
+            "reason": "no_targets",
+            "added_count": 0,
+        },
     }
 
 
@@ -2914,6 +2941,7 @@ def test_harmonize_routes_each_lookup_miss_directly_to_search() -> None:
     result = RecordingHarmonizer(ontostore=store).harmonize(
         publication_context="context",
         harmonization_targets=targets,
+        target_checker=False,
     )
 
     assert result["harmonization_targets"] == targets
@@ -2971,6 +2999,7 @@ def test_harmonize_calls_lookup_then_search_then_field_without_framework_assignm
     RecordingHarmonizer().harmonize(
         publication_context="context",
         target=target,
+        target_checker=False,
     )
 
     assert calls == [
@@ -3015,6 +3044,7 @@ def test_harmonize_skips_assign_onto_framework_when_lookup_label_succeeds() -> N
     result = RecordingHarmonizer().harmonize(
         publication_context="context",
         target=target,
+        target_checker=False,
     )
 
     assert calls == ["lookup", ("field", "context", True)]
@@ -3064,7 +3094,11 @@ def test_harmonize_successful_lookup_passes_llm_false_to_field_harmonization() -
 
     target = {"id": "target-0", "pre_hz_label": "lung"}
 
-    RecordingHarmonizer().harmonize(target=target, llm=False)
+    RecordingHarmonizer().harmonize(
+        target=target,
+        llm=False,
+        target_checker=False,
+    )
 
     assert calls == [("field", False)]
     assert target["ontology_match"] is True
@@ -3093,7 +3127,10 @@ def test_harmonize_single_target_never_assigns_framework_before_search() -> None
 
     target = {"id": "target-0", "pre_hz_field": "tissue", "pre_hz_label": "lung"}
 
-    result = RecordingHarmonizer().harmonize(target=target)
+    result = RecordingHarmonizer().harmonize(
+        target=target,
+        target_checker=False,
+    )
 
     assert result["harmonization_targets"] == [target]
     assert search_calls == [target]
@@ -3147,6 +3184,7 @@ def test_harmonize_search_receives_ontostore_override() -> None:
     RecordingHarmonizer(ontostore=constructor_store).harmonize(
         target={"id": "target-0"},
         ontostore=override_store,
+        target_checker=False,
     )
 
     assert calls == [override_store]
@@ -3188,6 +3226,7 @@ def test_harmonize_calls_field_harmonization_after_strategy_handler() -> None:
     RecordingHarmonizer().harmonize(
         publication_context="context",
         target={"id": "target-0", "pre_hz_field": "tissue", "pre_hz_label": "lung"},
+        target_checker=False,
     )
 
     assert calls == [
@@ -3231,7 +3270,7 @@ def test_harmonize_supplies_local_canonical_label_to_field_harmonization() -> No
         "pre_hz_label": "Pulmonary specimen",
     }
 
-    RecordingHarmonizer().harmonize(target=target)
+    RecordingHarmonizer().harmonize(target=target, target_checker=False)
 
     assert field_labels == ["lung"]
     assert target["hz_label"] == "lung"
@@ -3283,7 +3322,7 @@ def test_harmonize_supplies_searched_canonical_label_to_field_harmonization() ->
         "pre_hz_label": "Pulmonary specimen",
     }
 
-    RecordingHarmonizer().harmonize(target=target)
+    RecordingHarmonizer().harmonize(target=target, target_checker=False)
 
     assert calls == ["lookup", "search", ("field", "lung")]
     assert target["hz_label"] == "lung"
@@ -3311,7 +3350,7 @@ def test_harmonize_unmatched_label_still_harmonizes_field_with_normalized_label(
         "pre_hz_label": "Pulmonary specimen",
     }
 
-    RecordingHarmonizer().harmonize(target=target)
+    RecordingHarmonizer().harmonize(target=target, target_checker=False)
 
     assert calls == ["lookup", "search", ("field", "pulmonary_specimen")]
     assert target["hz_label"] == "pulmonary_specimen"
@@ -3340,7 +3379,7 @@ def test_harmonize_selected_term_without_title_keeps_normalized_label() -> None:
         "pre_hz_label": "Pulmonary specimen",
     }
 
-    RecordingHarmonizer().harmonize(target=target)
+    RecordingHarmonizer().harmonize(target=target, target_checker=False)
 
     assert field_labels == ["pulmonary_specimen"]
     assert target["hz_label"] == "pulmonary_specimen"
@@ -3379,6 +3418,7 @@ def test_harmonize_routes_failed_lookup_to_ols() -> None:
     result = RecordingHarmonizer(ontostore=store, llm=FakeLLM()).harmonize(
         publication_context="context",
         target=target,
+        target_checker=False,
     )
 
     assert result["workflow"] == "local_rag_ols"
@@ -3471,6 +3511,7 @@ def test_harmonize_looks_up_strategy_harmonized_label_with_stored_ontology_id(
     result = RecordingHarmonizer(ontostore=store, llm=FakeLLM()).harmonize(
         publication_context="context",
         target=target,
+        target_checker=False,
     )
 
     assert result["harmonization_targets"] == [target]
@@ -3538,6 +3579,7 @@ def test_harmonize_post_strategy_lookup_ignores_unconfigured_ontology_id(
 
     RecordingHarmonizer(ontostore=store, llm=FakeLLM()).harmonize(
         target=target,
+        target_checker=False,
     )
 
     assert target["ontology_id"] == "missing"
@@ -3599,6 +3641,7 @@ def test_harmonize_post_strategy_lookup_miss_preserves_strategy_result(
 
     RecordingHarmonizer(ontostore=store, llm=FakeLLM()).harmonize(
         target=target,
+        target_checker=False,
     )
 
     assert target["ontology_match"] is False
@@ -4035,7 +4078,10 @@ def test_harmonize_fixed_workflow_routes_to_ols_handler() -> None:
 
     target = {"id": "target-ols", "pre_hz_label": "lung"}
 
-    result = RecordingHarmonizer(llm=FakeLLM()).harmonize(target=target)
+    result = RecordingHarmonizer(llm=FakeLLM()).harmonize(
+        target=target,
+        target_checker=False,
+    )
 
     assert result["workflow"] == "local_rag_ols"
     assert target["ontology_match"] is False
@@ -4078,7 +4124,10 @@ def test_harmonize_skips_ols_when_lookup_label_succeeds() -> None:
 
     target = {"id": "target-0", "pre_hz_label": "lung"}
 
-    result = RecordingHarmonizer().harmonize(target=target)
+    result = RecordingHarmonizer().harmonize(
+        target=target,
+        target_checker=False,
+    )
 
     assert calls == []
     assert result["workflow"] == "local_rag_ols"
@@ -4768,6 +4817,7 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
             lookup_llm_judge=False,
             search_llm_judge=True,
             llm=True,
+            target_checker=True,
         ):
             calls.append(
                 {
@@ -4781,11 +4831,17 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
                     "lookup_llm_judge": lookup_llm_judge,
                     "search_llm_judge": search_llm_judge,
                     "llm": llm,
+                    "target_checker": target_checker,
                 }
             )
             return {
                 "delegated": True,
                 "harmonization_targets": harmonization_targets,
+                "target_checker": {
+                    "status": "disabled",
+                    "reason": "target_checker_disabled",
+                    "added_count": 0,
+                },
             }
 
     store = OntoStore()
@@ -4850,6 +4906,7 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
             "lookup_llm_judge": True,
             "search_llm_judge": True,
             "llm": True,
+            "target_checker": False,
         }
     ]
 
@@ -4998,6 +5055,11 @@ def test_harmonize_accepts_target_paths() -> None:
         "harmonization_targets": [],
         "workflow": "local_rag_ols",
         "target_paths": [],
+        "target_checker": {
+            "status": "skipped",
+            "reason": "no_targets",
+            "added_count": 0,
+        },
     }
 
 

@@ -99,6 +99,7 @@ class OntologyHarmonizer:
         lookup_llm_judge: bool = True,
         search_llm_judge: bool = True,
         llm: bool = True,
+        target_checker: bool = True,
     ) -> dict[str, Any]:
         LOGGER.info("Starting ontology harmonization.")
         effective_ontostore = self._effective_ontostore(ontostore)
@@ -106,6 +107,29 @@ class OntologyHarmonizer:
             harmonization_targets=harmonization_targets,
             target=target,
         )
+        if not normalized_targets:
+            target_checker_trace = {
+                "status": "skipped",
+                "reason": "no_targets",
+                "added_count": 0,
+            }
+        elif target_checker and llm:
+            self._ensure_unique_target_ids(normalized_targets)
+            added_targets, target_checker_trace = self._run_target_checker(
+                targets=normalized_targets,
+                publication_context=publication_context,
+                metadata_context=metadata_context,
+                ontostore=effective_ontostore,
+            )
+            normalized_targets = [*normalized_targets, *added_targets]
+        else:
+            target_checker_trace = {
+                "status": "disabled",
+                "reason": (
+                    "llm_disabled" if not llm else "target_checker_disabled"
+                ),
+                "added_count": 0,
+            }
         LOGGER.debug(
             "Ontology harmonization using strategy %s for %d targets.",
             self.WORKFLOW,
@@ -184,6 +208,7 @@ class OntologyHarmonizer:
             "harmonization_targets": normalized_targets,
             "workflow": self.WORKFLOW,
             "target_paths": target_paths,
+            "target_checker": target_checker_trace,
         }
 
     def harmonize_miniml_json(
@@ -217,35 +242,18 @@ class OntologyHarmonizer:
             miniml_json,
             harmonization_targets,
         )
-        effective_ontostore = self._effective_ontostore(ontostore)
-        if target_checker and llm:
-            added_targets, target_checker_trace = self._run_target_checker(
-                targets=harmonization_targets,
-                publication_context=publication_context,
-                metadata_context=metadata_context,
-                ontostore=effective_ontostore,
-            )
-            harmonization_targets = [*harmonization_targets, *added_targets]
-        else:
-            target_checker_trace = {
-                "status": "disabled",
-                "reason": (
-                    "llm_disabled" if not llm else "target_checker_disabled"
-                ),
-                "added_count": 0,
-            }
         result = self.harmonize(
             publication_context=publication_context,
             metadata_context=metadata_context,
             harmonization_targets=harmonization_targets,
             target=None,
-            ontostore=effective_ontostore,
+            ontostore=ontostore,
             target_paths=effective_target_paths,
             lookup_llm_judge=lookup_llm_judge,
             search_llm_judge=search_llm_judge,
             llm=llm,
+            target_checker=target_checker,
         )
-        result["target_checker"] = target_checker_trace
         applied_targets = result.get("harmonization_targets", harmonization_targets)
         result["miniml_json"] = self.apply_targets(miniml_json, applied_targets)
         LOGGER.info("Completed MINiML JSON ontology harmonization.")
@@ -585,6 +593,38 @@ class OntologyHarmonizer:
             return [harmonization_targets]
 
         return harmonization_targets
+
+    @staticmethod
+    def _ensure_unique_target_ids(targets: list[dict[str, Any]]) -> None:
+        reserved = {
+            str(target["id"])
+            for target in targets
+            if isinstance(target, dict)
+            and target.get("id") is not None
+            and str(target["id"]).strip()
+        }
+        seen: set[str] = set()
+        next_index = 0
+        for target in targets:
+            raw_id = target.get("id")
+            target_id = (
+                str(raw_id)
+                if raw_id is not None and str(raw_id).strip()
+                else None
+            )
+            if target_id is not None and target_id not in seen:
+                seen.add(target_id)
+                continue
+
+            while (
+                f"target-{next_index}" in reserved
+                or f"target-{next_index}" in seen
+            ):
+                next_index += 1
+            target_id = f"target-{next_index}"
+            target["id"] = target_id
+            seen.add(target_id)
+            next_index += 1
 
     def _target_occurrences(self, target: dict[str, Any]) -> list[dict[str, Any]]:
         occurrences = target.get("occurrences")

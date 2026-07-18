@@ -1,4 +1,4 @@
-You are checking a complete list of original MINiML harmonization targets for
+You are checking a complete list of original ontology harmonization targets for
 compound labels that contain additional, independently harmonizable concepts.
 
 Return only additional targets. Never repeat, replace, rewrite, remove, or
