@@ -2257,6 +2257,35 @@ def test_assign_field_prompt_prunes_lookup_and_strategy_context(
     assert "polluting" not in prompt
 
 
+def test_assign_field_prompt_uses_harmonized_label() -> None:
+    fake_llm = FakeLLM(
+        response={
+            "decision": "tissue",
+            "confidence": "high",
+            "reason": "Canonical label identifies an anatomical field.",
+            "new_field": False,
+        }
+    )
+    store = OntoStore(fields={"tissue": {"label": "Tissue"}})
+
+    OntologyHarmonizer(llm=fake_llm).assign_field(
+        {
+            "pre_hz_field": "sample source",
+            "pre_hz_label": "pulmonary specimen",
+            "hz_field": "sample_source",
+            "hz_label": "lung",
+            "ontology_id": "uberon",
+        },
+        publication_context=None,
+        ontostore=store,
+    )
+
+    prompt = fake_llm.calls[0]["prompt"]
+    assert '"field": "sample source"' in prompt
+    assert '"label": "lung"' in prompt
+    assert "pulmonary specimen" not in prompt
+
+
 def test_assign_field_response_schema_requires_assignment_fields() -> None:
     assert OntologyHarmonizer()._assign_field_response_schema() == {
         "type": "OBJECT",
@@ -2878,7 +2907,7 @@ def test_harmonize_search_receives_ontostore_override() -> None:
     assert calls == [override_store]
 
 
-def test_harmonize_calls_field_harmonization_before_strategy_handler() -> None:
+def test_harmonize_calls_field_harmonization_after_strategy_handler() -> None:
     calls = []
 
     class RecordingHarmonizer(OntologyHarmonizer):
@@ -2922,9 +2951,163 @@ def test_harmonize_calls_field_harmonization_before_strategy_handler() -> None:
 
     assert calls == [
         "lookup",
-        "harmonize_field",
         ("strategy", "websearch"),
+        "harmonize_field",
     ]
+
+
+def test_harmonize_supplies_local_canonical_label_to_field_harmonization() -> None:
+    field_labels = []
+
+    class RecordingHarmonizer(OntologyHarmonizer):
+        def lookup_label(
+            self,
+            target,
+            *,
+            publication_context,
+            ontostore,
+            strategy,
+            lookup_llm_judge=False,
+            lookup_llm_threshold=2,
+        ):
+            target["ontology_id"] = "uberon"
+            target["ontology_lookup"] = {
+                "id": "UBERON:0002048",
+                "title": "lung",
+                "ontology_id": "uberon",
+            }
+            target["ontology_match"] = True
+            return target["ontology_lookup"]
+
+        def harmonize_label(self, *args, **kwargs):
+            raise AssertionError("local matches must not run search")
+
+        def harmonize_field(self, target, *, publication_context, ontostore, llm=True):
+            field_labels.append(target["hz_label"])
+            return False
+
+    target = {
+        "id": "target-0",
+        "pre_hz_field": "sample source",
+        "pre_hz_label": "Pulmonary specimen",
+    }
+
+    RecordingHarmonizer().harmonize(target=target)
+
+    assert field_labels == ["lung"]
+    assert target["hz_label"] == "lung"
+
+
+def test_harmonize_supplies_searched_canonical_label_to_field_harmonization() -> None:
+    calls = []
+
+    class RecordingHarmonizer(OntologyHarmonizer):
+        def lookup_label(
+            self,
+            target,
+            *,
+            publication_context,
+            ontostore,
+            strategy,
+            lookup_llm_judge=False,
+            lookup_llm_threshold=2,
+        ):
+            calls.append("lookup")
+            return False
+
+        def harmonize_label(
+            self,
+            target,
+            *,
+            publication_context,
+            ontostore,
+            strategy,
+            search_llm_judge=True,
+        ):
+            calls.append("search")
+            target["ontology_id"] = "uberon"
+            target["ontology_lookup"] = {
+                "id": "UBERON:0002048",
+                "title": "lung",
+                "ontology_id": "uberon",
+            }
+            target["ontology_match"] = True
+            return {"strategy": strategy, "status": "matched"}
+
+        def _lookup_harmonized_label(self, target, *, ontostore):
+            return target["ontology_lookup"]
+
+        def harmonize_field(self, target, *, publication_context, ontostore, llm=True):
+            calls.append(("field", target["hz_label"]))
+            return False
+
+    target = {
+        "id": "target-0",
+        "pre_hz_field": "sample source",
+        "pre_hz_label": "Pulmonary specimen",
+    }
+
+    RecordingHarmonizer().harmonize(target=target)
+
+    assert calls == ["lookup", "search", ("field", "lung")]
+    assert target["hz_label"] == "lung"
+
+
+def test_harmonize_unmatched_label_still_harmonizes_field_with_normalized_label() -> None:
+    calls = []
+
+    class RecordingHarmonizer(OntologyHarmonizer):
+        def lookup_label(self, *args, **kwargs):
+            calls.append("lookup")
+            return False
+
+        def harmonize_label(self, *args, **kwargs):
+            calls.append("search")
+            return {"status": "not_harmonized"}
+
+        def harmonize_field(self, target, *, publication_context, ontostore, llm=True):
+            calls.append(("field", target["hz_label"]))
+            return False
+
+    target = {
+        "id": "target-0",
+        "pre_hz_field": "sample source",
+        "pre_hz_label": "Pulmonary specimen",
+    }
+
+    RecordingHarmonizer().harmonize(target=target)
+
+    assert calls == ["lookup", "search", ("field", "pulmonary_specimen")]
+    assert target["hz_label"] == "pulmonary_specimen"
+
+
+def test_harmonize_selected_term_without_title_keeps_normalized_label() -> None:
+    field_labels = []
+
+    class RecordingHarmonizer(OntologyHarmonizer):
+        def lookup_label(self, target, **kwargs):
+            target["ontology_lookup"] = {
+                "id": "UBERON:0002048",
+                "title": "",
+                "ontology_id": "uberon",
+            }
+            target["ontology_match"] = True
+            return target["ontology_lookup"]
+
+        def harmonize_field(self, target, **kwargs):
+            field_labels.append(target["hz_label"])
+            return False
+
+    target = {
+        "id": "target-0",
+        "pre_hz_field": "sample source",
+        "pre_hz_label": "Pulmonary specimen",
+    }
+
+    RecordingHarmonizer().harmonize(target=target)
+
+    assert field_labels == ["pulmonary_specimen"]
+    assert target["hz_label"] == "pulmonary_specimen"
 
 
 def test_harmonize_routes_failed_lookup_to_strategy_handler() -> None:
