@@ -201,6 +201,32 @@ class FakeSearchClient:
         return self.results
 
 
+class NoSearchOntologyHarmonizer(OntologyHarmonizer):
+    """Keep orchestration-focused tests deterministic after a local miss."""
+
+    def harmonize_label(
+        self,
+        target,
+        *,
+        publication_context,
+        metadata_context=None,
+        ontostore,
+        strategy,
+        search_llm_judge=True,
+    ):
+        result = {
+            "strategy": strategy,
+            "status": "not_harmonized",
+            "decision": "false",
+            "confidence": "none",
+            "reason": "No search candidates.",
+            "ols_hits": [],
+            "web_hits": [],
+        }
+        target["ontology_strategy_result"] = result
+        return result
+
+
 class FakeGroundedLLM:
     def __init__(self, response=None, error: Exception | None = None) -> None:
         self.calls = []
@@ -2286,13 +2312,35 @@ def test_harmonize_assigns_ontology_metadata_from_store(tmp_path: Path) -> None:
 
 def test_harmonize_llm_false_skips_framework_and_field_assignment() -> None:
     fake_llm = FakeLLM()
+    search_calls = []
+
+    class RecordingHarmonizer(OntologyHarmonizer):
+        def harmonize_label(
+            self,
+            target,
+            *,
+            publication_context,
+            metadata_context=None,
+            ontostore,
+            strategy,
+            search_llm_judge=True,
+        ):
+            search_calls.append(
+                {
+                    "publication_context": publication_context,
+                    "strategy": strategy,
+                    "search_llm_judge": search_llm_judge,
+                }
+            )
+            return {"status": "not_harmonized"}
+
     target = {
         "id": "target-0",
         "pre_hz_field": "unmapped field",
         "pre_hz_label": "unmapped label",
     }
 
-    result = OntologyHarmonizer(llm=fake_llm).harmonize(
+    result = RecordingHarmonizer(llm=fake_llm).harmonize(
         publication_context="context",
         target=target,
         llm=False,
@@ -2303,6 +2351,13 @@ def test_harmonize_llm_false_skips_framework_and_field_assignment() -> None:
     assert "ontology_framework_assignment" not in target
     assert "field_assignment" not in target
     assert fake_llm.calls == []
+    assert search_calls == [
+        {
+            "publication_context": "context",
+            "strategy": "websearch",
+            "search_llm_judge": False,
+        }
+    ]
 
 
 def miniml_metadata() -> dict:
@@ -2354,7 +2409,7 @@ def test_harmonize_returns_targets_wrapper() -> None:
     ]
     ontostore = OntoStore()
 
-    result = OntologyHarmonizer(llm=FakeLLM()).harmonize(
+    result = NoSearchOntologyHarmonizer(llm=FakeLLM()).harmonize(
         publication_context="Full publication context",
         metadata_context="Study: Oral disease | tissue=buccal mucosa",
         harmonization_targets=harmonization_targets,
@@ -2379,7 +2434,7 @@ def test_harmonize_accepts_single_target() -> None:
         "pre_hz_label": "lung",
     }
 
-    result = OntologyHarmonizer(llm=FakeLLM()).harmonize(target=target)
+    result = NoSearchOntologyHarmonizer(llm=FakeLLM()).harmonize(target=target)
 
     assert result == {
         "publication_context": None,
@@ -2398,7 +2453,9 @@ def test_harmonize_accepts_dict_harmonization_target() -> None:
         "pre_hz_label": "Homo sapiens",
     }
 
-    result = OntologyHarmonizer(llm=FakeLLM()).harmonize(harmonization_targets=target)
+    result = NoSearchOntologyHarmonizer(llm=FakeLLM()).harmonize(
+        harmonization_targets=target
+    )
 
     assert result["harmonization_targets"] == [target]
 
@@ -2737,28 +2794,34 @@ def test_harmonize_successful_lookup_passes_llm_false_to_field_harmonization() -
     assert target["ontology_match"] is True
 
 
-def test_harmonize_single_target_calls_assign_onto_framework_once() -> None:
-    calls = []
+def test_harmonize_single_target_never_assigns_framework_before_search() -> None:
+    search_calls = []
 
     class RecordingHarmonizer(OntologyHarmonizer):
-        def assign_onto_framework(
+        def assign_onto_framework(self, *args, **kwargs):
+            raise AssertionError("lookup misses must not assign a framework")
+
+        def harmonize_field(self, target, *, publication_context, ontostore, llm=True):
+            return False
+
+        def harmonize_label(
             self,
             target,
             *,
             publication_context,
             ontostore,
+            strategy,
+            search_llm_judge=True,
         ):
-            calls.append(target)
-
-        def harmonize_field(self, target, *, publication_context, ontostore, llm=True):
-            return False
+            search_calls.append(target)
+            return {"status": "not_harmonized"}
 
     target = {"id": "target-0", "pre_hz_field": "tissue", "pre_hz_label": "lung"}
 
     result = RecordingHarmonizer().harmonize(target=target)
 
     assert result["harmonization_targets"] == [target]
-    assert calls == [target]
+    assert search_calls == [target]
 
 
 def test_harmonize_without_targets_does_not_call_assign_onto_framework() -> None:
@@ -2782,21 +2845,27 @@ def test_harmonize_without_targets_does_not_call_assign_onto_framework() -> None
     assert calls == []
 
 
-def test_harmonize_assign_onto_framework_receives_ontostore_override() -> None:
+def test_harmonize_search_receives_ontostore_override() -> None:
     calls = []
 
     class RecordingHarmonizer(OntologyHarmonizer):
-        def assign_onto_framework(
+        def assign_onto_framework(self, *args, **kwargs):
+            raise AssertionError("lookup misses must not assign a framework")
+
+        def harmonize_field(self, target, *, publication_context, ontostore, llm=True):
+            return False
+
+        def harmonize_label(
             self,
             target,
             *,
             publication_context,
             ontostore,
+            strategy,
+            search_llm_judge=True,
         ):
             calls.append(ontostore)
-
-        def harmonize_field(self, target, *, publication_context, ontostore, llm=True):
-            return False
+            return {"status": "not_harmonized"}
 
     constructor_store = OntoStore()
     override_store = OntoStore()
@@ -2826,15 +2895,8 @@ def test_harmonize_calls_field_harmonization_before_strategy_handler() -> None:
             calls.append("lookup")
             return False
 
-        def assign_onto_framework(
-            self,
-            target,
-            *,
-            publication_context,
-            ontostore,
-        ):
-            calls.append("assign_framework")
-            return {"decision": "unsure", "confidence": "low", "reason": "none"}
+        def assign_onto_framework(self, *args, **kwargs):
+            raise AssertionError("lookup misses must not assign a framework")
 
         def harmonize_field(self, target, *, publication_context, ontostore, llm=True):
             calls.append("harmonize_field")
@@ -2860,7 +2922,6 @@ def test_harmonize_calls_field_harmonization_before_strategy_handler() -> None:
 
     assert calls == [
         "lookup",
-        "assign_framework",
         "harmonize_field",
         ("strategy", "websearch"),
     ]
@@ -3649,19 +3710,51 @@ def test_rag_placeholder_strategy_handler_mutates_target() -> None:
 
 
 def test_harmonize_default_strategy_routes_to_websearch_handler() -> None:
+    calls = []
+
+    class RecordingHarmonizer(OntologyHarmonizer):
+        def assign_onto_framework(self, *args, **kwargs):
+            raise AssertionError("lookup misses must not assign a framework")
+
+        def harmonize_field(self, target, *, publication_context, ontostore, llm=True):
+            return False
+
+        def harmonize_label(
+            self,
+            target,
+            *,
+            publication_context,
+            ontostore,
+            strategy,
+            search_llm_judge=True,
+        ):
+            calls.append(strategy)
+            result = {
+                "strategy": strategy,
+                "status": "not_harmonized",
+                "decision": "false",
+                "confidence": "none",
+                "reason": "No usable OLS ontology hit was found.",
+                "ols_hits": [],
+                "web_hits": [],
+            }
+            target["ontology_strategy_result"] = result
+            return result
+
     target = {"id": "target-websearch", "pre_hz_label": "lung"}
 
-    result = OntologyHarmonizer(llm=FakeLLM()).harmonize(target=target)
+    result = RecordingHarmonizer(llm=FakeLLM()).harmonize(target=target)
 
     assert result["strategy"] == "websearch"
     assert target["ontology_match"] is False
-    assert "ontology_framework_assignment" in target
+    assert "ontology_framework_assignment" not in target
+    assert calls == ["websearch"]
     assert target["ontology_strategy_result"] == {
         "strategy": "websearch",
         "status": "not_harmonized",
         "decision": "false",
         "confidence": "none",
-        "reason": "No assigned ontology framework is available for websearch.",
+        "reason": "No usable OLS ontology hit was found.",
         "ols_hits": [],
         "web_hits": [],
     }
@@ -4176,7 +4269,7 @@ def test_apply_targets_resolves_escaped_paths_and_skips_missing_paths() -> None:
 def test_harmonize_miniml_json_extracts_default_targets() -> None:
     miniml_json = miniml_metadata()
     miniml_json["series"] = {"title": "Oral disease transcriptomics"}
-    result = OntologyHarmonizer(llm=FakeLLM()).harmonize_miniml_json(
+    result = NoSearchOntologyHarmonizer(llm=FakeLLM()).harmonize_miniml_json(
         publication_context="Full publication context",
         miniml_json=miniml_json,
     )
@@ -4288,8 +4381,31 @@ def test_metadata_context_stops_before_partial_regular_entry() -> None:
 
 
 def test_harmonize_miniml_json_accepts_explicit_target_paths(tmp_path: Path) -> None:
+    class RecordingHarmonizer(OntologyHarmonizer):
+        def harmonize_label(
+            self,
+            target,
+            *,
+            publication_context,
+            metadata_context=None,
+            ontostore,
+            strategy,
+            search_llm_judge=True,
+        ):
+            result = {
+                "strategy": strategy,
+                "status": "not_harmonized",
+                "decision": "false",
+                "confidence": "none",
+                "reason": "No usable OLS ontology hit was found.",
+                "ols_hits": [],
+                "web_hits": [],
+            }
+            target["ontology_strategy_result"] = result
+            return result
+
     miniml_json = {"sample": {"tissue": "lung"}}
-    result = OntologyHarmonizer(
+    result = RecordingHarmonizer(
         llm=FakeLLM(), ontostore=OntoStore(storage_dir=tmp_path)
     ).harmonize_miniml_json(
         miniml_json=miniml_json,
@@ -4311,31 +4427,23 @@ def test_harmonize_miniml_json_accepts_explicit_target_paths(tmp_path: Path) -> 
                 "hz_field": "tissue",
                 "hz_label": "lung",
                 "ontology_match": False,
-                    "ontology_framework_assignment": {
-                        "decision": "unsure",
-                        "confidence": "low",
-                        "reason": "No clear framework match.",
-                    },
-                    "field_assignment": {
-                        "decision": "tissue",
-                        "confidence": "low",
-                        "reason": "No clear field match.",
-                        "new_field": True,
-                    },
-                    "ontology_strategy_result": {
-                        "strategy": "websearch",
-                        "status": "not_harmonized",
-                        "decision": "false",
-                        "confidence": "none",
-                        "reason": (
-                            "No assigned ontology framework is available for "
-                            "websearch."
-                        ),
-                        "ols_hits": [],
-                        "web_hits": [],
-                    },
-                }
-            ],
+                "field_assignment": {
+                    "decision": "tissue",
+                    "confidence": "low",
+                    "reason": "No clear field match.",
+                    "new_field": True,
+                },
+                "ontology_strategy_result": {
+                    "strategy": "websearch",
+                    "status": "not_harmonized",
+                    "decision": "false",
+                    "confidence": "none",
+                    "reason": "No usable OLS ontology hit was found.",
+                    "ols_hits": [],
+                    "web_hits": [],
+                },
+            }
+        ],
         "strategy": "websearch",
         "target_paths": ["/sample"],
         "miniml_json": {

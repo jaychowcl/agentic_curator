@@ -107,17 +107,6 @@ class OntologyHarmonizer:
                     normalized_target.get("id"),
                 )
                 self._mark_ontology_miss(normalized_target)
-                if llm:
-                    LOGGER.info(
-                        "Assigning ontology framework for target %s.",
-                        normalized_target.get("id"),
-                    )
-                    self.assign_onto_framework(
-                        normalized_target,
-                        publication_context=publication_context,
-                        ontostore=effective_ontostore,
-                        **self._metadata_context_kwargs(metadata_context),
-                    )
 
             self.harmonize_field(
                 normalized_target,

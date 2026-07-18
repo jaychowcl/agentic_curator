@@ -48,8 +48,20 @@ def test_thematic_reviewer_logs_orchestrator_steps(caplog) -> None:
 
 
 def test_ontology_harmonizer_logs_target_workflow(caplog) -> None:
+    class NoNetworkOntologyHarmonizer(OntologyHarmonizer):
+        def harmonize_label(
+            self,
+            target,
+            *,
+            publication_context,
+            ontostore,
+            strategy,
+            search_llm_judge=True,
+        ):
+            return {"strategy": strategy, "status": "not_harmonized"}
+
     store = OntoStore(ontology_frameworks={}, fields={"organism": {"label": "organism"}})
-    harmonizer = OntologyHarmonizer(ontostore=store)
+    harmonizer = NoNetworkOntologyHarmonizer(ontostore=store)
 
     with caplog.at_level(logging.INFO):
         harmonizer.harmonize(

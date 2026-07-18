@@ -229,14 +229,6 @@ class WebsearchStrategyHandler:
         ontostore: OntoStore,
     ) -> dict[str, Any]:
         ontology_id = target.get("ontology_id")
-        if not ontology_id:
-            return self._not_harmonized(
-                target,
-                reason="No assigned ontology framework is available for websearch.",
-                ols_hits=[],
-                web_hits=[],
-            )
-
         label = target.get("hz_label", target.get("pre_hz_label"))
         if not label:
             return self._not_harmonized(
@@ -246,13 +238,15 @@ class WebsearchStrategyHandler:
                 web_hits=[],
             )
 
-        restricted_docs = self.ols_client.search(
-            str(label),
-            ontology_id=str(ontology_id),
-            rows=self.max_results,
-        )
-        restricted_hits = self._hits_from_docs(restricted_docs)
+        restricted_hits: list[dict[str, Any]] = []
         judgements: list[dict[str, Any]] = []
+        if ontology_id:
+            restricted_docs = self.ols_client.search(
+                str(label),
+                ontology_id=str(ontology_id),
+                rows=self.max_results,
+            )
+            restricted_hits = self._hits_from_docs(restricted_docs)
         if restricted_hits:
             if self.search_judge is None:
                 return self._accept_hit(
