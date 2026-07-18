@@ -161,8 +161,12 @@ def test_readme_covers_supported_interfaces_and_current_controls() -> None:
 
     for option in (
         "--max-queries",
-        "--no-lookup-llm-judge",
-        "--no-search-llm-judge",
+        "--no-direct-lookup-judge",
+        "--no-rag-lookup",
+        "--no-rag-lookup-judge",
+        "--no-ols-lookup",
+        "--no-ols-lookup-judge",
+        "--no-field-assignment-judge",
         "--request-timeout",
         "--request-max-attempts",
         "--request-backoff",

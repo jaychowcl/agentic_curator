@@ -36,7 +36,7 @@ class NoopWorkflowHarmonizer(OntologyHarmonizer):
         *,
         publication_context,
         ontostore,
-        lookup_llm_judge=True,
+        direct_lookup_judge=True,
         metadata_context=None,
     ):
         return True
@@ -241,7 +241,7 @@ def test_target_checker_fails_open_after_two_call_failures(tmp_path: Path) -> No
     ]
 
 
-def test_target_checker_is_disabled_by_flag_or_global_llm_switch(
+def test_target_checker_is_disabled_by_its_stage_flag(
     tmp_path: Path,
 ) -> None:
     llm = SequencedLLM([])
@@ -255,19 +255,9 @@ def test_target_checker_is_disabled_by_flag_or_global_llm_switch(
         target=deepcopy(target),
         target_checker=False,
     )
-    no_llm = harmonizer.harmonize(
-        target=deepcopy(target),
-        llm=False,
-    )
-
     assert disabled["target_checker"] == {
         "status": "disabled",
         "reason": "target_checker_disabled",
-        "added_count": 0,
-    }
-    assert no_llm["target_checker"] == {
-        "status": "disabled",
-        "reason": "llm_disabled",
         "added_count": 0,
     }
     assert llm.calls == []

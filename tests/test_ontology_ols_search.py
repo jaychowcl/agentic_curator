@@ -81,8 +81,9 @@ def test_ols_strategy_uses_only_unrestricted_ols_after_local_miss() -> None:
         {"label": "lung", "ontology_id": None, "rows": 25}
     ]
     assert result["source"] == "ols"
-    assert result["status"] == "matched"
-    assert result["decision"] == "UBERON_0002048"
+    assert result["status"] == "candidates_unjudged"
+    assert result["decision"] is None
+    assert target["ontology_match"] is False
     assert "web_hits" not in result
     assert "web_search_error" not in result
 

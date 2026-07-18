@@ -51,21 +51,12 @@ def _add_store_options(parser: argparse.ArgumentParser) -> None:
 def _add_harmonize_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--target-paths", default=None)
     parser.add_argument("--target-paths-file", default=None)
-    parser.add_argument("--lookup-llm-judge", dest="lookup_llm_judge", action="store_true", default=True)
-    parser.add_argument("--no-lookup-llm-judge", dest="lookup_llm_judge", action="store_false")
-    parser.add_argument(
-        "--search-llm-judge",
-        dest="search_llm_judge",
-        action="store_true",
-        default=True,
-    )
-    parser.add_argument(
-        "--no-search-llm-judge",
-        dest="search_llm_judge",
-        action="store_false",
-    )
-    parser.add_argument("--llm", dest="llm", action="store_true", default=True)
-    parser.add_argument("--no-llm", dest="llm", action="store_false")
+    _add_boolean_option(parser, "direct-lookup-judge")
+    _add_boolean_option(parser, "rag-lookup")
+    _add_boolean_option(parser, "rag-lookup-judge")
+    _add_boolean_option(parser, "ols-lookup")
+    _add_boolean_option(parser, "ols-lookup-judge")
+    _add_boolean_option(parser, "field-assignment-judge")
     parser.add_argument(
         "--target-checker",
         dest="target_checker",
@@ -94,6 +85,21 @@ def _add_harmonize_options(parser: argparse.ArgumentParser) -> None:
         "--rag-hierarchy-threshold-offset",
         type=float,
         default=None,
+    )
+
+
+def _add_boolean_option(parser: argparse.ArgumentParser, name: str) -> None:
+    destination = name.replace("-", "_")
+    parser.add_argument(
+        f"--{name}",
+        dest=destination,
+        action="store_true",
+        default=True,
+    )
+    parser.add_argument(
+        f"--no-{name}",
+        dest=destination,
+        action="store_false",
     )
 
 
@@ -240,10 +246,13 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Any:
                 name="target",
             ),
             target_paths=_target_paths(args, parser),
-            lookup_llm_judge=args.lookup_llm_judge,
-            search_llm_judge=args.search_llm_judge,
-            llm=args.llm,
             target_checker=args.target_checker,
+            direct_lookup_judge=args.direct_lookup_judge,
+            rag_lookup=args.rag_lookup,
+            rag_lookup_judge=args.rag_lookup_judge,
+            ols_lookup=args.ols_lookup,
+            ols_lookup_judge=args.ols_lookup_judge,
+            field_assignment_judge=args.field_assignment_judge,
         )
 
     if args.command == "harmonize-miniml-json":
@@ -256,10 +265,13 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Any:
                 name="miniml-json",
             ),
             target_paths=_target_paths(args, parser),
-            lookup_llm_judge=args.lookup_llm_judge,
-            search_llm_judge=args.search_llm_judge,
-            llm=args.llm,
             target_checker=args.target_checker,
+            direct_lookup_judge=args.direct_lookup_judge,
+            rag_lookup=args.rag_lookup,
+            rag_lookup_judge=args.rag_lookup_judge,
+            ols_lookup=args.ols_lookup,
+            ols_lookup_judge=args.ols_lookup_judge,
+            field_assignment_judge=args.field_assignment_judge,
         )
 
     parser.error(f"Unknown command {args.command!r}.")

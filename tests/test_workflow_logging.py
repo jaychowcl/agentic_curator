@@ -55,7 +55,7 @@ def test_ontology_harmonizer_logs_target_workflow(caplog) -> None:
             *,
             publication_context,
             ontostore,
-            search_llm_judge=True,
+            ols_lookup_judge=True,
         ):
             return {"source": "ols", "status": "not_harmonized"}
 
@@ -69,7 +69,7 @@ def test_ontology_harmonizer_logs_target_workflow(caplog) -> None:
                 "pre_hz_field": "Organism",
                 "pre_hz_label": "lung",
             },
-            llm=False,
+            field_assignment_judge=False,
         )
 
     messages = [record.getMessage() for record in caplog.records]

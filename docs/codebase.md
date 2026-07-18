@@ -219,15 +219,16 @@ until the preference is changed. The list is not persisted in SQLite.
 
 Public methods:
 
-- `harmonize(publication_context=None, metadata_context=None, harmonization_targets=None, target=None, ontostore=None, target_paths=None, lookup_llm_judge=True, search_llm_judge=True, llm=True, target_checker=True) -> dict`
-- `harmonize_miniml_json(publication_context=None, miniml_json=None, ontostore=None, target_paths=None, lookup_llm_judge=True, search_llm_judge=True, llm=True, target_checker=True) -> dict`
+- `harmonize(publication_context=None, metadata_context=None, harmonization_targets=None, target=None, ontostore=None, target_paths=None, target_checker=True, direct_lookup_judge=True, rag_lookup=True, rag_lookup_judge=True, ols_lookup=True, ols_lookup_judge=True, field_assignment_judge=True) -> dict`
+- `harmonize_miniml_json(publication_context=None, miniml_json=None, ontostore=None, target_paths=None, target_checker=True, direct_lookup_judge=True, rag_lookup=True, rag_lookup_judge=True, ols_lookup=True, ols_lookup_judge=True, field_assignment_judge=True) -> dict`
 - `lookup_label(...)`, `lookup_rag_label(...)`, and `harmonize_label(...)`
 - `judge_lookup(..., candidate_limit=10)`
 - `harmonize_field(...)` and `assign_field(...)`
 - `apply_targets(miniml_json, harmonization_targets) -> dict | list | None`
 
-The top-level wrapper contains `workflow="local_rag_ols"` and includes
-`preferred_ontology_ids` when preferences are configured. Per-stage OLS results
+The top-level wrapper contains `workflow="local_rag_ols"`, records all seven
+effective stage switches under `controls`, and includes `preferred_ontology_ids`
+when preferences are configured. Per-stage OLS results
 use `source="ols"`; there is no public `strategy` argument or `--strategy` CLI
 option.
 
@@ -247,37 +248,45 @@ Equivalent field-hint/label additions are merged across source targets while
 preserving source-specific confidence, reason, and occurrence provenance.
 Malformed or failed calls receive one correction attempt, then fail open with
 the originals. Missing or duplicate source IDs are assigned deterministic
-unique `target-N` values before the call. `target_checker=False` or `llm=False`
-disables this stage, and an empty target list records a no-target skip.
+unique `target-N` values before the call. `target_checker=False` disables this
+stage, and an empty target list records a no-target skip.
 
 1. Normalize `pre_hz_field` and `pre_hz_label` into working `hz_field` and
    `hz_label`.
 2. Run exact local SQLite lookup, then FTS5 when exact lookup misses.
-3. If local candidates exist, the lookup judge either selects an ID, returns
-   `no_match` to continue, or returns `false` to terminally skip the target.
+3. If local candidates exist, the direct lookup judge either selects an ID,
+   returns `no_match` to continue, or returns `false` to terminally skip the
+   target. Without that judge, exactly one unique exact identity is accepted;
+   ambiguous exact or FTS candidates remain trace evidence only.
 4. After a local miss or `no_match`, call `OntoStore.lookup_rag_many(...)` for
    the locally cached candidate frameworks. It embeds the label once, searches
    each framework partition sequentially, filters by the effective similarity
    threshold, reserves up to two hits per qualifying ontology, and lets the
-   same judge accept or reject the balanced candidates. Optional hierarchy
+   RAG judge accept or reject the balanced candidates. With `rag_lookup=False`
+   this stage is disabled; with only `rag_lookup_judge=False`, candidates are
+   retained as unjudged trace evidence. Optional hierarchy
    expansion appends bounded vector-ranked parents and children before that
    same judge call; it is disabled by default.
 5. After a semantic miss or `no_match`, make exactly one unrestricted OLS
    search, even when the target already contains an ontology ID. OLS is the
    only external ontology search; grounded web search is not part of this
-   workflow.
+   workflow. `ols_lookup=False` disables retrieval; `ols_lookup_judge=False`
+   retains returned candidates as unjudged evidence and never applies the
+   first result automatically.
 6. An OLS judge selection is locally enriched by exact identifier only. A
    `no_match` result remains unmatched and a `false` result terminally skips
    the target.
 7. Promote the selected ontology term title to `hz_label`.
 8. Harmonize the field using that harmonized label. Registry lookup runs first;
-   an unknown field may be assigned and persisted by the field LLM.
+   an unknown field may be assigned and persisted by the field model only when
+   `field_assignment_judge=True`; deterministic registry/fallback behavior
+   remains available when it is false.
 9. `harmonize_miniml_json(...)` applies non-skipped targets back to the supplied
    object.
 
-`llm=False` disables semantic lookup because semantic candidates require an
-LLM judge, disables OLS judging, and disables field assignment. It does not
-disable deterministic exact/FTS lookup or raw OLS retrieval behavior.
+There is no global runtime model switch. Retrieval and judging are explicit,
+stage-specific controls so callers can retain candidate evidence without
+authorizing a model decision.
 
 A selected term mutates the target with `ontology_match=True`,
 `ontology_id`, `ontology_lookup`, and `ontology_lookup_hits`. Semantic
@@ -746,21 +755,24 @@ class OntologyHarmonizer:
         target=None,
         ontostore=None,
         target_paths=None,
-        lookup_llm_judge=True,
-        search_llm_judge=True,
-        llm=True,
         target_checker=True,
+        direct_lookup_judge=True,
+        rag_lookup=True,
+        rag_lookup_judge=True,
+        ols_lookup=True,
+        ols_lookup_judge=True,
+        field_assignment_judge=True,
     ):
         store = effective OntoStore
         targets = normalize target or target list
-        if targets and target_checker and llm:
+        if targets and target_checker:
             assign deterministic unique source target IDs
             additions, target_checker_trace = run_target_checker(targets, contexts, fields)
             targets += additions
         elif not targets:
             target_checker_trace = skipped("no_targets")
         else:
-            target_checker_trace = disabled(target_checker, llm)
+            target_checker_trace = disabled(target_checker)
         for target in targets:
             normalize pre_hz values into working hz_field and hz_label
 
@@ -769,30 +781,30 @@ class OntologyHarmonizer:
                 publication_context,
                 metadata_context,
                 store,
-                lookup_llm_judge=lookup_llm_judge and llm,
+                direct_lookup_judge=direct_lookup_judge,
             )
             if target was terminally skipped:
                 continue
 
-            if not match and llm:
+            if not match and rag_lookup:
                 match = lookup_rag_label(
                     target,
                     publication_context,
                     metadata_context,
                     store,
-                    lookup_llm_judge=lookup_llm_judge,
+                    rag_lookup_judge=rag_lookup_judge,
                 )
             if target was terminally skipped:
                 continue
 
-            if not match:
+            if not match and ols_lookup:
                 clear stale ontology match state
                 ols = harmonize_label(
                     target,
                     publication_context,
                     metadata_context,
                     store,
-                    search_llm_judge=search_llm_judge and llm,
+                    ols_lookup_judge=ols_lookup_judge,
                 )
                 if ols matched:
                     enrich the selected identity from local exact lookup
@@ -805,7 +817,7 @@ class OntologyHarmonizer:
                 publication_context,
                 metadata_context,
                 store,
-                llm=llm,
+                field_assignment_judge=field_assignment_judge,
             )
 
         return wrapper with workflow="local_rag_ols" and target_checker trace
@@ -844,9 +856,9 @@ class OntologyHarmonizer:
         on no_match, set RAG status="no_match" and return False
         on false, mark target skipped and return False
 
-    def _select_lookup_hit(target, hits, source, lookup_llm_judge):
+    def _select_lookup_hit(target, hits, source, judge_enabled):
         if judging disabled:
-            return hits[0]
+            accept only one unique exact identity; otherwise retain candidates
         judgement = judge_lookup(compact target and stage-specific candidate limit)
         append source-tagged judgement to ontology_lookup_judgements
         if decision == "no_match":
@@ -863,7 +875,7 @@ class OntologyHarmonizer:
         lookup = store.lookup_fields(hz_field)
         if lookup:
             replace hz_field with canonical field and return lookup
-        if llm is disabled:
+        if field assignment judge is disabled:
             return False
         assignment = assign_field(
             original field/label, current hz_label, selected term, contexts, fields
@@ -1633,10 +1645,13 @@ Ontology inputs include:
 - `--harmonization-targets` or `--harmonization-targets-file`
 - `--miniml-json` or `--miniml-json-file`
 - `--target-paths` or `--target-paths-file`
-- `--lookup-llm-judge` or `--no-lookup-llm-judge` (enabled by default)
-- `--search-llm-judge` or `--no-search-llm-judge` (enabled by default)
-- `--llm` or `--no-llm`
 - `--target-checker` or `--no-target-checker` for either harmonization command
+- `--direct-lookup-judge` or `--no-direct-lookup-judge`
+- `--rag-lookup` or `--no-rag-lookup`
+- `--rag-lookup-judge` or `--no-rag-lookup-judge`
+- `--ols-lookup` or `--no-ols-lookup`
+- `--ols-lookup-judge` or `--no-ols-lookup-judge`
+- `--field-assignment-judge` or `--no-field-assignment-judge`
 - `--ontology-frameworks` or `--ontology-frameworks-file`
 - `--fields` or `--fields-file`
 - `--storage-dir`
@@ -1778,5 +1793,9 @@ Run ontology harmonization against a JSON target:
   --publication-context-file .dev/thematic_reviewer_publication_text.txt \
   --target '{"id": "target-1", "pre_hz_field": "organism", "pre_hz_label": "mouse"}' \
   --fields '{"organism": {"label": "organism"}}' \
-  --no-llm
+  --no-target-checker \
+  --no-direct-lookup-judge \
+  --no-rag-lookup \
+  --no-ols-lookup-judge \
+  --no-field-assignment-judge
 ```

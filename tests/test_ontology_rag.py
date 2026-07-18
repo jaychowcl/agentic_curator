@@ -12,6 +12,8 @@ from __future__ import annotations
 import inspect
 import json
 from pathlib import Path
+
+import pytest
 from types import SimpleNamespace
 
 import numpy as np
@@ -466,10 +468,10 @@ def test_fixed_workflow_removes_strategy_public_api_and_cli() -> None:
     ).parameters
 
     parser = _build_parser()
-    parsed = parser.parse_args(
-        ["harmonize", "--target", '{"pre_hz_label": "lung"}', "--no-llm"]
-    )
-    assert not hasattr(parsed, "strategy")
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["harmonize", "--target", '{"pre_hz_label": "lung"}', "--no-llm"]
+        )
 
 
 def test_lookup_judge_contract_accepts_no_match() -> None:
@@ -584,7 +586,7 @@ def test_lookup_judge_no_match_falls_through_without_skipping_target() -> None:
         target=target,
         publication_context=None,
         hits=[{"id": "UBERON_0000948", "title": "heart"}],
-        lookup_llm_judge=True,
+        judge_enabled=True,
         source="rag",
     )
 

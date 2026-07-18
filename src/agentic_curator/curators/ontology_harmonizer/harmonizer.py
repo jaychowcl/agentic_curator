@@ -99,10 +99,13 @@ class OntologyHarmonizer:
         target: dict[str, Any] | None = None,
         ontostore: OntoStore | None = None,
         target_paths: list[StartPathSpec] | None = None,
-        lookup_llm_judge: bool = True,
-        search_llm_judge: bool = True,
-        llm: bool = True,
         target_checker: bool = True,
+        direct_lookup_judge: bool = True,
+        rag_lookup: bool = True,
+        rag_lookup_judge: bool = True,
+        ols_lookup: bool = True,
+        ols_lookup_judge: bool = True,
+        field_assignment_judge: bool = True,
     ) -> dict[str, Any]:
         LOGGER.info("Starting ontology harmonization.")
         effective_ontostore = self._effective_ontostore(ontostore)
@@ -116,7 +119,7 @@ class OntologyHarmonizer:
                 "reason": "no_targets",
                 "added_count": 0,
             }
-        elif target_checker and llm:
+        elif target_checker:
             self._ensure_unique_target_ids(normalized_targets)
             added_targets, target_checker_trace = self._run_target_checker(
                 targets=normalized_targets,
@@ -128,9 +131,7 @@ class OntologyHarmonizer:
         else:
             target_checker_trace = {
                 "status": "disabled",
-                "reason": (
-                    "llm_disabled" if not llm else "target_checker_disabled"
-                ),
+                "reason": "target_checker_disabled",
                 "added_count": 0,
             }
         LOGGER.debug(
@@ -145,19 +146,26 @@ class OntologyHarmonizer:
                 normalized_target,
                 publication_context=publication_context,
                 ontostore=effective_ontostore,
-                lookup_llm_judge=lookup_llm_judge and llm,
+                direct_lookup_judge=direct_lookup_judge,
                 **self._metadata_context_kwargs(metadata_context),
             )
             if self._is_harmonization_skipped(normalized_target):
                 continue
-            if not lookup and llm:
+            if not lookup and rag_lookup:
                 lookup = self.lookup_rag_label(
                     normalized_target,
                     publication_context=publication_context,
                     ontostore=effective_ontostore,
-                    lookup_llm_judge=lookup_llm_judge,
+                    rag_lookup_judge=rag_lookup_judge,
                     **self._metadata_context_kwargs(metadata_context),
                 )
+            elif not lookup:
+                normalized_target["ontology_rag"] = {
+                    "status": "disabled",
+                    "reason": "rag_lookup_disabled",
+                    "frameworks": [],
+                    "hits": [],
+                }
             if self._is_harmonization_skipped(normalized_target):
                 continue
 
@@ -168,12 +176,12 @@ class OntologyHarmonizer:
                 )
                 self._mark_ontology_miss(normalized_target)
 
-            if not lookup:
+            if not lookup and ols_lookup:
                 ols_result = self.harmonize_label(
                     normalized_target,
                     publication_context=publication_context,
                     ontostore=effective_ontostore,
-                    search_llm_judge=search_llm_judge and llm,
+                    ols_lookup_judge=ols_lookup_judge,
                     **self._metadata_context_kwargs(metadata_context),
                 )
                 if ols_result.get("status") == "matched":
@@ -183,13 +191,22 @@ class OntologyHarmonizer:
                     )
                 elif ols_result.get("status") == "skipped":
                     continue
+            elif not lookup:
+                normalized_target["ontology_ols_result"] = {
+                    "source": "ols",
+                    "status": "disabled",
+                    "decision": None,
+                    "confidence": "none",
+                    "reason": "ols_lookup_disabled",
+                    "ols_hits": [],
+                }
 
             self._apply_selected_ontology_label(normalized_target)
             self.harmonize_field(
                 normalized_target,
                 publication_context=publication_context,
                 ontostore=effective_ontostore,
-                llm=llm,
+                field_assignment_judge=field_assignment_judge,
                 **self._metadata_context_kwargs(metadata_context),
             )
 
@@ -212,6 +229,15 @@ class OntologyHarmonizer:
             "workflow": self.WORKFLOW,
             "target_paths": target_paths,
             "target_checker": target_checker_trace,
+            "controls": {
+                "target_checker": target_checker,
+                "direct_lookup_judge": direct_lookup_judge,
+                "rag_lookup": rag_lookup,
+                "rag_lookup_judge": rag_lookup_judge,
+                "ols_lookup": ols_lookup,
+                "ols_lookup_judge": ols_lookup_judge,
+                "field_assignment_judge": field_assignment_judge,
+            },
         }
         if effective_ontostore.preferred_ontology_ids:
             result["preferred_ontology_ids"] = list(
@@ -225,10 +251,13 @@ class OntologyHarmonizer:
         miniml_json: dict[str, Any] | list[Any] | None = None,
         ontostore: OntoStore | None = None,
         target_paths: list[StartPathSpec] | None = None,
-        lookup_llm_judge: bool = True,
-        search_llm_judge: bool = True,
-        llm: bool = True,
         target_checker: bool = True,
+        direct_lookup_judge: bool = True,
+        rag_lookup: bool = True,
+        rag_lookup_judge: bool = True,
+        ols_lookup: bool = True,
+        ols_lookup_judge: bool = True,
+        field_assignment_judge: bool = True,
     ) -> dict[str, Any]:
         LOGGER.info("Starting MINiML JSON ontology harmonization.")
         should_dedupe_targets = target_paths is None
@@ -257,10 +286,13 @@ class OntologyHarmonizer:
             target=None,
             ontostore=ontostore,
             target_paths=effective_target_paths,
-            lookup_llm_judge=lookup_llm_judge,
-            search_llm_judge=search_llm_judge,
-            llm=llm,
             target_checker=target_checker,
+            direct_lookup_judge=direct_lookup_judge,
+            rag_lookup=rag_lookup,
+            rag_lookup_judge=rag_lookup_judge,
+            ols_lookup=ols_lookup,
+            ols_lookup_judge=ols_lookup_judge,
+            field_assignment_judge=field_assignment_judge,
         )
         applied_targets = result.get("harmonization_targets", harmonization_targets)
         result["miniml_json"] = self.apply_targets(miniml_json, applied_targets)
@@ -898,7 +930,7 @@ class OntologyHarmonizer:
         publication_context: str | None,
         metadata_context: str | None = None,
         ontostore: OntoStore,
-        lookup_llm_judge: bool = True,
+        direct_lookup_judge: bool = True,
     ) -> Any:
         self._harmonize_target(target, ontostore)
         label = target.get("hz_label")
@@ -932,7 +964,7 @@ class OntologyHarmonizer:
         target["ontology_lookup_match_type"] = match_type
         if ranking:
             target["ontology_lookup_ranking"] = ranking
-        if match_type == "fts" and not lookup_llm_judge:
+        if match_type == "fts" and not direct_lookup_judge:
             target["ontology_lookup_candidates"] = hits
             return False
 
@@ -941,7 +973,7 @@ class OntologyHarmonizer:
             publication_context=publication_context,
             metadata_context=metadata_context,
             hits=hits,
-            lookup_llm_judge=lookup_llm_judge,
+            judge_enabled=direct_lookup_judge,
             source="local",
             preferred_ontology_ids=ontostore.preferred_ontology_ids,
         )
@@ -965,13 +997,17 @@ class OntologyHarmonizer:
         publication_context: str | None,
         metadata_context: str | None = None,
         hits: list[dict[str, Any]],
-        lookup_llm_judge: bool,
+        judge_enabled: bool,
         source: str,
         candidate_limit: int | None = None,
         preferred_ontology_ids: tuple[str, ...] = (),
     ) -> dict[str, Any] | bool:
-        if not lookup_llm_judge:
-            return hits[0]
+        if not judge_enabled:
+            unique_hits = self._unique_candidate_hits(hits)
+            if len(unique_hits) == 1:
+                return unique_hits[0]
+            target["ontology_lookup_candidates"] = hits
+            return False
 
         LOGGER.info("Judging %d ontology lookup hits with LLM.", len(hits))
         effective_limit = (
@@ -1018,6 +1054,19 @@ class OntologyHarmonizer:
             "LLM lookup judgement decision must match a known lookup hit id."
         )
 
+    @staticmethod
+    def _unique_candidate_hits(
+        hits: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        unique: dict[tuple[str, str], dict[str, Any]] = {}
+        for hit in hits:
+            identity = str(
+                hit.get("id") or hit.get("accession") or hit.get("iri") or ""
+            )
+            key = (str(hit.get("ontology_id") or ""), identity)
+            unique.setdefault(key, hit)
+        return list(unique.values())
+
     def lookup_rag_label(
         self,
         target: dict[str, Any],
@@ -1025,7 +1074,7 @@ class OntologyHarmonizer:
         publication_context: str | None,
         metadata_context: str | None = None,
         ontostore: OntoStore,
-        lookup_llm_judge: bool = True,
+        rag_lookup_judge: bool = True,
     ) -> Any:
         """Run semantic lookup across cached local ontology frameworks."""
         label = target.get("hz_label")
@@ -1103,14 +1152,17 @@ class OntologyHarmonizer:
             ),
             **({"errors": errors} if errors else {}),
         }
-        if not hits or not lookup_llm_judge:
+        if not hits:
+            return False
+        if not rag_lookup_judge:
+            target["ontology_rag"]["status"] = "candidates_unjudged"
             return False
         selected = self._select_lookup_hit(
             target=target,
             publication_context=publication_context,
             metadata_context=metadata_context,
             hits=hits,
-            lookup_llm_judge=True,
+            judge_enabled=True,
             source="rag",
             candidate_limit=len(hits),
             preferred_ontology_ids=ontostore.preferred_ontology_ids,
@@ -1402,7 +1454,7 @@ class OntologyHarmonizer:
         publication_context: str | None,
         metadata_context: str | None = None,
         ontostore: OntoStore,
-        llm: bool = True,
+        field_assignment_judge: bool = True,
     ) -> Any:
         self._harmonize_target(target, ontostore)
         field = target.get("hz_field")
@@ -1417,7 +1469,7 @@ class OntologyHarmonizer:
             LOGGER.info("Field harmonization matched %s.", lookup["field"])
             return lookup
 
-        if llm:
+        if field_assignment_judge:
             LOGGER.info("Assigning field with LLM.")
             return self.assign_field(
                 target,
@@ -1534,12 +1586,12 @@ class OntologyHarmonizer:
         publication_context: str | None,
         metadata_context: str | None = None,
         ontostore: OntoStore,
-        search_llm_judge: bool = True,
+        ols_lookup_judge: bool = True,
     ) -> dict[str, Any]:
         LOGGER.info("Running OLS ontology lookup.")
         handler = OlsStrategyHandler(
             ols_client=OlsClient(request_policy=self.request_policy, cache_store=ontostore),
-            search_judge=(self.judge_search_results if search_llm_judge else None),
+            search_judge=(self.judge_search_results if ols_lookup_judge else None),
         )
         return handler.handle(
             target,

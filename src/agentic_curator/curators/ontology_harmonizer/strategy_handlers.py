@@ -126,12 +126,9 @@ class OlsStrategyHandler:
         if unrestricted_hits:
             all_hits = unrestricted_hits
             if self.search_judge is None:
-                return self._accept_hit(
+                return self._unjudged(
                     target,
-                    ontostore=ontostore,
-                    hit=unrestricted_hits[0],
                     hits=unrestricted_hits,
-                    reason="Unrestricted OLS search returned a usable ontology hit.",
                 )
             try:
                 judge_hits = preferred_judge_candidates(
@@ -190,6 +187,27 @@ class OlsStrategyHandler:
             ols_hits=[],
             search_llm_judgements=judgements,
         )
+
+    def _unjudged(
+        self,
+        target: dict[str, Any],
+        *,
+        hits: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        result = {
+            "source": self.source,
+            "status": "candidates_unjudged",
+            "decision": None,
+            "confidence": "none",
+            "reason": "OLS candidates were retrieved but judging is disabled.",
+            "ols_hits": hits,
+        }
+        target["ontology_match"] = False
+        target.pop("ontology_id", None)
+        target.pop("ontology_lookup", None)
+        target.pop("ontology_lookup_hits", None)
+        target["ontology_ols_result"] = result
+        return result
 
     @staticmethod
     def _unique_hits(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:

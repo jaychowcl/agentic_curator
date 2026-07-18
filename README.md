@@ -182,6 +182,7 @@ stage traces. The wrapper is:
   "publication_context": "...",
   "harmonization_targets": [],
   "workflow": "local_rag_ols",
+  "controls": {},
   "target_paths": []
 }
 ```
@@ -271,12 +272,12 @@ normalization, lookup, assignment, search, enrichment, and application.
 
 | Method | Main options |
 | --- | --- |
-| `harmonize(...)` | User `publication_context`, compact `metadata_context`, `harmonization_targets` or `target`, `ontostore`, `target_paths`, judge/LLM controls, and `target_checker=True` |
-| `harmonize_miniml_json(...)` | User `publication_context`, `miniml_json`, `ontostore`, `target_paths`, the same judge/LLM controls, and `target_checker=True`; `metadata_context` is generated automatically |
-| `lookup_label(...)` | Target, publication context, store, and local judge toggle |
+| `harmonize(...)` | User contexts and targets plus independent target-checker, direct, RAG, OLS, and field-stage controls |
+| `harmonize_miniml_json(...)` | User `publication_context`, `miniml_json`, `ontostore`, `target_paths`, and the same stage controls; `metadata_context` is generated automatically |
+| `lookup_label(...)` | Target, publication context, store, and direct judge toggle |
 | `lookup_rag_label(...)` | Target, contexts, store, and semantic judge toggle |
 | `judge_lookup(..., candidate_limit=10)` | Judge compact local or balanced semantic candidates |
-| `harmonize_field(...)` | Target, publication context, store, and `llm` toggle |
+| `harmonize_field(...)` | Target, publication context, store, and field-assignment judge toggle |
 | `harmonize_label(...)` | Target, publication context, store, and OLS judge toggle |
 | `apply_targets(miniml_json, harmonization_targets)` | Mutates and returns MINiML JSON |
 
@@ -293,6 +294,12 @@ may be enriched locally only by matching its identifier. The OLS judge receives
 one neutral `OLS Hits` candidate section without restricted/unrestricted stage
 cues. Field-assignment context includes both the canonical `label` and the
 original `pre_hz_label` when available.
+
+There is no global runtime model toggle. Retrieval and judging are controlled
+independently for each stage. An unjudged direct lookup accepts only one unique
+exact identity; ambiguous exact, FTS, RAG, and OLS candidates remain trace
+evidence and are not applied automatically. The result records the effective
+settings under `controls`.
 
 Before per-target lookup, `harmonize(...)` makes one target-checker LLM call
 over its complete normalized target list, whether supplied directly or by the
@@ -391,10 +398,13 @@ their `-file` counterparts are mutually substitutable; files take precedence.
 | `--fields`, `--fields-file` | JSON controlled-field configuration |
 | `--storage-dir` | OWL, JSON, and SQLite storage root |
 | `--target-paths`, `--target-paths-file` | JSON path specifications |
-| `--lookup-llm-judge`, `--no-lookup-llm-judge` | Enable/disable judging every local candidate set; enabled by default |
-| `--search-llm-judge`, `--no-search-llm-judge` | Enable/disable OLS candidate judge; enabled by default |
-| `--llm`, `--no-llm` | Enable/disable assignment and judging calls; enabled by default |
 | `--target-checker`, `--no-target-checker` | Enable/disable compound-target checking for either harmonization command; enabled by default |
+| `--direct-lookup-judge`, `--no-direct-lookup-judge` | Enable/disable judging ambiguous local exact and FTS candidates; enabled by default |
+| `--rag-lookup`, `--no-rag-lookup` | Enable/disable local semantic retrieval; enabled by default |
+| `--rag-lookup-judge`, `--no-rag-lookup-judge` | Enable/disable judging semantic candidates; enabled by default |
+| `--ols-lookup`, `--no-ols-lookup` | Enable/disable unrestricted OLS retrieval; enabled by default |
+| `--ols-lookup-judge`, `--no-ols-lookup-judge` | Enable/disable judging OLS candidates; enabled by default |
+| `--field-assignment-judge`, `--no-field-assignment-judge` | Enable/disable model assignment when the field registry misses; enabled by default |
 | `--request-timeout SECONDS` | Per-request timeout; default `30` |
 | `--request-max-attempts N` | Maximum attempts; default `3` |
 | `--request-backoff SECONDS` | Exponential backoff base; default `1` |
