@@ -159,3 +159,56 @@ def test_lookup_judge_contract_accepts_no_match() -> None:
 
     assert '"no_match"' in prompt
     assert '"false"' in prompt
+
+
+def test_lookup_judge_no_match_falls_through_without_skipping_target() -> None:
+    class NoMatchHarmonizer(OntologyHarmonizer):
+        def judge_lookup(self, *args, **kwargs):
+            return {
+                "decision": "no_match",
+                "confidence": "high",
+                "reason": "Candidates are semantically unrelated.",
+            }
+
+    target = {"id": "target-0", "hz_label": "lung"}
+    selected = NoMatchHarmonizer()._select_lookup_hit(
+        target=target,
+        publication_context=None,
+        hits=[{"id": "UBERON_0000948", "title": "heart"}],
+        lookup_llm_judge=True,
+        source="rag",
+    )
+
+    assert selected is False
+    assert "harmonization_skip" not in target
+    assert target["ontology_lookup_judgements"][0]["source"] == "rag"
+
+
+def test_fixed_workflow_calls_local_then_rag_then_ols() -> None:
+    calls: list[str] = []
+
+    class RecordingHarmonizer(OntologyHarmonizer):
+        def lookup_label(self, *args, **kwargs):
+            calls.append("local")
+            return False
+
+        def lookup_rag_label(self, *args, **kwargs):
+            calls.append("rag")
+            return False
+
+        def harmonize_label(self, target, **kwargs):
+            calls.append("ols")
+            result = {"source": "ols", "status": "not_harmonized"}
+            target["ontology_ols_result"] = result
+            return result
+
+        def harmonize_field(self, *args, **kwargs):
+            calls.append("field")
+            return False
+
+    result = RecordingHarmonizer(llm=object()).harmonize(
+        target={"id": "target-0", "pre_hz_label": "pulmonary structure"}
+    )
+
+    assert calls == ["local", "rag", "ols", "field"]
+    assert result["workflow"] == "local_rag_ols"

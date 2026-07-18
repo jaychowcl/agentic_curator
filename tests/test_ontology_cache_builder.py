@@ -124,6 +124,43 @@ def test_build_ontology_cache_uses_default_max_workers(
     assert manifest["max_workers"] == 3
 
 
+def test_build_ontology_cache_optionally_builds_rag_indexes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        cache_builder,
+        "run_framework",
+        lambda name, timeout, *, force: {
+            "framework": name,
+            "status": "cached",
+            "elapsed_seconds": 0.1,
+            "json_path": str(tmp_path / f"{name}.json"),
+        },
+    )
+    monkeypatch.setattr(cache_builder, "validate_successes", lambda results: [])
+    monkeypatch.setattr(cache_builder, "sync_sqlite_cache", lambda results: {})
+    rag_calls: list[list[dict]] = []
+
+    def fake_build_rag_indexes(results: list[dict]) -> dict:
+        rag_calls.append(results)
+        return {"frameworks": {"alpha": {"status": "built"}}}
+
+    monkeypatch.setattr(cache_builder, "build_rag_indexes", fake_build_rag_indexes)
+
+    manifest = cache_builder.build_ontology_cache(
+        frameworks=["alpha"],
+        out_dir=tmp_path,
+        prefix="manifest",
+        rag_index=True,
+    )
+
+    assert len(rag_calls) == 1
+    assert manifest["rag"] == {
+        "frameworks": {"alpha": {"status": "built"}}
+    }
+
+
 def test_main_writes_manifest_and_returns_zero(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -142,6 +179,12 @@ def test_main_writes_manifest_and_returns_zero(
     )
     monkeypatch.setattr(cache_builder, "validate_successes", lambda results: [])
     monkeypatch.setattr(cache_builder, "sync_sqlite_cache", lambda results: {})
+    rag_calls: list[list[dict]] = []
+    monkeypatch.setattr(
+        cache_builder,
+        "build_rag_indexes",
+        lambda results: rag_calls.append(results) or {"frameworks": {}},
+    )
 
     assert (
         cache_builder.main(
@@ -156,6 +199,7 @@ def test_main_writes_manifest_and_returns_zero(
                 "5",
                 "--force-framework",
                 "alpha",
+                "--rag-index",
             ]
         )
         == 0
@@ -165,6 +209,8 @@ def test_main_writes_manifest_and_returns_zero(
     output = capsys.readouterr()
     assert manifest["force_frameworks"] == ["alpha"]
     assert manifest["max_workers"] == 2
+    assert manifest["rag"] == {"frameworks": {}}
+    assert len(rag_calls) == 1
     assert "manifest:" in output.out
     assert "log:" in output.out
 
