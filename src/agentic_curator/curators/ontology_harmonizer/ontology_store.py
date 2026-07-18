@@ -13,6 +13,8 @@ from contextlib import contextmanager
 import hashlib
 import json
 import logging
+import math
+from numbers import Real
 from pathlib import Path
 import re
 import sqlite3
@@ -163,6 +165,7 @@ class OntoStore:
         version: str | None = None,
         title: str | None = None,
         description: str | None = None,
+        rag_similarity_threshold: float | None = None,
         remove: bool = False,
     ) -> None:
         LOGGER.info("Configuring ontology framework %s.", name)
@@ -170,6 +173,7 @@ class OntoStore:
             "version": version,
             "title": title,
             "description": description,
+            "rag_similarity_threshold": rag_similarity_threshold,
         }
         if remove:
             if (
@@ -214,6 +218,7 @@ class OntoStore:
         version: str | None = None,
         title: str | None = None,
         description: str | None = None,
+        rag_similarity_threshold: float | None = None,
     ) -> None:
         LOGGER.info("Adding ontology framework URL %s.", name)
         self.configure_framework(
@@ -224,6 +229,7 @@ class OntoStore:
             version=version,
             title=title,
             description=description,
+            rag_similarity_threshold=rag_similarity_threshold,
         )
 
     def add_urls(self, ontology_frameworks: OntologyFrameworkConfig) -> None:
@@ -285,7 +291,26 @@ class OntoStore:
             owl_path=normalized["owl_path"],
             name=name,
         )
+        if "rag_similarity_threshold" in normalized:
+            normalized["rag_similarity_threshold"] = (
+                self._validate_rag_similarity_threshold(
+                    normalized["rag_similarity_threshold"]
+                )
+            )
         return normalized
+
+    @staticmethod
+    def _validate_rag_similarity_threshold(value: Any) -> float:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, Real)
+            or not math.isfinite(float(value))
+            or not -1.0 <= float(value) <= 1.0
+        ):
+            raise ValueError(
+                "rag_similarity_threshold must be a finite number from -1 to 1."
+            )
+        return float(value)
 
     def _normalize_fields(
         self,

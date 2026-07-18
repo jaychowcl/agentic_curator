@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from importlib.resources import files
+from numbers import Real
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +43,8 @@ class OntologyHarmonizer:
 
     DEFAULT_TARGET_PATHS = HarmonizationTargetExtractor.DEFAULT_TARGET_PATHS
     LLM_CANDIDATE_LIMIT = 10
+    RAG_CANDIDATES_PER_ONTOLOGY = 2
+    RAG_SIMILARITY_THRESHOLD = 0.5
     METADATA_CONTEXT_MAX_CHARS = 500
     WORKFLOW = "local_rag_ols"
 
@@ -49,10 +53,14 @@ class OntologyHarmonizer:
         ontostore: OntoStore | None = None,
         llm: Any | None = None,
         request_policy: RequestPolicy | None = None,
+        rag_similarity_threshold: float = RAG_SIMILARITY_THRESHOLD,
     ) -> None:
         self.request_policy = request_policy or getattr(ontostore, "request_policy", None) or RequestPolicy()
         self.ontostore = OntoStore(request_policy=self.request_policy) if ontostore is None else ontostore
         self.llm = llm
+        self.rag_similarity_threshold = self._validate_rag_similarity_threshold(
+            rag_similarity_threshold
+        )
         self.target_extractor = HarmonizationTargetExtractor()
 
     def harmonize(
@@ -573,17 +581,24 @@ class OntologyHarmonizer:
         hits: list[dict[str, Any]],
         lookup_llm_judge: bool,
         source: str,
+        candidate_limit: int | None = None,
     ) -> dict[str, Any] | bool:
         if not lookup_llm_judge:
             return hits[0]
 
         LOGGER.info("Judging %d ontology lookup hits with LLM.", len(hits))
-        judged_hits = hits[: self.LLM_CANDIDATE_LIMIT]
+        effective_limit = (
+            self.LLM_CANDIDATE_LIMIT
+            if candidate_limit is None
+            else candidate_limit
+        )
+        judged_hits = hits[:effective_limit]
         judgement = self.judge_lookup(
             target,
             publication_context=publication_context,
             metadata_context=metadata_context,
             hits=judged_hits,
+            candidate_limit=effective_limit,
         )
         target["ontology_lookup_judgement"] = judgement
         target.setdefault("ontology_lookup_judgements", []).append(
@@ -634,15 +649,23 @@ class OntologyHarmonizer:
                 {"ontology_id": ontology_id, "error": str(exc)}
                 for ontology_id in frameworks
             )
-        hits = sorted(
-            self._dedupe_semantic_hits(hits),
-            key=lambda hit: float(hit.get("rag_score", 0.0)),
-            reverse=True,
-        )[: self.LLM_CANDIDATE_LIMIT]
+        thresholds = {
+            ontology_id: self._framework_rag_similarity_threshold(
+                ontology_id,
+                ontostore,
+            )
+            for ontology_id in frameworks
+        }
+        hits = self._balance_rag_hits(
+            hits,
+            ontology_ids=frameworks,
+            thresholds=thresholds,
+        )
         target["ontology_rag"] = {
             "status": "candidates" if hits else "error" if errors else "missed",
             "frameworks": frameworks,
             "hits": hits,
+            **({"similarity_thresholds": thresholds} if thresholds else {}),
             **({"errors": errors} if errors else {}),
         }
         if not hits or not lookup_llm_judge:
@@ -654,6 +677,7 @@ class OntologyHarmonizer:
             hits=hits,
             lookup_llm_judge=True,
             source="rag",
+            candidate_limit=len(hits),
         )
         if not selected:
             target["ontology_rag"]["status"] = (
@@ -668,17 +692,79 @@ class OntologyHarmonizer:
         target["ontology_rag"]["status"] = "matched"
         return selected
 
-    @staticmethod
-    def _dedupe_semantic_hits(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        deduped: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for hit in hits:
-            key = str(hit.get("id") or hit.get("accession") or hit.get("iri"))
-            if key in seen:
+    def _balance_rag_hits(
+        self,
+        hits: list[dict[str, Any]],
+        *,
+        ontology_ids: list[str],
+        thresholds: dict[str, float],
+    ) -> list[dict[str, Any]]:
+        """Reserve relevant candidates per ontology, then fill by global score."""
+        framework_rank = {
+            ontology_id: index for index, ontology_id in enumerate(ontology_ids)
+        }
+        grouped: dict[str, list[tuple[int, dict[str, Any]]]] = {
+            ontology_id: [] for ontology_id in ontology_ids
+        }
+        for position, hit in enumerate(hits):
+            if not isinstance(hit, dict):
                 continue
-            seen.add(key)
-            deduped.append(hit)
-        return deduped
+            ontology_id = str(hit.get("ontology_id") or "")
+            if ontology_id not in grouped:
+                continue
+            try:
+                score = float(hit["rag_score"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not math.isfinite(score) or score < thresholds[ontology_id]:
+                continue
+            grouped[ontology_id].append((position, hit))
+
+        unique_groups: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+        for ontology_id, candidates in grouped.items():
+            candidates.sort(
+                key=lambda item: (-float(item[1]["rag_score"]), item[0])
+            )
+            seen: set[str] = set()
+            unique: list[tuple[int, dict[str, Any]]] = []
+            for position, hit in candidates:
+                identity = str(
+                    hit.get("id")
+                    or hit.get("accession")
+                    or hit.get("iri")
+                    or hit.get("title")
+                    or f"candidate-{position}"
+                )
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                unique.append((position, hit))
+            unique_groups[ontology_id] = unique
+
+        reserved: list[tuple[int, dict[str, Any]]] = []
+        remaining: list[tuple[int, dict[str, Any]]] = []
+        for ontology_id in ontology_ids:
+            candidates = unique_groups[ontology_id]
+            reserved.extend(candidates[: self.RAG_CANDIDATES_PER_ONTOLOGY])
+            remaining.extend(candidates[self.RAG_CANDIDATES_PER_ONTOLOGY :])
+
+        final_capacity = max(self.LLM_CANDIDATE_LIMIT, len(reserved))
+        remaining.sort(
+            key=lambda item: (
+                -float(item[1]["rag_score"]),
+                framework_rank[str(item[1]["ontology_id"])],
+                item[0],
+            )
+        )
+        selected = reserved + remaining[: max(0, final_capacity - len(reserved))]
+        selected.sort(
+            key=lambda item: (
+                -float(item[1]["rag_score"]),
+                framework_rank[str(item[1]["ontology_id"])],
+                item[0],
+            )
+        )
+        return [hit for _position, hit in selected]
 
     def judge_lookup(
         self,
@@ -687,12 +773,25 @@ class OntologyHarmonizer:
         publication_context: str | None,
         metadata_context: str | None = None,
         hits: list[dict[str, Any]],
+        candidate_limit: int | None = None,
     ) -> dict[str, Any]:
+        effective_limit = (
+            self.LLM_CANDIDATE_LIMIT
+            if candidate_limit is None
+            else candidate_limit
+        )
+        if (
+            isinstance(effective_limit, bool)
+            or not isinstance(effective_limit, int)
+            or effective_limit < 1
+        ):
+            raise ValueError("candidate_limit must be a positive integer.")
         prompt = self._judge_lookup_prompt(
             target=target,
             publication_context=publication_context,
             metadata_context=metadata_context,
-            hits=hits,
+            hits=hits[:effective_limit],
+            candidate_limit=effective_limit,
         )
         response = self._generate_response(
             prompt,
@@ -925,6 +1024,30 @@ class OntologyHarmonizer:
             if self._framework_has_local_file(framework)
         ]
 
+    def _framework_rag_similarity_threshold(
+        self,
+        ontology_id: str,
+        ontostore: OntoStore,
+    ) -> float:
+        configured = ontostore.ontology_frameworks[ontology_id].get(
+            "rag_similarity_threshold",
+            self.rag_similarity_threshold,
+        )
+        return self._validate_rag_similarity_threshold(configured)
+
+    @staticmethod
+    def _validate_rag_similarity_threshold(value: Any) -> float:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, Real)
+            or not math.isfinite(float(value))
+            or not -1.0 <= float(value) <= 1.0
+        ):
+            raise ValueError(
+                "rag_similarity_threshold must be a finite number from -1 to 1."
+            )
+        return float(value)
+
     def _lookup_harmonized_label(
         self,
         target: dict[str, Any],
@@ -1156,6 +1279,7 @@ class OntologyHarmonizer:
         publication_context: str | None,
         metadata_context: str | None,
         hits: list[dict[str, Any]],
+        candidate_limit: int | None = None,
     ) -> str:
         initial_prompt = files(PROMPT_PACKAGE).joinpath(
             "prompts/judge_lookup.md"
@@ -1165,7 +1289,10 @@ class OntologyHarmonizer:
             ("Publication Context", publication_context),
             ("Metadata Context", metadata_context),
             ("Harmonization Target", self._semantic_target_context(target)),
-            ("Lookup Hits", self._candidate_prompt_context(hits)),
+            (
+                "Lookup Hits",
+                self._candidate_prompt_context(hits, limit=candidate_limit),
+            ),
         )
 
     def _judge_search_prompt(
@@ -1235,11 +1362,14 @@ class OntologyHarmonizer:
     def _candidate_prompt_context(
         self,
         hits: list[dict[str, Any]],
+        *,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         allowed = ("id", "accession", "iri", "title", "description", "ontology_id")
+        effective_limit = self.LLM_CANDIDATE_LIMIT if limit is None else limit
         return [
             {key: hit[key] for key in allowed if key in hit}
-            for hit in hits[: self.LLM_CANDIDATE_LIMIT]
+            for hit in hits[:effective_limit]
             if isinstance(hit, dict)
         ]
 
