@@ -1576,7 +1576,10 @@ def test_judge_search_results_builds_structured_prompt() -> None:
     assert call["prompt"].startswith(JUDGE_SEARCH_PROMPT)
     assert "Publication Context:\nlung sample" in call["prompt"]
     assert "Metadata Context:\ntissue=lung" in call["prompt"]
-    assert "Search Stage:\nunrestricted" in call["prompt"]
+    assert "OLS Hits:" in call["prompt"]
+    assert "Search Stage:" not in call["prompt"]
+    assert "Restricted OLS Hits:" not in call["prompt"]
+    assert "Unrestricted OLS Hits:" not in call["prompt"]
     assert '"UBERON_2"' in call["prompt"]
     assert '"UBERON_10"' not in call["prompt"]
     assert "Complete definition one." in call["prompt"]
@@ -1584,7 +1587,6 @@ def test_judge_search_results_builds_structured_prompt() -> None:
     assert '"ontology_prefix"' not in call["prompt"]
     assert '"type"' not in call["prompt"]
     assert '"synonyms"' not in call["prompt"]
-    assert "Restricted OLS Hits:" not in call["prompt"]
     assert "Grounded Web Evidence:" not in call["prompt"]
     assert call["config"] == {
         "response_mime_type": "application/json",
@@ -2214,7 +2216,34 @@ def test_assign_field_prompt_uses_harmonized_label() -> None:
     prompt = fake_llm.calls[0]["prompt"]
     assert '"field": "sample source"' in prompt
     assert '"label": "lung"' in prompt
-    assert "pulmonary specimen" not in prompt
+    assert '"pre_hz_label": "pulmonary specimen"' in prompt
+
+
+def test_assign_field_prompt_omits_unavailable_pre_hz_label() -> None:
+    fake_llm = FakeLLM(
+        response={
+            "decision": "tissue",
+            "confidence": "high",
+            "reason": "Canonical label identifies an anatomical field.",
+            "new_field": False,
+        }
+    )
+    store = OntoStore(fields={"tissue": {"label": "Tissue"}})
+
+    OntologyHarmonizer(llm=fake_llm).assign_field(
+        {
+            "pre_hz_field": "sample source",
+            "hz_field": "sample_source",
+            "hz_label": "lung",
+            "ontology_id": "uberon",
+        },
+        publication_context=None,
+        ontostore=store,
+    )
+
+    prompt = fake_llm.calls[0]["prompt"]
+    assert '"label": "lung"' in prompt
+    assert '"pre_hz_label"' not in prompt
 
 
 def test_assign_field_response_schema_requires_assignment_fields() -> None:
