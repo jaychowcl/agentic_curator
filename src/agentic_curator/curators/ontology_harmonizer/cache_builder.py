@@ -214,6 +214,39 @@ def sync_sqlite_cache(results: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def build_rag_indexes(results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build semantic indexes for every successfully cached framework."""
+    store = OntoStore()
+    indexed: dict[str, Any] = {}
+    for result in results:
+        if result.get("status") not in {
+            "cached",
+            "parsed",
+            "downloaded_parsed",
+            "force_rebuilt",
+        } or not result.get("json_path"):
+            continue
+        name = str(result["framework"])
+        if name not in store.ontology_frameworks:
+            continue
+        store.ontology_frameworks[name]["json_path"] = Path(result["json_path"])
+        started = time.monotonic()
+        try:
+            index_path = store.build_rag_index(name)
+            indexed[name] = {
+                "status": "built",
+                "index_path": str(index_path),
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+            }
+        except Exception as exc:  # noqa: BLE001 - preserve a complete manifest.
+            indexed[name] = {
+                "status": "failed",
+                "error": repr(exc),
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+            }
+    return {"frameworks": indexed}
+
+
 def build_ontology_cache(
     *,
     frameworks: Iterable[str] | None = None,
@@ -222,6 +255,7 @@ def build_ontology_cache(
     timeout: int = 2700,
     force_frameworks: Iterable[str] = (),
     max_workers: int | None = None,
+    rag_index: bool = False,
 ) -> dict[str, Any]:
     output_dir = Path(out_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -285,6 +319,7 @@ def build_ontology_cache(
     results = [results_by_name[name] for name in framework_names]
     validations = validate_successes(results)
     sqlite_result = sync_sqlite_cache(results)
+    rag_result = build_rag_indexes(results) if rag_index else None
     manifest = {
         "started_at": timestamp,
         "elapsed_seconds": round(time.monotonic() - started, 3),
@@ -295,6 +330,7 @@ def build_ontology_cache(
         "results": results,
         "validations": validations,
         "sqlite": sqlite_result,
+        **({"rag": rag_result} if rag_result is not None else {}),
         "manifest_path": str(manifest_path),
         "log_path": str(log_path),
         "summary": {
@@ -319,6 +355,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out-prefix", default=None)
     parser.add_argument("--max-workers", type=int, default=None)
     parser.add_argument(
+        "--rag-index",
+        action="store_true",
+        help="Build persistent semantic indexes after caching ontology JSON.",
+    )
+    parser.add_argument(
         "--force-framework",
         action="append",
         default=[],
@@ -332,6 +373,7 @@ def main(argv: list[str] | None = None) -> int:
         timeout=args.timeout,
         force_frameworks=args.force_framework,
         max_workers=args.max_workers,
+        rag_index=args.rag_index,
     )
     print(f"manifest: {manifest['manifest_path']}")
     print(f"log: {manifest['log_path']}")
