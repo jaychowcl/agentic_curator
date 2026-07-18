@@ -48,10 +48,13 @@ class RecordingHarmonizer:
         target=None,
         ontostore=None,
         target_paths=None,
-        lookup_llm_judge=False,
-        search_llm_judge=True,
-        llm=True,
         target_checker=True,
+        direct_lookup_judge=True,
+        rag_lookup=True,
+        rag_lookup_judge=True,
+        ols_lookup=True,
+        ols_lookup_judge=True,
+        field_assignment_judge=True,
     ):
         self.__class__.calls.append(
             {
@@ -62,10 +65,13 @@ class RecordingHarmonizer:
                 "target": target,
                 "ontostore": ontostore,
                 "target_paths": target_paths,
-                "lookup_llm_judge": lookup_llm_judge,
-                "search_llm_judge": search_llm_judge,
-                "llm": llm,
                 "target_checker": target_checker,
+                "direct_lookup_judge": direct_lookup_judge,
+                "rag_lookup": rag_lookup,
+                "rag_lookup_judge": rag_lookup_judge,
+                "ols_lookup": ols_lookup,
+                "ols_lookup_judge": ols_lookup_judge,
+                "field_assignment_judge": field_assignment_judge,
             }
         )
         return {"harmonization_targets": []}
@@ -76,10 +82,13 @@ class RecordingHarmonizer:
         miniml_json=None,
         ontostore=None,
         target_paths=None,
-        lookup_llm_judge=False,
-        search_llm_judge=True,
-        llm=True,
         target_checker=True,
+        direct_lookup_judge=True,
+        rag_lookup=True,
+        rag_lookup_judge=True,
+        ols_lookup=True,
+        ols_lookup_judge=True,
+        field_assignment_judge=True,
     ):
         self.__class__.calls.append(
             {
@@ -88,10 +97,13 @@ class RecordingHarmonizer:
                 "miniml_json": miniml_json,
                 "ontostore": ontostore,
                 "target_paths": target_paths,
-                "lookup_llm_judge": lookup_llm_judge,
-                "search_llm_judge": search_llm_judge,
-                "llm": llm,
                 "target_checker": target_checker,
+                "direct_lookup_judge": direct_lookup_judge,
+                "rag_lookup": rag_lookup,
+                "rag_lookup_judge": rag_lookup_judge,
+                "ols_lookup": ols_lookup,
+                "ols_lookup_judge": ols_lookup_judge,
+                "field_assignment_judge": field_assignment_judge,
             }
         )
         return {"miniml_json": miniml_json}
@@ -131,10 +143,13 @@ def test_cli_harmonize_passes_all_options_to_harmonizer(
                 '{"organism": {"label": "organism"}}',
                 "--storage-dir",
                 "store",
-                "--lookup-llm-judge",
-                "--no-search-llm-judge",
-                "--no-llm",
                 "--no-target-checker",
+                "--no-direct-lookup-judge",
+                "--no-rag-lookup",
+                "--no-rag-lookup-judge",
+                "--no-ols-lookup",
+                "--no-ols-lookup-judge",
+                "--no-field-assignment-judge",
             ]
         )
         == 0
@@ -158,10 +173,13 @@ def test_cli_harmonize_passes_all_options_to_harmonizer(
             "target": {"id": "target-1", "pre_hz_label": "lung"},
             "ontostore": None,
             "target_paths": [{"path": "/organism", "mode": "container_value"}],
-            "lookup_llm_judge": True,
-            "search_llm_judge": False,
-            "llm": False,
             "target_checker": False,
+            "direct_lookup_judge": False,
+            "rag_lookup": False,
+            "rag_lookup_judge": False,
+            "ols_lookup": False,
+            "ols_lookup_judge": False,
+            "field_assignment_judge": False,
         }
     ]
 
@@ -197,10 +215,13 @@ def test_cli_harmonize_miniml_json_passes_json_file_inputs(
             "miniml_json": {"sample": []},
             "ontostore": None,
             "target_paths": None,
-            "lookup_llm_judge": True,
-            "search_llm_judge": True,
-            "llm": True,
             "target_checker": True,
+            "direct_lookup_judge": True,
+            "rag_lookup": True,
+            "rag_lookup_judge": True,
+            "ols_lookup": True,
+            "ols_lookup_judge": True,
+            "field_assignment_judge": True,
         }
     ]
 

@@ -2668,7 +2668,7 @@ def test_harmonize_assigns_ontology_metadata_from_store(tmp_path: Path) -> None:
             "ontology_ids": ["uberon"],
         },
         target_checker=False,
-        lookup_llm_judge=False,
+        direct_lookup_judge=False,
     )
 
     target = result["harmonization_targets"][0]
@@ -2676,6 +2676,62 @@ def test_harmonize_assigns_ontology_metadata_from_store(tmp_path: Path) -> None:
     assert target["ontology_id"] == "uberon"
     assert target["ontology_lookup"] == {**term, "ontology_id": "uberon"}
     assert target["ontology_lookup_hits"] == [{**term, "ontology_id": "uberon"}]
+
+
+def test_harmonize_passes_independent_controls_to_each_stage() -> None:
+    calls = []
+
+    class RecordingHarmonizer(OntologyHarmonizer):
+        def lookup_label(self, target, *, direct_lookup_judge, **kwargs):
+            calls.append(("direct", direct_lookup_judge))
+            return False
+
+        def lookup_rag_label(self, target, *, rag_lookup_judge, **kwargs):
+            calls.append(("rag", rag_lookup_judge))
+            return False
+
+        def harmonize_label(self, target, *, ols_lookup_judge, **kwargs):
+            calls.append(("ols", ols_lookup_judge))
+            return {"status": "not_harmonized"}
+
+        def harmonize_field(self, target, *, field_assignment_judge, **kwargs):
+            calls.append(("field", field_assignment_judge))
+            return False
+
+    result = RecordingHarmonizer().harmonize(
+        target={"pre_hz_field": "source", "pre_hz_label": "lung"},
+        target_checker=False,
+        direct_lookup_judge=False,
+        rag_lookup=True,
+        rag_lookup_judge=True,
+        ols_lookup=True,
+        ols_lookup_judge=False,
+        field_assignment_judge=False,
+    )
+
+    assert calls == [
+        ("direct", False),
+        ("rag", True),
+        ("ols", False),
+        ("field", False),
+    ]
+    assert result["controls"] == {
+        "target_checker": False,
+        "direct_lookup_judge": False,
+        "rag_lookup": True,
+        "rag_lookup_judge": True,
+        "ols_lookup": True,
+        "ols_lookup_judge": False,
+        "field_assignment_judge": False,
+    }
+
+
+def test_harmonize_rejects_removed_global_llm_option() -> None:
+    parameters = inspect.signature(OntologyHarmonizer.harmonize).parameters
+
+    assert "llm" not in parameters
+    assert "lookup_llm_judge" not in parameters
+    assert "search_llm_judge" not in parameters
 
 
 def test_harmonize_llm_false_skips_framework_and_field_assignment() -> None:

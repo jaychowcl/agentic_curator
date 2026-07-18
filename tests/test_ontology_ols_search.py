@@ -247,6 +247,28 @@ def test_ols_judge_reserves_preferred_candidates_within_fixed_limit() -> None:
     assert calls[0]["preferred_ontology_ids"] == ("preferred",)
 
 
+def test_ols_without_judge_retains_candidates_without_applying_first_hit() -> None:
+    term = {
+        "iri": "https://example.org/efo/1",
+        "ontology_name": "efo",
+        "short_form": "EFO_1",
+        "label": "possible match",
+    }
+    target = {"hz_label": "sample one"}
+
+    result = OlsStrategyHandler(
+        ols_client=FakeOlsClient(search_results=[[term]], ontology_metadata={}),
+        search_judge=None,
+    ).handle(target, publication_context=None, ontostore=OntoStore())
+
+    assert result["status"] == "candidates_unjudged"
+    assert result["decision"] is None
+    assert result["ols_hits"][0]["id"] == "EFO_1"
+    assert target["ontology_match"] is False
+    assert "ontology_id" not in target
+    assert "ontology_lookup" not in target
+
+
 def test_apply_targets_ignores_terminally_skipped_target() -> None:
     miniml = {"sample": {"characteristics": "sample one"}}
     target = {
