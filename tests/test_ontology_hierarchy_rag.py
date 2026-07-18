@@ -20,6 +20,26 @@ from agentic_curator import OntologyHarmonizer
 from agentic_curator.curators.ontology_harmonizer import OntoStore
 
 
+HIERARCHY_OWL = """<?xml version="1.0"?>
+<rdf:RDF
+ xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+ xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+ xmlns:owl="http://www.w3.org/2002/07/owl#"
+ xmlns:oboInOwl="http://www.geneontology.org/formats/oboInOwl#">
+ <owl:Ontology rdf:about="https://example.org/test"/>
+ <owl:Class rdf:about="https://example.org/TEST_0">
+   <rdfs:label>Entity</rdfs:label>
+   <oboInOwl:id>TEST:0</oboInOwl:id>
+ </owl:Class>
+ <owl:Class rdf:about="https://example.org/TEST_1">
+   <rdfs:label>Organ</rdfs:label>
+   <oboInOwl:id>TEST:1</oboInOwl:id>
+   <rdfs:subClassOf rdf:resource="https://example.org/TEST_0"/>
+ </owl:Class>
+</rdf:RDF>
+"""
+
+
 class HierarchyEmbeddingProvider:
     model = "hierarchy-embedding"
     dimensions = 2
@@ -174,6 +194,66 @@ def test_hierarchy_index_is_lazily_backfilled_and_framework_removal_cascades(
     with sqlite3.connect(store.sqlite_path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM term_hierarchy").fetchone()[0] == 0
         assert connection.execute("SELECT COUNT(*) FROM hierarchy_frameworks").fetchone()[0] == 0
+
+
+def test_streamed_owl_parents_are_lazily_indexed(tmp_path: Path) -> None:
+    owl_path = tmp_path / "test.owl"
+    owl_path.write_text(HIERARCHY_OWL, encoding="utf-8")
+    store = OntoStore(
+        ontology_frameworks={"test": {"path": owl_path}},
+        storage_dir=tmp_path,
+    )
+
+    store.index_owl_framework("test", batch_size=1)
+    store._ensure_hierarchy_index("test")
+
+    with sqlite3.connect(store.sqlite_path) as connection:
+        edge = connection.execute(
+            """
+            SELECT child.payload, parent.payload
+            FROM term_hierarchy AS hierarchy
+            JOIN terms AS child
+              ON child.ontology_id = hierarchy.ontology_id
+             AND child.term_key = hierarchy.child_term_key
+            JOIN terms AS parent
+              ON parent.ontology_id = hierarchy.ontology_id
+             AND parent.term_key = hierarchy.parent_term_key
+            """
+        ).fetchone()
+    assert json.loads(edge[0])["accession"] == "TEST:1"
+    assert json.loads(edge[1])["accession"] == "TEST:0"
+
+
+def test_hierarchy_traversal_stops_at_cycles(tmp_path: Path) -> None:
+    json_path = tmp_path / "test.json"
+    _write_hierarchy_json(json_path)
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    for lookup in payload["terms"].values():
+        for term in lookup.values():
+            if term["id"] != "TEST_0":
+                continue
+            term["parents"] = ["TEST:3"]
+            term["parent_iris"] = ["https://example.org/TEST_3"]
+    json_path.write_text(json.dumps(payload), encoding="utf-8")
+    store = OntoStore(
+        ontology_frameworks={
+            "test": {
+                "json_path": json_path,
+                "owl_path": tmp_path / "test.owl",
+            }
+        },
+        storage_dir=tmp_path,
+        embedding_provider=HierarchyEmbeddingProvider(),
+    )
+
+    result = store.lookup_rag_many(
+        "lung", ["test"], top_k=1, parent_depth=5
+    )
+
+    assert [
+        (hit["id"], hit["rag_depth"])
+        for hit in result["hierarchy_hits"]
+    ] == [("TEST_2", 1), ("TEST_0", 2)]
 
 
 @pytest.mark.parametrize(
