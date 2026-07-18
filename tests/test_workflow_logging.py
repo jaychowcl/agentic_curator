@@ -77,7 +77,7 @@ def test_ontology_harmonizer_logs_target_workflow(caplog) -> None:
     assert "Starting ontology harmonization." in messages
     assert "Ontology lookup missed for target target-1." in messages
     assert (
-        "Completed ontology harmonization. targets=1 matched=0 unmatched=1 "
+        "Completed ontology harmonization. targets=1 matched=0 skipped=0 unmatched=1 "
         "strategy=ols."
     ) in messages
 

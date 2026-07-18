@@ -130,6 +130,8 @@ class OlsStrategyHandler:
         metadata_context: str | None = None,
         ontostore: OntoStore,
     ) -> dict[str, Any]:
+        target.pop("harmonization_status", None)
+        target.pop("harmonization_skip", None)
         ontology_id = target.get("ontology_id")
         label = target.get("hz_label", target.get("pre_hz_label"))
         if not label:
@@ -187,6 +189,13 @@ class OlsStrategyHandler:
                     confidence=str(judgement["confidence"]),
                     search_llm_judgements=judgements,
                 )
+            return self._skipped(
+                target,
+                stage="restricted",
+                judgement=judgement,
+                ols_hits=restricted_hits,
+                search_llm_judgements=judgements,
+            )
 
         unrestricted_docs = self.ols_client.search(
             str(label),
@@ -236,9 +245,10 @@ class OlsStrategyHandler:
                     confidence=str(judgement["confidence"]),
                     search_llm_judgements=judgements,
                 )
-            return self._not_harmonized(
+            return self._skipped(
                 target,
-                reason=str(judgement["reason"]),
+                stage="unrestricted",
+                judgement=judgement,
                 ols_hits=all_hits,
                 search_llm_judgements=judgements,
             )
@@ -305,6 +315,38 @@ class OlsStrategyHandler:
         target["ontology_lookup"] = hit
         target["ontology_lookup_hits"] = hits
         target["ontology_match"] = True
+        target["ontology_strategy_result"] = result
+        return result
+
+    def _skipped(
+        self,
+        target: dict[str, Any],
+        *,
+        stage: str,
+        judgement: dict[str, Any],
+        ols_hits: list[dict[str, Any]],
+        search_llm_judgements: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        result = {
+            "strategy": self.strategy,
+            "status": "skipped",
+            "decision": "false",
+            "confidence": str(judgement["confidence"]),
+            "reason": str(judgement["reason"]),
+            "ols_hits": ols_hits,
+            "search_llm_judgements": search_llm_judgements,
+        }
+        target["ontology_match"] = False
+        target.pop("ontology_id", None)
+        target.pop("ontology_lookup", None)
+        target.pop("ontology_lookup_hits", None)
+        target["harmonization_status"] = "skipped"
+        target["harmonization_skip"] = {
+            "stage": f"ols_{stage}_judge",
+            "decision": "false",
+            "confidence": result["confidence"],
+            "reason": result["reason"],
+        }
         target["ontology_strategy_result"] = result
         return result
 

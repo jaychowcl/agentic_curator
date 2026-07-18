@@ -270,19 +270,21 @@ target normalization, lookup, assignment, search, enrichment, and application.
 | --- | --- |
 | `harmonize(...)` | User `publication_context`, compact `metadata_context`, `harmonization_targets` or `target`, `strategy="ols"`, `ontostore`, `target_paths`, and judge/LLM controls |
 | `harmonize_miniml_json(...)` | User `publication_context`, `miniml_json`, `ontostore`, `target_paths`, and the same strategy/judge/LLM controls; `metadata_context` is generated automatically |
-| `lookup_label(...)` | Target, publication context, store, strategy, local judge toggle/threshold |
+| `lookup_label(...)` | Target, publication context, store, strategy, and local judge toggle |
 | `assign_onto_framework(...)` | Target, publication context, and store |
 | `harmonize_field(...)` | Target, publication context, store, and `llm` toggle |
 | `harmonize_label(...)` | Target, publication context, store, strategy, and search-judge toggle |
 | `apply_targets(miniml_json, harmonization_targets)` | Mutates and returns MINiML JSON |
 
 Local term lookup uses exact normalized SQLite keys first, then FTS5 over
-labels, synonyms, descriptions, IDs, accessions, and IRIs. Ambiguous exact hits
-are judged by default, and FTS candidates are always judged or rejected. On a
-miss, the harmonizer assigns a framework and field, runs restricted OLS, and
-may expand to unrestricted OLS plus Gemini grounded search. Web IDs must resolve
-through OLS before judging. A selected search term may be enriched locally only
-by matching its identifier; local lookup cannot replace the judged identity.
+labels, synonyms, descriptions, IDs, accessions, and IRIs. Every local candidate
+set is judged by default, including a single exact hit. A local or OLS judge can
+return `decision="false"` to terminally skip a non-harmonizable target. Skipped
+targets record `harmonization_status="skipped"` and a structured
+`harmonization_skip` trace, then bypass OLS fallback, label promotion, field
+harmonization, and MINiML application. A genuine local miss proceeds directly
+to unrestricted OLS. A selected OLS term supplies its framework metadata and
+may be enriched locally only by matching its identifier.
 
 #### `OntoStore`
 
@@ -352,8 +354,7 @@ their `-file` counterparts are mutually substitutable; files take precedence.
 | `--storage-dir` | OWL, JSON, and SQLite storage root |
 | `--strategy {ols,rag}` | Label strategy; default `ols` |
 | `--target-paths`, `--target-paths-file` | JSON path specifications |
-| `--lookup-llm-judge`, `--no-lookup-llm-judge` | Enable/disable local ambiguity judge; enabled by default |
-| `--lookup-llm-threshold N` | Exact-hit judge threshold; default `2` |
+| `--lookup-llm-judge`, `--no-lookup-llm-judge` | Enable/disable judging every local candidate set; enabled by default |
 | `--search-llm-judge`, `--no-search-llm-judge` | Enable/disable OLS candidate judge; enabled by default |
 | `--llm`, `--no-llm` | Enable/disable assignment and judging calls; enabled by default |
 | `--request-timeout SECONDS` | Per-request timeout; default `30` |
@@ -431,11 +432,15 @@ def harmonize(targets, publication_context, strategy="ols"):
     for target in normalize_targets(targets):
         normalize_working_field_and_label(target)
         local = lookup_exact_then_fts(target)
-        if local is ambiguous_or_fts:
-            local = judge_lookup(local[:10], publication_context)
+        if local:
+            local = judge_lookup_or_skip(local[:10], publication_context)
+        if target.is_skipped:
+            continue
         if not local:
             unrestricted = OLS.search(target.label)
-            selected = judge_ols_candidates(unrestricted)
+            selected = judge_ols_candidates_or_skip(unrestricted)
+            if target.is_skipped:
+                continue
             if selected:
                 configure_selected_framework_from_OLS(selected)
             enrich_selected_term_by_exact_identifier_only(selected)
@@ -445,7 +450,8 @@ def harmonize(targets, publication_context, strategy="ols"):
 ```
 
 `harmonize_miniml_json(...)` calls target-path discovery, extraction and
-deduplication, delegates to `harmonize(...)`, then calls `apply_targets(...)`.
+deduplication, delegates to `harmonize(...)`, then calls `apply_targets(...)`;
+application defensively ignores every skipped target.
 
 #### Ontology store and cache
 

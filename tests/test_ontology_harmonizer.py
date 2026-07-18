@@ -1321,6 +1321,7 @@ def test_lookup_label_matches_available_store_framework(
         publication_context=None,
         ontostore=store,
         strategy="ols",
+        lookup_llm_judge=False,
     )
 
     expected_lookup = {**term, "ontology_id": "uberon"}
@@ -1362,6 +1363,7 @@ def test_lookup_label_uses_existing_hz_label_after_harmonizing_it(
         publication_context=None,
         ontostore=store,
         strategy="ols",
+        lookup_llm_judge=False,
     )
 
     expected_lookup = {**term, "ontology_id": "uberon"}
@@ -1427,7 +1429,7 @@ def test_lookup_label_judges_ambiguous_exact_hits_by_default(
     assert len(fake_llm.calls) == 1
 
 
-def test_lookup_label_llm_judge_is_not_called_below_threshold(
+def test_lookup_label_llm_judge_is_called_for_single_exact_hit(
     tmp_path: Path,
 ) -> None:
     hit = {
@@ -1443,7 +1445,13 @@ def test_lookup_label_llm_judge_is_not_called_below_threshold(
         },
         storage_dir=tmp_path,
     )
-    fake_llm = FakeLLM(response={"decision": "UBERON:1"})
+    fake_llm = FakeLLM(
+        response={
+            "decision": "UBERON:1",
+            "confidence": "high",
+            "reason": "The exact hit matches the context.",
+        }
+    )
     target = {"id": "target-0", "pre_hz_label": "lung"}
 
     result = OntologyHarmonizer(llm=fake_llm).lookup_label(
@@ -1458,8 +1466,8 @@ def test_lookup_label_llm_judge_is_not_called_below_threshold(
     assert result == expected_hit
     assert target["ontology_lookup"] == expected_hit
     assert target["ontology_lookup_hits"] == [expected_hit]
-    assert "ontology_lookup_judgement" not in target
-    assert fake_llm.calls == []
+    assert target["ontology_lookup_judgement"]["decision"] == "UBERON:1"
+    assert len(fake_llm.calls) == 1
 
 
 def test_lookup_label_llm_judge_selects_best_hit_by_id(
@@ -2252,7 +2260,8 @@ def test_harmonize_assigns_ontology_metadata_from_store(tmp_path: Path) -> None:
             "id": "target-0",
             "pre_hz_label": "lung",
             "ontology_ids": ["uberon"],
-        }
+        },
+        lookup_llm_judge=False,
     )
 
     target = result["harmonization_targets"][0]
@@ -2544,7 +2553,6 @@ def test_harmonize_routes_each_lookup_miss_directly_to_search() -> None:
             ontostore,
             strategy,
             lookup_llm_judge=False,
-            lookup_llm_threshold=2,
         ):
             return False
 
@@ -2613,7 +2621,6 @@ def test_harmonize_calls_lookup_then_search_then_field_without_framework_assignm
             ontostore,
             strategy,
             lookup_llm_judge=False,
-            lookup_llm_threshold=2,
         ):
             calls.append(("lookup", target["id"], publication_context, strategy))
             return False
@@ -2663,7 +2670,6 @@ def test_harmonize_skips_assign_onto_framework_when_lookup_label_succeeds() -> N
             ontostore,
             strategy,
             lookup_llm_judge=False,
-            lookup_llm_threshold=2,
         ):
             calls.append("lookup")
             target["ontology_match"] = True
@@ -2707,7 +2713,6 @@ def test_harmonize_successful_lookup_passes_llm_false_to_field_harmonization() -
             ontostore,
             strategy,
             lookup_llm_judge=False,
-            lookup_llm_threshold=2,
         ):
             target["ontology_match"] = True
             return {"title": "lung"}
@@ -2842,7 +2847,6 @@ def test_harmonize_calls_field_harmonization_after_strategy_handler() -> None:
             ontostore,
             strategy,
             lookup_llm_judge=False,
-            lookup_llm_threshold=2,
         ):
             calls.append("lookup")
             return False
@@ -2891,7 +2895,6 @@ def test_harmonize_supplies_local_canonical_label_to_field_harmonization() -> No
             ontostore,
             strategy,
             lookup_llm_judge=False,
-            lookup_llm_threshold=2,
         ):
             target["ontology_id"] = "uberon"
             target["ontology_lookup"] = {
@@ -2933,7 +2936,6 @@ def test_harmonize_supplies_searched_canonical_label_to_field_harmonization() ->
             ontostore,
             strategy,
             lookup_llm_judge=False,
-            lookup_llm_threshold=2,
         ):
             calls.append("lookup")
             return False
@@ -3123,7 +3125,6 @@ def test_harmonize_looks_up_strategy_harmonized_label_with_stored_ontology_id(
             ontostore,
             strategy,
             lookup_llm_judge=False,
-            lookup_llm_threshold=2,
         ):
             return False
 
@@ -3198,7 +3199,6 @@ def test_harmonize_post_strategy_lookup_ignores_unconfigured_ontology_id(
             ontostore,
             strategy,
             lookup_llm_judge=False,
-            lookup_llm_threshold=2,
         ):
             return False
 
@@ -3262,7 +3262,6 @@ def test_harmonize_post_strategy_lookup_miss_preserves_strategy_result(
             ontostore,
             strategy,
             lookup_llm_judge=False,
-            lookup_llm_threshold=2,
         ):
             return False
 
@@ -3477,7 +3476,7 @@ def test_ols_strategy_keeps_full_hits_while_judging_top_ten() -> None:
     assert len(target["ontology_lookup_hits"]) == 12
 
 
-def test_ols_strategy_judge_rejects_restricted_then_selects_unrestricted_hit() -> None:
+def test_ols_strategy_judge_rejection_is_terminal_at_restricted_stage() -> None:
     restricted = {
         "iri": "https://example.org/wrong",
         "ontology_name": "efo",
@@ -3518,11 +3517,11 @@ def test_ols_strategy_judge_rejects_restricted_then_selects_unrestricted_hit() -
         search_judge=judge,
     ).handle(target, publication_context="context", ontostore=OntoStore())
 
-    assert result["decision"] == "UBERON_RIGHT"
-    assert [call["stage"] for call in stages] == ["restricted", "unrestricted"]
-    assert stages[1]["restricted_hits"] == []
-    assert stages[1]["unrestricted_hits"][0]["id"] == "UBERON_RIGHT"
-    assert len(result["search_llm_judgements"]) == 2
+    assert result["status"] == "skipped"
+    assert result["decision"] == "false"
+    assert [call["stage"] for call in stages] == ["restricted"]
+    assert len(ols_client.search_calls) == 1
+    assert target["harmonization_status"] == "skipped"
 
 
 def test_ols_strategy_judge_error_fails_closed() -> None:
@@ -3778,7 +3777,6 @@ def test_harmonize_skips_strategy_handler_when_lookup_label_succeeds() -> None:
             ontostore,
             strategy,
             lookup_llm_judge=False,
-            lookup_llm_threshold=2,
         ):
             target["ontology_match"] = True
             return {"title": "lung"}
@@ -4474,7 +4472,6 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
             ontostore=None,
             target_paths=None,
             lookup_llm_judge=False,
-            lookup_llm_threshold=2,
             search_llm_judge=True,
             llm=True,
         ):
@@ -4488,7 +4485,6 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
                     "ontostore": ontostore,
                     "target_paths": target_paths,
                     "lookup_llm_judge": lookup_llm_judge,
-                    "lookup_llm_threshold": lookup_llm_threshold,
                     "search_llm_judge": search_llm_judge,
                     "llm": llm,
                 }
@@ -4552,7 +4548,6 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
             "ontostore": store,
             "target_paths": ["/sample"],
             "lookup_llm_judge": True,
-            "lookup_llm_threshold": 2,
             "search_llm_judge": True,
             "llm": True,
         }

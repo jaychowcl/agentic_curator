@@ -73,7 +73,6 @@ class OntologyHarmonizer:
         ontostore: OntoStore | None = None,
         target_paths: list[StartPathSpec] | None = None,
         lookup_llm_judge: bool = True,
-        lookup_llm_threshold: int = 2,
         search_llm_judge: bool = True,
         llm: bool = True,
     ) -> dict[str, Any]:
@@ -90,6 +89,7 @@ class OntologyHarmonizer:
             len(normalized_targets),
         )
         for normalized_target in normalized_targets:
+            self._clear_harmonization_skip(normalized_target)
             self._harmonize_target(normalized_target, effective_ontostore)
             lookup = self.lookup_label(
                 normalized_target,
@@ -97,9 +97,10 @@ class OntologyHarmonizer:
                 ontostore=effective_ontostore,
                 strategy=normalized_strategy,
                 lookup_llm_judge=lookup_llm_judge and llm,
-                lookup_llm_threshold=lookup_llm_threshold,
                 **self._metadata_context_kwargs(metadata_context),
             )
+            if self._is_harmonization_skipped(normalized_target):
+                continue
             if not lookup:
                 LOGGER.info(
                     "Ontology lookup missed for target %s.",
@@ -127,6 +128,8 @@ class OntologyHarmonizer:
                             normalized_target,
                             ontostore=effective_ontostore,
                         )
+                    elif strategy_result.get("status") == "skipped":
+                        continue
 
             self._apply_selected_ontology_label(normalized_target)
             self.harmonize_field(
@@ -138,11 +141,15 @@ class OntologyHarmonizer:
             )
 
         matched = sum(bool(item.get("ontology_match")) for item in normalized_targets)
+        skipped = sum(
+            self._is_harmonization_skipped(item) for item in normalized_targets
+        )
         LOGGER.info(
-            "Completed ontology harmonization. targets=%s matched=%s unmatched=%s strategy=%s.",
+            "Completed ontology harmonization. targets=%s matched=%s skipped=%s unmatched=%s strategy=%s.",
             len(normalized_targets),
             matched,
-            len(normalized_targets) - matched,
+            skipped,
+            len(normalized_targets) - matched - skipped,
             normalized_strategy,
         )
         return {
@@ -161,7 +168,6 @@ class OntologyHarmonizer:
         target_paths: list[StartPathSpec] | None = None,
         strategy: str = "ols",
         lookup_llm_judge: bool = True,
-        lookup_llm_threshold: int = 2,
         search_llm_judge: bool = True,
         llm: bool = True,
     ) -> dict[str, Any]:
@@ -194,7 +200,6 @@ class OntologyHarmonizer:
             ontostore=ontostore,
             target_paths=effective_target_paths,
             lookup_llm_judge=lookup_llm_judge,
-            lookup_llm_threshold=lookup_llm_threshold,
             search_llm_judge=search_llm_judge,
             llm=llm,
         )
@@ -217,6 +222,8 @@ class OntologyHarmonizer:
 
         for target in harmonization_targets:
             if not isinstance(target, dict):
+                continue
+            if self._is_harmonization_skipped(target):
                 continue
             for occurrence in self._target_occurrences(target):
                 self._apply_target_occurrence(miniml_json, target, occurrence)
@@ -519,7 +526,6 @@ class OntologyHarmonizer:
         ontostore: OntoStore,
         strategy: str,
         lookup_llm_judge: bool = True,
-        lookup_llm_threshold: int = 2,
     ) -> Any:
         del strategy
 
@@ -564,12 +570,10 @@ class OntologyHarmonizer:
             publication_context=publication_context,
             metadata_context=metadata_context,
             hits=hits,
-            lookup_llm_judge=(
-                lookup_llm_judge
-                and (match_type == "fts" or len(hits) >= lookup_llm_threshold)
-            ),
-            lookup_llm_threshold=1 if match_type == "fts" else lookup_llm_threshold,
+            lookup_llm_judge=lookup_llm_judge,
         )
+        if not lookup:
+            return False
         target["ontology_id"] = lookup["ontology_id"]
         target["ontology_lookup"] = lookup
         target["ontology_lookup_hits"] = hits
@@ -589,9 +593,8 @@ class OntologyHarmonizer:
         metadata_context: str | None = None,
         hits: list[dict[str, Any]],
         lookup_llm_judge: bool,
-        lookup_llm_threshold: int,
-    ) -> dict[str, Any]:
-        if not lookup_llm_judge or len(hits) < lookup_llm_threshold:
+    ) -> dict[str, Any] | bool:
+        if not lookup_llm_judge:
             return hits[0]
 
         LOGGER.info("Judging %d ontology lookup hits with LLM.", len(hits))
@@ -604,6 +607,13 @@ class OntologyHarmonizer:
         )
         target["ontology_lookup_judgement"] = judgement
         decision = str(judgement["decision"])
+        if decision.lower() == "false":
+            self._mark_harmonization_skip(
+                target,
+                stage="lookup_judge",
+                judgement=judgement,
+            )
+            return False
         for hit in judged_hits:
             if str(hit.get("id")) == decision:
                 return hit
@@ -1018,6 +1028,34 @@ class OntologyHarmonizer:
         label = target.get("hz_label", target.get("pre_hz_label"))
         if label is not None:
             target["hz_label"] = ontostore.harmonize_key(label)
+
+    @staticmethod
+    def _clear_harmonization_skip(target: dict[str, Any]) -> None:
+        target.pop("harmonization_status", None)
+        target.pop("harmonization_skip", None)
+
+    @staticmethod
+    def _is_harmonization_skipped(target: dict[str, Any]) -> bool:
+        return target.get("harmonization_status") == "skipped"
+
+    @classmethod
+    def _mark_harmonization_skip(
+        cls,
+        target: dict[str, Any],
+        *,
+        stage: str,
+        judgement: dict[str, Any],
+    ) -> dict[str, Any]:
+        cls._mark_ontology_miss(target)
+        skip = {
+            "stage": stage,
+            "decision": "false",
+            "confidence": str(judgement["confidence"]),
+            "reason": str(judgement["reason"]),
+        }
+        target["harmonization_status"] = "skipped"
+        target["harmonization_skip"] = skip
+        return skip
 
     def _assign_onto_framework_prompt(
         self,
