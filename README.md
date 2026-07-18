@@ -284,7 +284,10 @@ targets record `harmonization_status="skipped"` and a structured
 `harmonization_skip` trace, then bypass OLS fallback, label promotion, field
 harmonization, and MINiML application. A genuine local miss proceeds directly
 to unrestricted OLS. A selected OLS term supplies its framework metadata and
-may be enriched locally only by matching its identifier.
+may be enriched locally only by matching its identifier. The OLS judge receives
+one neutral `OLS Hits` candidate section without restricted/unrestricted stage
+cues. Field-assignment context includes both the canonical `label` and the
+original `pre_hz_label` when available.
 
 #### `OntoStore`
 

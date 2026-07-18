@@ -1130,6 +1130,7 @@ class OntologyHarmonizer:
         initial_prompt = files(PROMPT_PACKAGE).joinpath(
             "prompts/judge_search.md"
         ).read_text(encoding="utf-8").strip()
+        hits = restricted_hits if stage == "restricted" else unrestricted_hits
         sections: list[tuple[str, Any]] = [
             ("Publication Context", publication_context),
             ("Metadata Context", metadata_context),
@@ -1137,19 +1138,8 @@ class OntologyHarmonizer:
                 "Harmonization Target",
                 self._semantic_target_context(target, include_ontology_id=True),
             ),
-            ("Search Stage", stage),
+            ("OLS Hits", self._candidate_prompt_context(hits)),
         ]
-        if stage == "restricted":
-            sections.append(
-                ("Restricted OLS Hits", self._candidate_prompt_context(restricted_hits))
-            )
-        else:
-            sections.append(
-                (
-                    "Unrestricted OLS Hits",
-                    self._candidate_prompt_context(unrestricted_hits),
-                )
-            )
         return self._structured_prompt(initial_prompt, *sections)
 
     def _semantic_target_context(
@@ -1173,6 +1163,8 @@ class OntologyHarmonizer:
         context = self._semantic_target_context(target, include_ontology_id=True)
         if target.get("hz_label") is not None:
             context["label"] = target["hz_label"]
+        if target.get("pre_hz_label") is not None:
+            context["pre_hz_label"] = target["pre_hz_label"]
         return context
 
     def _field_prompt_context(
