@@ -275,10 +275,13 @@ paths, prior traces, or internal framework file metadata.
 
 Compact candidate hits contain identifiers, title, complete description, and
 ontology ID; semantic hits also contain their RAG score and optional hierarchy
-provenance. Lookup-judge decisions must be one supplied hit ID, `no_match`, or
-`false`. OLS decisions may use a supplied ID, accession, or IRI, plus
-`no_match` or `false`. `no_match` rejects the candidates but continues the
-workflow; `false` declares the target non-harmonizable and stops it.
+provenance. Lookup- and OLS-judge decisions may use one supplied ID, accession,
+or IRI, plus `no_match` or `false`. `no_match` rejects the candidates but
+continues the workflow; `false` declares the target non-harmonizable and stops
+it. For a selected candidate, the judge copies one non-null identifier exactly;
+validation resolves only identifiers from the candidate list actually sent to
+that judge. This supports ontology caches whose canonical terms provide an
+accession but no separate `id`.
 
 The default RAG threshold is inclusive `rag_score >= 0.5`. The harmonizer-wide
 value is configurable through `rag_similarity_threshold`; a framework's
@@ -360,7 +363,9 @@ Non-zero hierarchy depths lazily build persistent same-ontology edges from the
 named `parents` and `parent_iris` already stored in SQLite. Anonymous,
 unresolved, external, and self references are ignored. Parent traversal uses
 the forward `subClassOf` edge and child traversal uses its indexed reverse;
-shortest-depth cycle detection prevents revisits. Only the best two semantic
+the lazy backfill indexes normalized temporary parent lookup keys so large
+frameworks resolve edges with indexed probes rather than repeated broad scans.
+Shortest-depth cycle detection prevents revisits. Only the best two semantic
 hits in each ontology are traversed. Related vector rows are read and scored in
 batches of 500 with exact cosine similarity to the original query vector.
 `lookup_rag_many(...)` returns direct `hits` unchanged and hierarchy candidates

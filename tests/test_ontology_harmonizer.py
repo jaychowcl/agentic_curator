@@ -1785,6 +1785,34 @@ def test_lookup_label_llm_judge_rejects_unknown_decision(
         )
 
 
+def test_lookup_judge_can_select_candidate_by_accession_when_id_is_missing() -> None:
+    hit = {
+        "id": None,
+        "accession": "EFO:0000768",
+        "iri": "http://www.ebi.ac.uk/efo/EFO_0000768",
+        "title": "idiopathic pulmonary fibrosis",
+    }
+    harmonizer = OntologyHarmonizer(
+        llm=FakeLLM(
+            response={
+                "decision": "EFO:0000768",
+                "confidence": "high",
+                "reason": "Direct match.",
+            }
+        )
+    )
+
+    selected = harmonizer._select_lookup_hit(
+        target={"id": "target-0", "pre_hz_label": "IPF lung"},
+        publication_context=None,
+        hits=[hit],
+        lookup_llm_judge=True,
+        source="rag",
+    )
+
+    assert selected is hit
+
+
 def test_lookup_judge_response_schema_requires_decision_fields() -> None:
     assert OntologyHarmonizer()._lookup_judge_response_schema() == {
         "type": "OBJECT",

@@ -528,6 +528,12 @@ class OntoStore:
                     ) WITHOUT ROWID
                     """
                 )
+                connection.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS hierarchy_parent_refs_lookup
+                    ON hierarchy_parent_refs(lookup_key)
+                    """
+                )
                 connection.execute("DELETE FROM hierarchy_parent_refs")
                 reference_rows: list[tuple[str, str]] = []
                 cursor = connection.execute(

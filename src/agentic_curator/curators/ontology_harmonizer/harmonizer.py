@@ -636,7 +636,11 @@ class OntologyHarmonizer:
             )
             return False
         for hit in judged_hits:
-            if str(hit.get("id")) == decision:
+            identifiers = (hit.get("id"), hit.get("accession"), hit.get("iri"))
+            if any(
+                identifier is not None and str(identifier) == decision
+                for identifier in identifiers
+            ):
                 return hit
 
         raise ValueError(

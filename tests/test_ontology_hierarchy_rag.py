@@ -12,7 +12,9 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 import pytest
 
@@ -194,6 +196,31 @@ def test_hierarchy_index_is_lazily_backfilled_and_framework_removal_cascades(
     with sqlite3.connect(store.sqlite_path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM term_hierarchy").fetchone()[0] == 0
         assert connection.execute("SELECT COUNT(*) FROM hierarchy_frameworks").fetchone()[0] == 0
+
+
+def test_hierarchy_backfill_indexes_temporary_parent_lookup_keys(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _hierarchy_store(tmp_path)
+    statements: list[str] = []
+    original_connection = store._sqlite_connection
+
+    @contextmanager
+    def traced_connection() -> Iterator[sqlite3.Connection]:
+        with original_connection() as connection:
+            connection.set_trace_callback(statements.append)
+            yield connection
+
+    monkeypatch.setattr(store, "_sqlite_connection", traced_connection)
+
+    store._ensure_hierarchy_index("test")
+
+    assert any(
+        "CREATE INDEX IF NOT EXISTS hierarchy_parent_refs_lookup" in statement
+        and "hierarchy_parent_refs(lookup_key)" in statement
+        for statement in statements
+    )
 
 
 def test_streamed_owl_parents_are_lazily_indexed(tmp_path: Path) -> None:
