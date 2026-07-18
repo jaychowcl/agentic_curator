@@ -156,6 +156,21 @@ def test_url_backed_framework_with_local_cache_is_automatically_selected(
     assert OntologyHarmonizer()._candidate_ontology_ids({}, store) == ["cached"]
 
 
+def test_explicit_uncached_framework_is_not_selected_or_downloaded(
+    tmp_path: Path,
+) -> None:
+    store = OntoStore(
+        ontology_frameworks={
+            "remote": {"url": "https://example.org/remote.owl"},
+        },
+        storage_dir=tmp_path,
+    )
+
+    assert OntologyHarmonizer()._candidate_ontology_ids(
+        {"ontology_ids": ["remote"]}, store
+    ) == []
+
+
 def test_lookup_rag_many_embeds_query_once_and_searches_frameworks_in_order(
     tmp_path: Path,
 ) -> None:
