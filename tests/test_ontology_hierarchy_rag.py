@@ -261,7 +261,11 @@ def test_harmonizer_hierarchy_is_opt_in_and_uses_only_two_anchor_seeds(
         def judge_lookup(self, *args, hits, **kwargs):
             self.judged_hits = hits
             return {
-                "decision": "PARENT:1",
+                "decision": (
+                    "PARENT:1"
+                    if any(hit["id"] == "PARENT:1" for hit in hits)
+                    else "SEED:0"
+                ),
                 "confidence": "high",
                 "reason": "The parent is appropriate.",
             }
