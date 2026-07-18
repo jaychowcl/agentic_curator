@@ -181,7 +181,7 @@ strategy traces. The wrapper is:
 {
   "publication_context": "...",
   "harmonization_targets": [],
-  "strategy": "websearch",
+  "strategy": "ols",
   "target_paths": []
 }
 ```
@@ -268,7 +268,7 @@ target normalization, lookup, assignment, search, enrichment, and application.
 
 | Method | Main options |
 | --- | --- |
-| `harmonize(...)` | User `publication_context`, compact `metadata_context`, `harmonization_targets` or `target`, `strategy="websearch"`, `ontostore`, `target_paths`, and judge/LLM controls |
+| `harmonize(...)` | User `publication_context`, compact `metadata_context`, `harmonization_targets` or `target`, `strategy="ols"`, `ontostore`, `target_paths`, and judge/LLM controls |
 | `harmonize_miniml_json(...)` | User `publication_context`, `miniml_json`, `ontostore`, `target_paths`, and the same strategy/judge/LLM controls; `metadata_context` is generated automatically |
 | `lookup_label(...)` | Target, publication context, store, strategy, local judge toggle/threshold |
 | `assign_onto_framework(...)` | Target, publication context, and store |
@@ -333,10 +333,9 @@ backoff_base_seconds=1, cache_ttl_seconds=604800, force_refresh=False)` controls
 network/LLM retries and response reuse. Transient network, 429, and 5xx errors
 use exponential jittered backoff.
 
-`OlsClient` calls OLS4 search and ontology APIs. `GeminiGroundedSearchClient`
-uses `LLM.generate_response_with_metadata(..., tools=[{"type":
-"google_search"}])`. `WebsearchStrategyHandler` implements restricted and
-expanded search judging. `RagStrategyHandler` remains a placeholder.
+`OlsClient` calls OLS4 search and ontology APIs. `OlsStrategyHandler`
+implements restricted and unrestricted OLS search judging without grounded web
+search. `RagStrategyHandler` remains a placeholder.
 
 ### Ontology Harmonizer CLI
 
@@ -351,7 +350,7 @@ their `-file` counterparts are mutually substitutable; files take precedence.
 | `--ontology-frameworks`, `--ontology-frameworks-file` | JSON framework configuration |
 | `--fields`, `--fields-file` | JSON controlled-field configuration |
 | `--storage-dir` | OWL, JSON, and SQLite storage root |
-| `--strategy {websearch,rag}` | Label strategy; default `websearch` |
+| `--strategy {ols,rag}` | Label strategy; default `ols` |
 | `--target-paths`, `--target-paths-file` | JSON path specifications |
 | `--lookup-llm-judge`, `--no-lookup-llm-judge` | Enable/disable local ambiguity judge; enabled by default |
 | `--lookup-llm-threshold N` | Exact-hit judge threshold; default `2` |
@@ -428,26 +427,20 @@ def review_relevancy(inputs):
 #### Ontology harmonizer
 
 ```python
-def harmonize(targets, publication_context, strategy="websearch"):
+def harmonize(targets, publication_context, strategy="ols"):
     for target in normalize_targets(targets):
         normalize_working_field_and_label(target)
         local = lookup_exact_then_fts(target)
         if local is ambiguous_or_fts:
             local = judge_lookup(local[:10], publication_context)
         if not local:
-            assign_ontology_framework_with_llm_when_enabled(target)
-
-        resolve_field_from_registry_or_assign_and_persist(target)
-
-        if not local:
-            restricted = OLS.search(target.label, ontology=target.ontology_id)
-            selected = judge_restricted_candidates(restricted)
-            if not selected:
-                unrestricted = OLS.search(target.label)
-                web = GeminiGroundedSearchClient.search(target)
-                resolve_web_ids_through_OLS(web)
-                selected = judge_expanded_candidates(unrestricted, web)
+            unrestricted = OLS.search(target.label)
+            selected = judge_ols_candidates(unrestricted)
+            if selected:
+                configure_selected_framework_from_OLS(selected)
             enrich_selected_term_by_exact_identifier_only(selected)
+        promote_selected_term_title_to_harmonized_label(target)
+        resolve_field_from_registry_or_assign_and_persist(target)
     return target_wrapper
 ```
 

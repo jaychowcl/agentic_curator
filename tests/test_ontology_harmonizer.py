@@ -21,14 +21,13 @@ from agentic_curator import OntologyHarmonizer as RootOntologyHarmonizer
 from agentic_curator.curators.ontology_harmonizer import ontology_store
 from agentic_curator.curators import OntologyHarmonizer
 from agentic_curator.curators.ontology_harmonizer import (
-    GeminiGroundedSearchClient,
     HarmonizationTargetExtractor,
     OntoStore,
     OntologyCacheError,
     OntologyHarmonizer as SubpackageOntologyHarmonizer,
     Owl2jsonParseError,
     RagStrategyHandler,
-    WebsearchStrategyHandler,
+    OlsStrategyHandler,
 )
 from agentic_curator.curators.ontology_harmonizer.harmonization_target_extractor import (
     HarmonizationTargetExtractor as DirectHarmonizationTargetExtractor,
@@ -191,16 +190,6 @@ class FakeOlsClient:
         return self.ontology_metadata.get(ontology_id, {})
 
 
-class FakeSearchClient:
-    def __init__(self, results=None) -> None:
-        self.results = list(results or [])
-        self.calls = []
-
-    def search(self, query, *, max_results=25):
-        self.calls.append({"query": query, "max_results": max_results})
-        return self.results
-
-
 class NoSearchOntologyHarmonizer(OntologyHarmonizer):
     """Keep orchestration-focused tests deterministic after a local miss."""
 
@@ -221,56 +210,9 @@ class NoSearchOntologyHarmonizer(OntologyHarmonizer):
             "confidence": "none",
             "reason": "No search candidates.",
             "ols_hits": [],
-            "web_hits": [],
         }
         target["ontology_strategy_result"] = result
         return result
-
-
-class FakeGroundedLLM:
-    def __init__(self, response=None, error: Exception | None = None) -> None:
-        self.calls = []
-        self.response = response or {
-            "text": "Lung maps to UBERON:0002048.",
-            "citations": [
-                {
-                    "url": "https://example.org/lung",
-                    "title": "Lung ontology entry",
-                    "start_index": 0,
-                    "end_index": 4,
-                }
-            ],
-            "tool_calls": [
-                {
-                    "type": "google_search_call",
-                    "arguments": {"queries": ["lung ontology"]},
-                }
-            ],
-            "provider": "gemini_enterprise",
-        }
-        self.error = error
-
-    def generate_response_with_metadata(
-        self,
-        prompt,
-        *,
-        model=None,
-        config=None,
-        tools=None,
-        **extra_options,
-    ):
-        self.calls.append(
-            {
-                "prompt": prompt,
-                "model": model,
-                "config": config,
-                "tools": tools,
-                "extra_options": extra_options,
-            }
-        )
-        if self.error is not None:
-            raise self.error
-        return self.response
 
 
 def ontology_bytes(*, title: str = "Cell Ontology", label: str = "cell") -> bytes:
@@ -321,8 +263,7 @@ def test_ontostore_can_be_imported_from_subpackage() -> None:
 
 
 def test_strategy_handlers_can_be_imported_from_subpackage() -> None:
-    assert WebsearchStrategyHandler.__name__ == "WebsearchStrategyHandler"
-    assert GeminiGroundedSearchClient.__name__ == "GeminiGroundedSearchClient"
+    assert OlsStrategyHandler.__name__ == "OlsStrategyHandler"
     assert RagStrategyHandler.__name__ == "RagStrategyHandler"
 
 
@@ -1379,7 +1320,7 @@ def test_lookup_label_matches_available_store_framework(
         target,
         publication_context=None,
         ontostore=store,
-        strategy="websearch",
+        strategy="ols",
     )
 
     expected_lookup = {**term, "ontology_id": "uberon"}
@@ -1420,7 +1361,7 @@ def test_lookup_label_uses_existing_hz_label_after_harmonizing_it(
         target,
         publication_context=None,
         ontostore=store,
-        strategy="websearch",
+        strategy="ols",
     )
 
     expected_lookup = {**term, "ontology_id": "uberon"}
@@ -1472,7 +1413,7 @@ def test_lookup_label_judges_ambiguous_exact_hits_by_default(
         target,
         publication_context="lung sample context",
         ontostore=store,
-        strategy="websearch",
+        strategy="ols",
     )
 
     expected_hits = [
@@ -1509,7 +1450,7 @@ def test_lookup_label_llm_judge_is_not_called_below_threshold(
         target,
         publication_context="context",
         ontostore=store,
-        strategy="websearch",
+        strategy="ols",
         lookup_llm_judge=True,
     )
 
@@ -1564,7 +1505,7 @@ def test_lookup_label_llm_judge_selects_best_hit_by_id(
         publication_context="sample is oral buccal tissue",
         metadata_context="tissue=lung",
         ontostore=store,
-        strategy="websearch",
+        strategy="ols",
         lookup_llm_judge=True,
     )
 
@@ -1604,7 +1545,7 @@ def test_judge_search_results_builds_structured_prompt() -> None:
         target={"id": "target-0", "hz_field": "tissue", "hz_label": "lung"},
         publication_context="lung sample",
         metadata_context="tissue=lung",
-        stage="expanded",
+        stage="unrestricted",
         restricted_hits=[{"id": "EFO_1", "title": "wrong"}],
         unrestricted_hits=[
             {
@@ -1620,22 +1561,6 @@ def test_judge_search_results_builds_structured_prompt() -> None:
             }
             for index in range(12)
         ],
-        web_hits=[
-            {
-                "title": "Uberon lung",
-                "link": "https://example.org",
-                "snippet": "Shared grounded summary.",
-                "source": "gemini_google_search",
-                "provider": "gemini_enterprise",
-            },
-            {
-                "title": "Second source",
-                "link": "https://example.org/2",
-                "snippet": "Shared grounded summary.",
-                "source": "gemini_google_search",
-                "provider": "gemini_enterprise",
-            },
-        ],
     )
 
     assert result == response
@@ -1643,7 +1568,7 @@ def test_judge_search_results_builds_structured_prompt() -> None:
     assert call["prompt"].startswith(JUDGE_SEARCH_PROMPT)
     assert "Publication Context:\nlung sample" in call["prompt"]
     assert "Metadata Context:\ntissue=lung" in call["prompt"]
-    assert "Search Stage:\nexpanded" in call["prompt"]
+    assert "Search Stage:\nunrestricted" in call["prompt"]
     assert '"UBERON_2"' in call["prompt"]
     assert '"UBERON_10"' not in call["prompt"]
     assert "Complete definition one." in call["prompt"]
@@ -1652,9 +1577,7 @@ def test_judge_search_results_builds_structured_prompt() -> None:
     assert '"type"' not in call["prompt"]
     assert '"synonyms"' not in call["prompt"]
     assert "Restricted OLS Hits:" not in call["prompt"]
-    assert call["prompt"].count("Shared grounded summary.") == 1
-    assert '"provider"' not in call["prompt"]
-    assert "Uberon lung" in call["prompt"]
+    assert "Grounded Web Evidence:" not in call["prompt"]
     assert call["config"] == {
         "response_mime_type": "application/json",
         "response_schema": harmonizer._search_judge_response_schema(),
@@ -1713,7 +1636,7 @@ def test_lookup_judge_prompt_prunes_derived_target_context(
         target,
         publication_context="sample is oral buccal tissue",
         ontostore=store,
-        strategy="websearch",
+        strategy="ols",
         lookup_llm_judge=True,
     )
 
@@ -1806,7 +1729,7 @@ def test_lookup_label_llm_judge_rejects_unknown_decision(
             {"id": "target-0", "pre_hz_label": "lung"},
             publication_context=None,
             ontostore=store,
-            strategy="websearch",
+            strategy="ols",
             lookup_llm_judge=True,
         )
 
@@ -1843,7 +1766,7 @@ def test_lookup_label_llm_judge_raises_value_error_for_invalid_json_response(
             {"id": "target-0", "pre_hz_label": "lung"},
             publication_context=None,
             ontostore=store,
-            strategy="websearch",
+            strategy="ols",
             lookup_llm_judge=True,
         )
 
@@ -1880,7 +1803,7 @@ def test_lookup_label_respects_target_framework_subset(
         target,
         publication_context=None,
         ontostore=store,
-        strategy="websearch",
+        strategy="ols",
     )
 
     assert result is False
@@ -2383,7 +2306,7 @@ def test_harmonize_llm_false_skips_framework_and_field_assignment() -> None:
     assert search_calls == [
         {
             "publication_context": "context",
-            "strategy": "websearch",
+            "strategy": "ols",
             "search_llm_judge": False,
         }
     ]
@@ -2450,7 +2373,7 @@ def test_harmonize_returns_targets_wrapper() -> None:
         "publication_context": "Full publication context",
         "metadata_context": "Study: Oral disease | tissue=buccal mucosa",
         "harmonization_targets": harmonization_targets,
-        "strategy": "websearch",
+        "strategy": "ols",
         "target_paths": ["/sample"],
     }
 
@@ -2469,7 +2392,7 @@ def test_harmonize_accepts_single_target() -> None:
         "publication_context": None,
         "metadata_context": None,
         "harmonization_targets": [target],
-        "strategy": "websearch",
+        "strategy": "ols",
         "target_paths": None,
     }
 
@@ -2513,10 +2436,10 @@ def test_harmonize_rejects_identity_strategy() -> None:
         )
 
 
-def test_harmonize_accepts_websearch_and_rag_strategies() -> None:
+def test_harmonize_accepts_ols_and_rag_strategies() -> None:
     assert OntologyHarmonizer().harmonize(
-        harmonization_targets=[], strategy="websearch"
-    )["strategy"] == "websearch"
+        harmonization_targets=[], strategy="ols"
+    )["strategy"] == "ols"
     assert OntologyHarmonizer().harmonize(harmonization_targets=[], strategy="rag")[
         "strategy"
     ] == "rag"
@@ -2548,7 +2471,7 @@ def test_harmonize_defaults_to_empty_targets() -> None:
         "publication_context": None,
         "metadata_context": None,
         "harmonization_targets": [],
-        "strategy": "websearch",
+        "strategy": "ols",
         "target_paths": None,
     }
 
@@ -2604,7 +2527,7 @@ def test_harmonize_accepts_ontostore_override() -> None:
         "publication_context": None,
         "metadata_context": None,
         "harmonization_targets": [],
-        "strategy": "websearch",
+        "strategy": "ols",
         "target_paths": None,
     }
 
@@ -2667,13 +2590,13 @@ def test_harmonize_routes_each_lookup_miss_directly_to_search() -> None:
             "target": targets[0],
             "publication_context": "context",
             "ontostore": store,
-            "strategy": "websearch",
+            "strategy": "ols",
         },
         {
             "target": targets[1],
             "publication_context": "context",
             "ontostore": store,
-            "strategy": "websearch",
+            "strategy": "ols",
         },
     ]
 
@@ -2722,8 +2645,8 @@ def test_harmonize_calls_lookup_then_search_then_field_without_framework_assignm
     )
 
     assert calls == [
-        ("lookup", "target-0", "context", "websearch"),
-        ("search", "target-0", "context", "websearch"),
+        ("lookup", "target-0", "context", "ols"),
+        ("search", "target-0", "context", "ols"),
         ("field", "target-0", "context"),
     ]
 
@@ -2946,12 +2869,12 @@ def test_harmonize_calls_field_harmonization_after_strategy_handler() -> None:
     RecordingHarmonizer().harmonize(
         publication_context="context",
         target={"id": "target-0", "pre_hz_field": "tissue", "pre_hz_label": "lung"},
-        strategy="websearch",
+        strategy="ols",
     )
 
     assert calls == [
         "lookup",
-        ("strategy", "websearch"),
+        ("strategy", "ols"),
         "harmonize_field",
     ]
 
@@ -3116,7 +3039,7 @@ def test_harmonize_routes_failed_lookup_to_strategy_handler() -> None:
     class RecordingHandler:
         def handle(self, target, *, publication_context, ontostore):
             result = {
-                "strategy": "websearch",
+                "strategy": "ols",
                 "status": "recorded",
                 "reason": "recorded strategy call",
             }
@@ -3131,7 +3054,7 @@ def test_harmonize_routes_failed_lookup_to_strategy_handler() -> None:
             return result
 
     class RecordingHarmonizer(OntologyHarmonizer):
-        STRATEGY_HANDLERS = {"websearch": RecordingHandler}
+        STRATEGY_HANDLERS = {"ols": RecordingHandler}
 
     store = OntoStore()
     target = {"id": "target-0", "pre_hz_label": "lung"}
@@ -3139,10 +3062,10 @@ def test_harmonize_routes_failed_lookup_to_strategy_handler() -> None:
     result = RecordingHarmonizer(ontostore=store, llm=FakeLLM()).harmonize(
         publication_context="context",
         target=target,
-        strategy="websearch",
+        strategy="ols",
     )
 
-    assert result["strategy"] == "websearch"
+    assert result["strategy"] == "ols"
     assert calls == [
         {
             "target": target,
@@ -3151,7 +3074,7 @@ def test_harmonize_routes_failed_lookup_to_strategy_handler() -> None:
         }
     ]
     assert target["ontology_strategy_result"] == {
-        "strategy": "websearch",
+        "strategy": "ols",
         "status": "recorded",
         "reason": "recorded strategy call",
     }
@@ -3235,7 +3158,7 @@ def test_harmonize_looks_up_strategy_harmonized_label_with_stored_ontology_id(
     result = RecordingHarmonizer(ontostore=store, llm=FakeLLM()).harmonize(
         publication_context="context",
         target=target,
-        strategy="websearch",
+        strategy="ols",
     )
 
     assert result["harmonization_targets"] == [target]
@@ -3244,7 +3167,7 @@ def test_harmonize_looks_up_strategy_harmonized_label_with_stored_ontology_id(
     assert target["ontology_lookup"] == {**term, "ontology_id": "uberon"}
     assert target["ontology_local_enrichment"]["status"] == "matched"
     assert target["ontology_strategy_result"] == {
-        "strategy": "websearch",
+        "strategy": "ols",
         "status": "matched",
         "decision": "UBERON:0002048",
         "confidence": "medium",
@@ -3306,7 +3229,7 @@ def test_harmonize_post_strategy_lookup_ignores_unconfigured_ontology_id(
 
     RecordingHarmonizer(ontostore=store, llm=FakeLLM()).harmonize(
         target=target,
-        strategy="websearch",
+        strategy="ols",
     )
 
     assert target["ontology_id"] == "missing"
@@ -3371,14 +3294,14 @@ def test_harmonize_post_strategy_lookup_miss_preserves_strategy_result(
 
     RecordingHarmonizer(ontostore=store, llm=FakeLLM()).harmonize(
         target=target,
-        strategy="websearch",
+        strategy="ols",
     )
 
     assert target["ontology_match"] is False
     assert "ontology_lookup" not in target
     assert "ontology_lookup_hits" not in target
     assert target["ontology_strategy_result"] == {
-        "strategy": "websearch",
+        "strategy": "ols",
         "status": "matched",
         "decision": "UBERON:9999999",
         "confidence": "low",
@@ -3386,85 +3309,7 @@ def test_harmonize_post_strategy_lookup_miss_preserves_strategy_result(
     }
 
 
-def test_gemini_grounded_search_client_returns_citation_hits() -> None:
-    llm = FakeGroundedLLM()
-    client = GeminiGroundedSearchClient(llm=llm)
-
-    hits = client.search("tissue: lung ontology", max_results=25)
-
-    assert hits == [
-        {
-            "title": "Lung ontology entry",
-            "link": "https://example.org/lung",
-            "snippet": "Lung maps to UBERON:0002048.",
-            "source": "gemini_google_search",
-            "provider": "gemini_enterprise",
-        }
-    ]
-    assert client.last_response["text"] == "Lung maps to UBERON:0002048."
-    assert client.last_error is None
-    assert llm.calls == [
-        {
-            "prompt": (
-                "Search the web for ontology evidence related to this query:\n"
-                "tissue: lung ontology\n\n"
-                "Return concise evidence for ontology term candidates, including "
-                "term labels, IDs, IRIs, and ontology framework names when found."
-            ),
-            "model": None,
-            "config": None,
-            "tools": [{"type": "google_search"}],
-            "extra_options": {},
-        }
-    ]
-
-
-def test_gemini_grounded_search_client_respects_request_budget() -> None:
-    llm = FakeGroundedLLM()
-    client = GeminiGroundedSearchClient(llm=llm, request_budget=1)
-
-    assert client.search("first query")
-    assert client.search("second query") == []
-    assert client.last_error == "Google search request budget exhausted."
-    assert len(llm.calls) == 1
-
-
-def test_gemini_grounded_search_client_records_rate_limit_error() -> None:
-    llm = FakeGroundedLLM(error=RuntimeError("429 RESOURCE_EXHAUSTED"))
-    client = GeminiGroundedSearchClient(llm=llm)
-
-    assert client.search("tissue: lung ontology") == []
-    assert client.last_error == "429 RESOURCE_EXHAUSTED"
-
-
-def test_websearch_strategy_includes_web_search_error_on_fallback() -> None:
-    search_client = GeminiGroundedSearchClient(
-        llm=FakeGroundedLLM(error=RuntimeError("429 RESOURCE_EXHAUSTED"))
-    )
-    ols_client = FakeOlsClient(search_results=[[], []])
-    target = {
-        "id": "target-0",
-        "hz_field": "tissue",
-        "hz_label": "lung",
-        "ontology_id": "uberon",
-    }
-
-    result = WebsearchStrategyHandler(
-        ols_client=ols_client,
-        search_client=search_client,
-    ).handle(
-        target,
-        publication_context=None,
-        ontostore=OntoStore(),
-    )
-
-    assert result["status"] == "not_harmonized"
-    assert result["web_hits"] == []
-    assert result["web_search_error"] == "429 RESOURCE_EXHAUSTED"
-    assert target["ontology_strategy_result"] == result
-
-
-def test_websearch_strategy_uses_restricted_ols_hit_without_fallbacks() -> None:
+def test_ols_strategy_uses_restricted_ols_hit_without_fallbacks() -> None:
     term = {
         "iri": "http://purl.obolibrary.org/obo/UBERON_0002048",
         "ontology_name": "uberon",
@@ -3488,7 +3333,6 @@ def test_websearch_strategy_uses_restricted_ols_hit_without_fallbacks() -> None:
             }
         },
     )
-    search_client = FakeSearchClient(results=[{"title": "unused"}])
     store = OntoStore(
         ontology_frameworks={"uberon": {"url": "https://example.org/old.owl"}}
     )
@@ -3499,9 +3343,8 @@ def test_websearch_strategy_uses_restricted_ols_hit_without_fallbacks() -> None:
         "ontology_id": "uberon",
     }
 
-    result = WebsearchStrategyHandler(
+    result = OlsStrategyHandler(
         ols_client=ols_client,
-        search_client=search_client,
     ).handle(
         target,
         publication_context="lung sample",
@@ -3519,13 +3362,12 @@ def test_websearch_strategy_uses_restricted_ols_hit_without_fallbacks() -> None:
         "type": None,
     }
     assert result == {
-        "strategy": "websearch",
+        "strategy": "ols",
         "status": "matched",
         "decision": "UBERON_0002048",
         "confidence": "medium",
         "reason": "Restricted OLS search returned a usable ontology hit.",
         "ols_hits": [expected_lookup],
-        "web_hits": [],
         "ontology_framework_config": {
             "id": "uberon",
             "title": "Uber-anatomy ontology",
@@ -3542,13 +3384,12 @@ def test_websearch_strategy_uses_restricted_ols_hit_without_fallbacks() -> None:
     assert ols_client.search_calls == [
         {"label": "lung", "ontology_id": "uberon", "rows": 25}
     ]
-    assert search_client.calls == []
     assert store.ontology_frameworks["uberon"]["title"] == "Uber-anatomy ontology"
     assert store.ontology_frameworks["uberon"]["version"] == "2026-06-19"
     assert store.ontology_frameworks["uberon"]["url"] == "https://example.org/uberon.owl"
 
 
-def test_websearch_strategy_judge_selects_non_first_restricted_hit() -> None:
+def test_ols_strategy_judge_selects_non_first_restricted_hit() -> None:
     terms = [
         {
             "iri": f"https://example.org/{index}",
@@ -3580,7 +3421,7 @@ def test_websearch_strategy_judge_selects_non_first_restricted_hit() -> None:
         return {"decision": "UBERON_2", "confidence": "high", "reason": "Best."}
 
     target = {"id": "target-0", "hz_label": "right", "ontology_id": "uberon"}
-    result = WebsearchStrategyHandler(
+    result = OlsStrategyHandler(
         ols_client=ols_client,
         search_judge=judge,
     ).handle(target, publication_context="context", ontostore=OntoStore())
@@ -3593,10 +3434,9 @@ def test_websearch_strategy_judge_selects_non_first_restricted_hit() -> None:
     assert calls[0]["stage"] == "restricted"
     assert calls[0]["restricted_hits"][0]["id"] == "UBERON_1"
     assert calls[0]["unrestricted_hits"] == []
-    assert calls[0]["web_hits"] == []
 
 
-def test_websearch_strategy_keeps_full_hits_while_judging_top_ten() -> None:
+def test_ols_strategy_keeps_full_hits_while_judging_top_ten() -> None:
     terms = [
         {
             "iri": f"https://example.org/{index}",
@@ -3627,7 +3467,7 @@ def test_websearch_strategy_keeps_full_hits_while_judging_top_ten() -> None:
         return {"decision": "UBERON_0", "confidence": "high", "reason": "Best."}
 
     target = {"hz_label": "term", "ontology_id": "uberon"}
-    result = WebsearchStrategyHandler(
+    result = OlsStrategyHandler(
         ols_client=ols_client,
         search_judge=judge,
     ).handle(target, publication_context=None, ontostore=OntoStore())
@@ -3637,7 +3477,7 @@ def test_websearch_strategy_keeps_full_hits_while_judging_top_ten() -> None:
     assert len(target["ontology_lookup_hits"]) == 12
 
 
-def test_websearch_strategy_judge_rejects_restricted_then_selects_expanded_hit() -> None:
+def test_ols_strategy_judge_rejects_restricted_then_selects_unrestricted_hit() -> None:
     restricted = {
         "iri": "https://example.org/wrong",
         "ontology_name": "efo",
@@ -3664,7 +3504,6 @@ def test_websearch_strategy_judge_rejects_restricted_then_selects_expanded_hit()
             }
         },
     )
-    search_client = FakeSearchClient(results=[{"title": "support"}])
     stages = []
 
     def judge(**kwargs):
@@ -3674,21 +3513,19 @@ def test_websearch_strategy_judge_rejects_restricted_then_selects_expanded_hit()
         return {"decision": "UBERON_RIGHT", "confidence": "high", "reason": "Supported."}
 
     target = {"id": "target-0", "hz_label": "right", "ontology_id": "efo"}
-    result = WebsearchStrategyHandler(
+    result = OlsStrategyHandler(
         ols_client=ols_client,
-        search_client=search_client,
         search_judge=judge,
     ).handle(target, publication_context="context", ontostore=OntoStore())
 
     assert result["decision"] == "UBERON_RIGHT"
-    assert [call["stage"] for call in stages] == ["restricted", "expanded"]
+    assert [call["stage"] for call in stages] == ["restricted", "unrestricted"]
     assert stages[1]["restricted_hits"] == []
     assert stages[1]["unrestricted_hits"][0]["id"] == "UBERON_RIGHT"
-    assert stages[1]["web_hits"] == [{"title": "support"}]
     assert len(result["search_llm_judgements"]) == 2
 
 
-def test_websearch_strategy_judge_error_fails_closed() -> None:
+def test_ols_strategy_judge_error_fails_closed() -> None:
     term = {
         "iri": "https://example.org/wrong",
         "ontology_name": "efo",
@@ -3700,7 +3537,7 @@ def test_websearch_strategy_judge_error_fails_closed() -> None:
         raise ValueError("unknown decision")
 
     target = {"id": "target-0", "hz_label": "right", "ontology_id": "efo"}
-    result = WebsearchStrategyHandler(
+    result = OlsStrategyHandler(
         ols_client=FakeOlsClient(search_results=[[term]]),
         search_judge=judge,
     ).handle(target, publication_context=None, ontostore=OntoStore())
@@ -3711,7 +3548,7 @@ def test_websearch_strategy_judge_error_fails_closed() -> None:
     assert "ontology_lookup" not in target
 
 
-def test_websearch_strategy_falls_back_to_unrestricted_ols_and_web_search() -> None:
+def test_ols_strategy_falls_back_to_unrestricted_ols() -> None:
     term = {
         "iri": "http://purl.obolibrary.org/obo/CL_0000000",
         "ontology_name": "cl",
@@ -3737,7 +3574,6 @@ def test_websearch_strategy_falls_back_to_unrestricted_ols_and_web_search() -> N
             }
         },
     )
-    search_client = FakeSearchClient(results=[{"title": "Cell Ontology page"}])
     store = OntoStore(
         ontology_frameworks={"uberon": {"url": "https://example.org/old.owl"}}
     )
@@ -3750,9 +3586,8 @@ def test_websearch_strategy_falls_back_to_unrestricted_ols_and_web_search() -> N
         "ontology_id": "uberon",
     }
 
-    result = WebsearchStrategyHandler(
+    result = OlsStrategyHandler(
         ols_client=ols_client,
-        search_client=search_client,
     ).handle(
         target,
         publication_context=None,
@@ -3762,15 +3597,11 @@ def test_websearch_strategy_falls_back_to_unrestricted_ols_and_web_search() -> N
     assert result["status"] == "matched"
     assert result["decision"] == "CL_0000000"
     assert result["confidence"] == "medium"
-    assert result["web_hits"] == [{"title": "Cell Ontology page"}]
     assert target["ontology_id"] == "cl"
     assert target["ontology_lookup"]["accession"] == "CL:0000000"
     assert ols_client.search_calls == [
         {"label": "cell", "ontology_id": "uberon", "rows": 25},
         {"label": "cell", "ontology_id": None, "rows": 25},
-    ]
-    assert search_client.calls == [
-        {"query": "Cell Type: Cell ontology", "max_results": 25}
     ]
     assert store.ontology_frameworks["cl"]["title"] == "Cell Ontology"
     assert store.ontology_frameworks["cl"]["version"] == "2026-06-08"
@@ -3779,7 +3610,7 @@ def test_websearch_strategy_falls_back_to_unrestricted_ols_and_web_search() -> N
     )
 
 
-def test_websearch_strategy_does_not_harmonize_without_complete_framework_config() -> None:
+def test_ols_strategy_does_not_harmonize_without_complete_framework_config() -> None:
     term = {
         "iri": "http://purl.obolibrary.org/obo/UBERON_0002048",
         "ontology_name": "uberon",
@@ -3808,19 +3639,18 @@ def test_websearch_strategy_does_not_harmonize_without_complete_framework_config
     before = dict(store.ontology_frameworks["uberon"])
     target = {"id": "target-0", "hz_label": "lung", "ontology_id": "uberon"}
 
-    result = WebsearchStrategyHandler(ols_client=ols_client).handle(
+    result = OlsStrategyHandler(ols_client=ols_client).handle(
         target,
         publication_context=None,
         ontostore=store,
     )
 
-    assert result["strategy"] == "websearch"
+    assert result["strategy"] == "ols"
     assert result["status"] == "not_harmonized"
     assert result["decision"] == "false"
     assert result["confidence"] == "none"
     assert "complete ontology framework metadata" in result["reason"]
     assert result["ols_hits"][0]["id"] == "UBERON_0002048"
-    assert result["web_hits"] == []
     assert "ontology_framework_config" not in result
     assert target["ontology_strategy_result"] == result
     assert target["ontology_match"] is False
@@ -3828,7 +3658,7 @@ def test_websearch_strategy_does_not_harmonize_without_complete_framework_config
     assert store.ontology_frameworks["uberon"] == before
 
 
-def test_websearch_strategy_without_framework_starts_with_unrestricted_ols() -> None:
+def test_ols_strategy_without_framework_starts_with_unrestricted_ols() -> None:
     term = {
         "iri": "http://purl.obolibrary.org/obo/UBERON_0002048",
         "ontology_name": "uberon",
@@ -3851,11 +3681,9 @@ def test_websearch_strategy_without_framework_starts_with_unrestricted_ols() -> 
             }
         },
     )
-    search_client = FakeSearchClient()
     target = {"id": "target-0", "hz_label": "lung"}
-    result = WebsearchStrategyHandler(
+    result = OlsStrategyHandler(
         ols_client=ols_client,
-        search_client=search_client,
     ).handle(
         target,
         publication_context=None,
@@ -3867,9 +3695,6 @@ def test_websearch_strategy_without_framework_starts_with_unrestricted_ols() -> 
     assert target["ontology_id"] == "uberon"
     assert ols_client.search_calls == [
         {"label": "lung", "ontology_id": None, "rows": 25}
-    ]
-    assert search_client.calls == [
-        {"query": "field: lung ontology", "max_results": 25}
     ]
     assert target["ontology_strategy_result"] == result
 
@@ -3892,7 +3717,7 @@ def test_rag_placeholder_strategy_handler_mutates_target() -> None:
     }
 
 
-def test_harmonize_default_strategy_routes_to_websearch_handler() -> None:
+def test_harmonize_default_strategy_routes_to_ols_handler() -> None:
     calls = []
 
     class RecordingHarmonizer(OntologyHarmonizer):
@@ -3919,27 +3744,25 @@ def test_harmonize_default_strategy_routes_to_websearch_handler() -> None:
                 "confidence": "none",
                 "reason": "No usable OLS ontology hit was found.",
                 "ols_hits": [],
-                "web_hits": [],
             }
             target["ontology_strategy_result"] = result
             return result
 
-    target = {"id": "target-websearch", "pre_hz_label": "lung"}
+    target = {"id": "target-ols", "pre_hz_label": "lung"}
 
     result = RecordingHarmonizer(llm=FakeLLM()).harmonize(target=target)
 
-    assert result["strategy"] == "websearch"
+    assert result["strategy"] == "ols"
     assert target["ontology_match"] is False
     assert "ontology_framework_assignment" not in target
-    assert calls == ["websearch"]
+    assert calls == ["ols"]
     assert target["ontology_strategy_result"] == {
-        "strategy": "websearch",
+        "strategy": "ols",
         "status": "not_harmonized",
         "decision": "false",
         "confidence": "none",
         "reason": "No usable OLS ontology hit was found.",
         "ols_hits": [],
-        "web_hits": [],
     }
 
 
@@ -4582,7 +4405,6 @@ def test_harmonize_miniml_json_accepts_explicit_target_paths(tmp_path: Path) -> 
                 "confidence": "none",
                 "reason": "No usable OLS ontology hit was found.",
                 "ols_hits": [],
-                "web_hits": [],
             }
             target["ontology_strategy_result"] = result
             return result
@@ -4617,17 +4439,16 @@ def test_harmonize_miniml_json_accepts_explicit_target_paths(tmp_path: Path) -> 
                     "new_field": True,
                 },
                 "ontology_strategy_result": {
-                    "strategy": "websearch",
+                    "strategy": "ols",
                     "status": "not_harmonized",
                     "decision": "false",
                     "confidence": "none",
                     "reason": "No usable OLS ontology hit was found.",
                     "ols_hits": [],
-                    "web_hits": [],
                 },
             }
         ],
-        "strategy": "websearch",
+        "strategy": "ols",
         "target_paths": ["/sample"],
         "miniml_json": {
             "sample": {
@@ -4649,7 +4470,7 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
             metadata_context=None,
             harmonization_targets=None,
             target=None,
-            strategy="websearch",
+            strategy="ols",
             ontostore=None,
             target_paths=None,
             lookup_llm_judge=False,
@@ -4727,7 +4548,7 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
                 }
             ],
             "target": None,
-            "strategy": "websearch",
+            "strategy": "ols",
             "ontostore": store,
             "target_paths": ["/sample"],
             "lookup_llm_judge": True,
@@ -4880,7 +4701,7 @@ def test_harmonize_accepts_target_paths() -> None:
         "publication_context": None,
         "metadata_context": None,
         "harmonization_targets": [],
-        "strategy": "websearch",
+        "strategy": "ols",
         "target_paths": [],
     }
 

@@ -24,11 +24,9 @@ from agentic_curator.curators.ontology_harmonizer.owl2json import (
     Owl2jsonParseError,
 )
 from agentic_curator.curators.ontology_harmonizer.strategy_handlers import (
-    GeminiGroundedSearchClient,
-    NullSearchClient,
     OlsClient,
+    OlsStrategyHandler,
     RagStrategyHandler,
-    WebsearchStrategyHandler,
 )
 
 __all__ = [
@@ -40,9 +38,7 @@ __all__ = [
     "build_miniml_metadata_context",
     "Owl2json",
     "Owl2jsonParseError",
-    "GeminiGroundedSearchClient",
-    "NullSearchClient",
     "OlsClient",
+    "OlsStrategyHandler",
     "RagStrategyHandler",
-    "WebsearchStrategyHandler",
 ]

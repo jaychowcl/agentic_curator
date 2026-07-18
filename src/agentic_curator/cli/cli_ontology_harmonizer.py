@@ -46,7 +46,7 @@ def _add_store_options(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_harmonize_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--strategy", choices=["websearch", "rag"], default="websearch")
+    parser.add_argument("--strategy", choices=["ols", "rag"], default="ols")
     parser.add_argument("--target-paths", default=None)
     parser.add_argument("--target-paths-file", default=None)
     parser.add_argument("--lookup-llm-judge", dest="lookup_llm_judge", action="store_true", default=True)

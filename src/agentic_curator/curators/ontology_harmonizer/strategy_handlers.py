@@ -16,7 +16,6 @@ import requests
 
 from agentic_curator.curators.ontology_harmonizer.ontology_store import OntoStore
 from agentic_curator.curators.ontology_harmonizer.request_policy import RequestPolicy, request_with_retry
-from agentic_curator.wrappers import LLM
 
 
 class PlaceholderStrategyHandler:
@@ -109,101 +108,8 @@ class OlsClient:
             self.cache_store.set_cached_response("ols", operation, key, result)
 
 
-class NullSearchClient:
-    """Deterministic no-op web search client used unless one is injected."""
-
-    def search(self, query: str, *, max_results: int = 25) -> list[dict[str, Any]]:
-        del query, max_results
-        return []
-
-
-class GeminiGroundedSearchClient:
-    """Google Search grounding client backed by the LLM facade."""
-
-    GOOGLE_SEARCH_TOOL = {"type": "google_search"}
-
-    def __init__(
-        self,
-        *,
-        llm: Any | None = None,
-        model: str | None = None,
-        request_budget: int | None = 100,
-        request_policy: RequestPolicy | None = None,
-        cache_store: OntoStore | None = None,
-    ) -> None:
-        self.llm = LLM() if llm is None else llm
-        self.model = model
-        self.request_budget = request_budget
-        self.request_policy = request_policy or RequestPolicy()
-        self.cache_store = cache_store
-        self.requests_made = 0
-        self.last_response: dict[str, Any] | None = None
-        self.last_error: str | None = None
-        self.last_request_trace: dict[str, Any] | None = None
-
-    def search(self, query: str, *, max_results: int = 25) -> list[dict[str, Any]]:
-        if self.request_budget is not None and self.requests_made >= self.request_budget:
-            self.last_error = "Google search request budget exhausted."
-            return []
-
-        self.requests_made += 1
-        self.last_error = None
-        prompt = self._prompt(query)
-        key = {"query": query, "model": self.model, "max_results": max_results}
-        if self.cache_store is not None:
-            cached = self.cache_store.get_cached_response("gemini_google_search", "search", key, ttl_seconds=self.request_policy.cache_ttl_seconds, force_refresh=self.request_policy.force_refresh)
-            if cached is not None:
-                self.last_response = cached
-                self.last_request_trace = {"status": "cache_hit", "attempts": 0, "errors": [], "elapsed_seconds": 0}
-                return self._hits(cached)[:max_results]
-        try:
-            response, self.last_request_trace = request_with_retry(
-                lambda: self.llm.generate_response_with_metadata(prompt, model=self.model, tools=[self.GOOGLE_SEARCH_TOOL]),
-                self.request_policy,
-            )
-        except Exception as exc:
-            self.last_response = None
-            self.last_error = str(exc)
-            return []
-
-        self.last_response = response
-        if self.cache_store is not None:
-            cacheable = {key: response.get(key) for key in ("text", "citations", "tool_calls", "provider")}
-            self.cache_store.set_cached_response("gemini_google_search", "search", key, cacheable)
-        return self._hits(response)[:max_results]
-
-    def _prompt(self, query: str) -> str:
-        return (
-            "Search the web for ontology evidence related to this query:\n"
-            f"{query}\n\n"
-            "Return concise evidence for ontology term candidates, including "
-            "term labels, IDs, IRIs, and ontology framework names when found."
-        )
-
-    def _hits(self, response: dict[str, Any]) -> list[dict[str, Any]]:
-        text = str(response.get("text", ""))
-        provider = str(response.get("provider", "gemini_enterprise"))
-        hits = []
-        for citation in response.get("citations", []):
-            if not isinstance(citation, dict):
-                continue
-            link = citation.get("url")
-            if not link:
-                continue
-            hits.append(
-                {
-                    "title": citation.get("title") or link,
-                    "link": link,
-                    "snippet": text,
-                    "source": "gemini_google_search",
-                    "provider": provider,
-                }
-            )
-        return hits
-
-
-class WebsearchStrategyHandler:
-    strategy = "websearch"
+class OlsStrategyHandler:
+    strategy = "ols"
     max_results = 25
     judge_candidate_limit = 10
 
@@ -211,13 +117,9 @@ class WebsearchStrategyHandler:
         self,
         *,
         ols_client: OlsClient | None = None,
-        search_client: Any | None = None,
         search_judge: Any | None = None,
     ) -> None:
         self.ols_client = OlsClient() if ols_client is None else ols_client
-        self.search_client = (
-            NullSearchClient() if search_client is None else search_client
-        )
         self.search_judge = search_judge
 
     def handle(
@@ -233,9 +135,8 @@ class WebsearchStrategyHandler:
         if not label:
             return self._not_harmonized(
                 target,
-                reason="No harmonized label is available for websearch.",
+                reason="No harmonized label is available for OLS search.",
                 ols_hits=[],
-                web_hits=[],
             )
 
         restricted_hits: list[dict[str, Any]] = []
@@ -254,7 +155,6 @@ class WebsearchStrategyHandler:
                     ontostore=ontostore,
                     hit=restricted_hits[0],
                     hits=restricted_hits,
-                    web_hits=[],
                     reason="Restricted OLS search returned a usable ontology hit.",
                 )
             try:
@@ -264,7 +164,6 @@ class WebsearchStrategyHandler:
                     stage="restricted",
                     restricted_hits=restricted_hits[: self.judge_candidate_limit],
                     unrestricted_hits=[],
-                    web_hits=[],
                     **({} if metadata_context is None else {"metadata_context": metadata_context}),
                 )
             except Exception as exc:  # noqa: BLE001 - preserve judge failure trace.
@@ -272,7 +171,6 @@ class WebsearchStrategyHandler:
                     target,
                     reason="Search LLM judge failed.",
                     ols_hits=restricted_hits,
-                    web_hits=[],
                     search_llm_judgements=judgements,
                     search_llm_judge_error=str(exc),
                 )
@@ -285,7 +183,6 @@ class WebsearchStrategyHandler:
                     ontostore=ontostore,
                     hit=hit,
                     hits=restricted_hits,
-                    web_hits=[],
                     reason=str(judgement["reason"]),
                     confidence=str(judgement["confidence"]),
                     search_llm_judgements=judgements,
@@ -296,36 +193,26 @@ class WebsearchStrategyHandler:
             ontology_id=None,
             rows=self.max_results,
         )
-        unrestricted_hits = self._hits_from_docs(unrestricted_docs)
-        web_hits = self.search_client.search(
-            self._web_query(target),
-            max_results=self.max_results,
-        )[: self.max_results]
-        web_resolved_hits = self._resolve_web_candidates(web_hits)
-        web_search_error = getattr(self.search_client, "last_error", None)
-        expanded_hits = self._unique_hits([*unrestricted_hits, *web_resolved_hits])
-        if expanded_hits:
-            all_hits = [*restricted_hits, *expanded_hits]
+        unrestricted_hits = self._unique_hits(self._hits_from_docs(unrestricted_docs))
+        if unrestricted_hits:
+            all_hits = [*restricted_hits, *unrestricted_hits]
             if self.search_judge is None:
                 return self._accept_hit(
                     target,
                     ontostore=ontostore,
-                    hit=expanded_hits[0],
-                    hits=expanded_hits,
-                    web_hits=web_hits,
+                    hit=unrestricted_hits[0],
+                    hits=unrestricted_hits,
                     reason="Unrestricted OLS search returned a usable ontology hit.",
-                    web_search_error=web_search_error,
                 )
             try:
                 judgement = self._judge_search_hits(
                     target=target,
                     publication_context=publication_context,
-                    stage="expanded",
+                    stage="unrestricted",
                     restricted_hits=[],
-                    unrestricted_hits=expanded_hits[
+                    unrestricted_hits=unrestricted_hits[
                         : self.judge_candidate_limit
                     ],
-                    web_hits=web_hits,
                     **({} if metadata_context is None else {"metadata_context": metadata_context}),
                 )
             except Exception as exc:  # noqa: BLE001 - preserve judge failure trace.
@@ -333,32 +220,26 @@ class WebsearchStrategyHandler:
                     target,
                     reason="Search LLM judge failed.",
                     ols_hits=all_hits,
-                    web_hits=web_hits,
-                    web_search_error=web_search_error,
                     search_llm_judgements=judgements,
                     search_llm_judge_error=str(exc),
                 )
-            judgements.append({"stage": "expanded", **judgement})
+            judgements.append({"stage": "unrestricted", **judgement})
             target["search_llm_judgements"] = judgements
             if str(judgement["decision"]).lower() != "false":
-                hit = self._selected_hit(expanded_hits, judgement["decision"])
+                hit = self._selected_hit(unrestricted_hits, judgement["decision"])
                 return self._accept_hit(
                     target,
                     ontostore=ontostore,
                     hit=hit,
                     hits=all_hits,
-                    web_hits=web_hits,
                     reason=str(judgement["reason"]),
                     confidence=str(judgement["confidence"]),
-                    web_search_error=web_search_error,
                     search_llm_judgements=judgements,
                 )
             return self._not_harmonized(
                 target,
                 reason=str(judgement["reason"]),
                 ols_hits=all_hits,
-                web_hits=web_hits,
-                web_search_error=web_search_error,
                 search_llm_judgements=judgements,
             )
 
@@ -366,28 +247,8 @@ class WebsearchStrategyHandler:
             target,
             reason="No usable OLS ontology hit was found.",
             ols_hits=restricted_hits,
-            web_hits=web_hits,
-            web_search_error=web_search_error,
             search_llm_judgements=judgements,
         )
-
-    def _resolve_web_candidates(self, web_hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        identifiers: set[str] = set()
-        pattern = re.compile(r"(?:https?://purl\.obolibrary\.org/obo/[A-Za-z][A-Za-z0-9]+_[0-9]+|\b[A-Za-z][A-Za-z0-9_]+[:_][0-9]{2,}\b)")
-        for hit in web_hits:
-            evidence = " ".join(str(hit.get(key, "")) for key in ("title", "snippet", "link"))
-            identifiers.update(pattern.findall(evidence))
-
-        resolved: list[dict[str, Any]] = []
-        for identifier in sorted(identifiers):
-            docs = self.ols_client.search(identifier, rows=10)
-            for hit in self._hits_from_docs(docs):
-                values = {str(hit.get(key, "")).lower() for key in ("id", "accession", "iri")}
-                normalized = identifier.lower()
-                iri_tail = normalized.rsplit("/", 1)[-1].replace("_", ":", 1)
-                if normalized in values or iri_tail in values:
-                    resolved.append(hit)
-        return self._unique_hits(resolved)
 
     @staticmethod
     def _unique_hits(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -404,10 +265,8 @@ class WebsearchStrategyHandler:
         ontostore: OntoStore,
         hit: dict[str, Any],
         hits: list[dict[str, Any]],
-        web_hits: list[dict[str, Any]],
         reason: str,
         confidence: str = "medium",
-        web_search_error: str | None = None,
         search_llm_judgements: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         ontology_id = hit["ontology_id"]
@@ -417,11 +276,9 @@ class WebsearchStrategyHandler:
                 target,
                 reason=(
                     "Could not resolve complete ontology framework metadata "
-                    "for websearch."
+                    "for OLS search."
                 ),
                 ols_hits=hits,
-                web_hits=web_hits,
-                web_search_error=web_search_error,
                 search_llm_judgements=search_llm_judgements,
             )
 
@@ -440,11 +297,8 @@ class WebsearchStrategyHandler:
             "confidence": confidence,
             "reason": reason,
             "ols_hits": hits,
-            "web_hits": web_hits,
             "ontology_framework_config": framework_config,
         }
-        if web_search_error:
-            result["web_search_error"] = web_search_error
         if search_llm_judgements:
             result["search_llm_judgements"] = search_llm_judgements
         target["ontology_id"] = ontology_id
@@ -460,8 +314,6 @@ class WebsearchStrategyHandler:
         *,
         reason: str,
         ols_hits: list[dict[str, Any]],
-        web_hits: list[dict[str, Any]],
-        web_search_error: str | None = None,
         search_llm_judgements: list[dict[str, Any]] | None = None,
         search_llm_judge_error: str | None = None,
     ) -> dict[str, Any]:
@@ -472,10 +324,7 @@ class WebsearchStrategyHandler:
             "confidence": "none",
             "reason": reason,
             "ols_hits": ols_hits,
-            "web_hits": web_hits,
         }
-        if web_search_error:
-            result["web_search_error"] = web_search_error
         if search_llm_judgements:
             result["search_llm_judgements"] = search_llm_judgements
             target["search_llm_judgements"] = search_llm_judgements
@@ -496,7 +345,6 @@ class WebsearchStrategyHandler:
         stage: str,
         restricted_hits: list[dict[str, Any]],
         unrestricted_hits: list[dict[str, Any]],
-        web_hits: list[dict[str, Any]],
     ) -> dict[str, Any]:
         judgement = self.search_judge(
             target=target,
@@ -504,7 +352,6 @@ class WebsearchStrategyHandler:
             stage=stage,
             restricted_hits=restricted_hits,
             unrestricted_hits=unrestricted_hits,
-            web_hits=web_hits,
             **({} if metadata_context is None else {"metadata_context": metadata_context}),
         )
         if not isinstance(judgement, dict):
@@ -599,11 +446,6 @@ class WebsearchStrategyHandler:
             return date_match.group(0)
 
         return None
-
-    def _web_query(self, target: dict[str, Any]) -> str:
-        field = target.get("pre_hz_field", target.get("hz_field", "field"))
-        label = target.get("pre_hz_label", target.get("hz_label", "label"))
-        return f"{field}: {label} ontology"
 
     def _hit_decision(self, hit: dict[str, Any]) -> str:
         for field in ("id", "accession", "iri"):

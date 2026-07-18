@@ -26,10 +26,9 @@ from agentic_curator.curators.ontology_harmonizer.miniml_metadata_context import
 )
 from agentic_curator.curators.ontology_harmonizer.request_policy import RequestPolicy, request_with_retry
 from agentic_curator.curators.ontology_harmonizer.strategy_handlers import (
-    GeminiGroundedSearchClient,
     OlsClient,
+    OlsStrategyHandler,
     RagStrategyHandler,
-    WebsearchStrategyHandler,
 )
 from agentic_curator.wrappers import LLM
 
@@ -45,12 +44,12 @@ class OntologyHarmonizer:
     LLM_CANDIDATE_LIMIT = 10
     METADATA_CONTEXT_MAX_CHARS = 500
     STRATEGY_ALIASES = {
+        "ols": "ols",
         "rag": "rag",
-        "websearch": "websearch",
     }
     STRATEGY_HANDLERS = {
+        "ols": OlsStrategyHandler,
         "rag": RagStrategyHandler,
-        "websearch": WebsearchStrategyHandler,
     }
 
     def __init__(
@@ -70,7 +69,7 @@ class OntologyHarmonizer:
         metadata_context: str | None = None,
         harmonization_targets: dict[str, Any] | list[dict[str, Any]] | None = None,
         target: dict[str, Any] | None = None,
-        strategy: str = "websearch",
+        strategy: str = "ols",
         ontostore: OntoStore | None = None,
         target_paths: list[StartPathSpec] | None = None,
         lookup_llm_judge: bool = True,
@@ -160,7 +159,7 @@ class OntologyHarmonizer:
         miniml_json: dict[str, Any] | list[Any] | None = None,
         ontostore: OntoStore | None = None,
         target_paths: list[StartPathSpec] | None = None,
-        strategy: str = "websearch",
+        strategy: str = "ols",
         lookup_llm_judge: bool = True,
         lookup_llm_threshold: int = 2,
         search_llm_judge: bool = True,
@@ -647,7 +646,6 @@ class OntologyHarmonizer:
         stage: str,
         restricted_hits: list[dict[str, Any]],
         unrestricted_hits: list[dict[str, Any]],
-        web_hits: list[dict[str, Any]],
     ) -> dict[str, Any]:
         prompt = self._judge_search_prompt(
             target=target,
@@ -656,7 +654,6 @@ class OntologyHarmonizer:
             stage=stage,
             restricted_hits=restricted_hits,
             unrestricted_hits=unrestricted_hits,
-            web_hits=web_hits,
         )
         response = self._generate_response(
             prompt,
@@ -793,11 +790,12 @@ class OntologyHarmonizer:
             )
 
         LOGGER.info("Running ontology harmonization strategy %s.", strategy)
-        if handler_class is WebsearchStrategyHandler and search_llm_judge:
+        if handler_class is OlsStrategyHandler:
             handler = handler_class(
                 ols_client=OlsClient(request_policy=self.request_policy, cache_store=ontostore),
-                search_client=GeminiGroundedSearchClient(llm=self._llm(), request_policy=self.request_policy, cache_store=ontostore),
-                search_judge=self.judge_search_results,
+                search_judge=(
+                    self.judge_search_results if search_llm_judge else None
+                ),
             )
         else:
             handler = handler_class()
@@ -1090,7 +1088,6 @@ class OntologyHarmonizer:
         stage: str,
         restricted_hits: list[dict[str, Any]],
         unrestricted_hits: list[dict[str, Any]],
-        web_hits: list[dict[str, Any]],
     ) -> str:
         initial_prompt = files(PROMPT_PACKAGE).joinpath(
             "prompts/judge_search.md"
@@ -1109,14 +1106,11 @@ class OntologyHarmonizer:
                 ("Restricted OLS Hits", self._candidate_prompt_context(restricted_hits))
             )
         else:
-            sections.extend(
-                [
-                    (
-                        "Unrestricted OLS Hits",
-                        self._candidate_prompt_context(unrestricted_hits),
-                    ),
-                    ("Grounded Web Evidence", self._web_prompt_context(web_hits)),
-                ]
+            sections.append(
+                (
+                    "Unrestricted OLS Hits",
+                    self._candidate_prompt_context(unrestricted_hits),
+                )
             )
         return self._structured_prompt(initial_prompt, *sections)
 
@@ -1167,27 +1161,6 @@ class OntologyHarmonizer:
             for hit in hits[: self.LLM_CANDIDATE_LIMIT]
             if isinstance(hit, dict)
         ]
-
-    def _web_prompt_context(self, hits: list[dict[str, Any]]) -> dict[str, Any]:
-        summaries = [
-            str(hit["snippet"])
-            for hit in hits
-            if isinstance(hit, dict) and hit.get("snippet")
-        ]
-        sources = [
-            {
-                "title": hit.get("title"),
-                "url": hit.get("link", hit.get("url")),
-            }
-            for hit in hits
-            if isinstance(hit, dict) and (hit.get("link") or hit.get("url"))
-        ]
-        context: dict[str, Any] = {}
-        if summaries:
-            context["summary"] = summaries[0]
-        if sources:
-            context["sources"] = sources
-        return context
 
     def _structured_prompt(
         self,
