@@ -197,6 +197,44 @@ def test_lookup_rag_many_embeds_query_once_and_searches_frameworks_in_order(
     assert result["errors"] == []
 
 
+def test_lookup_rag_many_isolates_one_framework_index_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    provider = FakeEmbeddingProvider()
+    first_path = tmp_path / "first.json"
+    second_path = tmp_path / "second.json"
+    _write_toy_ontology(first_path)
+    _write_toy_ontology(second_path)
+    store = OntoStore(
+        ontology_frameworks={
+            "first": {"json_path": first_path, "owl_path": tmp_path / "first.owl"},
+            "second": {
+                "json_path": second_path,
+                "owl_path": tmp_path / "second.owl",
+            },
+        },
+        storage_dir=tmp_path,
+        embedding_provider=provider,
+    )
+    build_rag_index = store.build_rag_index
+
+    def build_with_one_failure(ontology_id: str) -> Path:
+        if ontology_id == "second":
+            raise RuntimeError("broken ontology cache")
+        return build_rag_index(ontology_id)
+
+    monkeypatch.setattr(store, "build_rag_index", build_with_one_failure)
+
+    result = store.lookup_rag_many("breathing structure", ["first", "second"])
+
+    assert provider.query_calls == ["breathing structure"]
+    assert {hit["ontology_id"] for hit in result["hits"]} == {"first"}
+    assert result["errors"] == [
+        {"ontology_id": "second", "error": "broken ontology cache"}
+    ]
+
+
 def test_reused_rag_index_is_viewed_from_disk_instead_of_loaded(
     tmp_path: Path,
     monkeypatch,
