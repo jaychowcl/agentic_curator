@@ -484,6 +484,92 @@ def test_lookup_judge_contract_accepts_no_match() -> None:
     assert '"false"' in prompt
 
 
+def test_lookup_judge_prompt_receives_ordered_preferred_ontologies() -> None:
+    prompt = OntologyHarmonizer()._judge_lookup_prompt(
+        target={"pre_hz_field": "source", "pre_hz_label": "pulmonary sample"},
+        publication_context=None,
+        metadata_context=None,
+        hits=[
+            {"id": "CUSTOM:1", "title": "lung", "ontology_id": "custom"}
+        ],
+        preferred_ontology_ids=("custom", "uberon"),
+    )
+
+    assert "Preferred Ontologies" in prompt
+    assert prompt.index('"custom"') < prompt.index('"uberon"')
+
+
+def test_direct_lookup_reserves_two_candidates_per_preferred_ontology(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    ontology_ids = ["general", "preferred_a", "preferred_b"]
+    frameworks = {}
+    for ontology_id in ontology_ids:
+        owl_path = tmp_path / f"{ontology_id}.owl"
+        owl_path.write_text("cached", encoding="utf-8")
+        frameworks[ontology_id] = {"owl_path": owl_path}
+    store = OntoStore(
+        ontology_frameworks=frameworks,
+        preferred_ontology_ids=["preferred_a", "preferred_b"],
+        storage_dir=tmp_path,
+    )
+    hits_by_ontology = {
+        "general": [
+            {"id": f"GENERAL:{index}", "ontology_id": "general"}
+            for index in range(10)
+        ],
+        "preferred_a": [
+            {"id": f"A:{index}", "ontology_id": "preferred_a"}
+            for index in range(3)
+        ],
+        "preferred_b": [
+            {"id": f"B:{index}", "ontology_id": "preferred_b"}
+            for index in range(3)
+        ],
+    }
+    monkeypatch.setattr(
+        store,
+        "lookup_with_metadata",
+        lambda label, ontology_id: {
+            "match_type": "exact",
+            "hits": hits_by_ontology[ontology_id],
+            "ranking": [],
+        },
+    )
+
+    class CapturingHarmonizer(OntologyHarmonizer):
+        def judge_lookup(self, *args, hits, **kwargs):
+            self.judged_hits = hits
+            self.preferred_ontology_ids = kwargs["preferred_ontology_ids"]
+            return {
+                "decision": hits[0]["id"],
+                "confidence": "high",
+                "reason": "Preferred suitable term.",
+            }
+
+    harmonizer = CapturingHarmonizer(ontostore=store)
+    harmonizer.lookup_label(
+        {"hz_label": "lung", "ontology_ids": ontology_ids},
+        publication_context=None,
+        ontostore=store,
+    )
+
+    assert [hit["id"] for hit in harmonizer.judged_hits] == [
+        "A:0",
+        "B:0",
+        "A:1",
+        "B:1",
+        "GENERAL:0",
+        "GENERAL:1",
+        "GENERAL:2",
+        "GENERAL:3",
+        "GENERAL:4",
+        "GENERAL:5",
+    ]
+    assert harmonizer.preferred_ontology_ids == ("preferred_a", "preferred_b")
+
+
 def test_lookup_judge_no_match_falls_through_without_skipping_target() -> None:
     class NoMatchHarmonizer(OntologyHarmonizer):
         def judge_lookup(self, *args, **kwargs):

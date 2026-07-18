@@ -293,6 +293,47 @@ def test_ontostore_initializes_with_default_frameworks(tmp_path: Path) -> None:
     assert store.sqlite_path == tmp_path / "sqlite" / "ontologies.sqlite3"
 
 
+def test_ontostore_configures_ordered_preferred_ontologies(tmp_path: Path) -> None:
+    store = OntoStore(
+        ontology_frameworks={
+            "custom": {"url": "https://example.org/custom.owl"},
+        },
+        preferred_ontology_ids=["custom", "efo", "custom"],
+        storage_dir=tmp_path,
+    )
+
+    assert store.preferred_ontology_ids == ("custom", "efo")
+
+    store.set_preferred_ontology_ids(["mondo", "custom"])
+
+    assert store.preferred_ontology_ids == ("mondo", "custom")
+
+
+@pytest.mark.parametrize(
+    "preferred_ontology_ids",
+    [["missing"], [""], ["  "]],
+)
+def test_ontostore_rejects_invalid_preferred_ontologies(
+    tmp_path: Path,
+    preferred_ontology_ids,
+) -> None:
+    with pytest.raises(ValueError, match="preferred ontology"):
+        OntoStore(
+            preferred_ontology_ids=preferred_ontology_ids,
+            storage_dir=tmp_path,
+        )
+
+
+def test_ontostore_rejects_removing_a_preferred_framework(tmp_path: Path) -> None:
+    store = OntoStore(
+        preferred_ontology_ids=["efo"],
+        storage_dir=tmp_path,
+    )
+
+    with pytest.raises(ValueError, match="preferred ontology"):
+        store.configure_framework("efo", remove=True)
+
+
 def test_ontostore_accepts_custom_sqlite_path(tmp_path: Path) -> None:
     sqlite_path = tmp_path / "indexes" / "custom.db"
 

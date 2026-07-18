@@ -150,26 +150,28 @@ def test_lookup_judge_false_terminally_skips_search_and_field(
 
 
 @pytest.mark.parametrize(
-    ("target", "search_results", "expected_stage"),
+    "target",
     [
-        (
-            {"hz_label": "sample one", "ontology_id": "test"},
-            [[{"iri": "https://example.org/1", "ontology_name": "test", "short_form": "TEST_1", "label": "sample one"}]],
-            "restricted",
-        ),
-        (
-            {"hz_label": "sample one"},
-            [[{"iri": "https://example.org/1", "ontology_name": "test", "short_form": "TEST_1", "label": "sample one"}]],
-            "unrestricted",
-        ),
+        {"hz_label": "sample one", "ontology_id": "test"},
+        {"hz_label": "sample one"},
     ],
 )
 def test_ols_judge_false_is_terminal_skip(
     target,
-    search_results,
-    expected_stage,
 ) -> None:
-    client = FakeOlsClient(search_results=search_results, ontology_metadata={})
+    client = FakeOlsClient(
+        search_results=[
+            [
+                {
+                    "iri": "https://example.org/1",
+                    "ontology_name": "test",
+                    "short_form": "TEST_1",
+                    "label": "sample one",
+                }
+            ]
+        ],
+        ontology_metadata={},
+    )
 
     result = OlsStrategyHandler(
         ols_client=client,
@@ -182,8 +184,67 @@ def test_ols_judge_false_is_terminal_skip(
 
     assert result["status"] == "skipped"
     assert result["decision"] == "false"
-    assert result["search_llm_judgements"][-1]["stage"] == expected_stage
-    assert len(client.search_calls) == 1
+    assert result["search_llm_judgements"][-1]["stage"] == "unrestricted"
+    assert client.search_calls == [
+        {"label": "sample one", "ontology_id": None, "rows": 25}
+    ]
+
+
+def test_ols_judge_reserves_preferred_candidates_within_fixed_limit() -> None:
+    terms = [
+        {
+            "iri": f"https://example.org/general/{index}",
+            "ontology_name": "general",
+            "short_form": f"GENERAL_{index}",
+            "label": f"general {index}",
+        }
+        for index in range(10)
+    ] + [
+        {
+            "iri": f"https://example.org/preferred/{index}",
+            "ontology_name": "preferred",
+            "short_form": f"PREFERRED_{index}",
+            "label": f"preferred {index}",
+        }
+        for index in range(3)
+    ]
+    client = FakeOlsClient(search_results=[terms], ontology_metadata={})
+    calls = []
+    store = OntoStore(
+        ontology_frameworks={
+            "preferred": {"url": "https://example.org/preferred.owl"},
+        },
+        preferred_ontology_ids=["preferred"],
+    )
+
+    result = OlsStrategyHandler(
+        ols_client=client,
+        search_judge=lambda **kwargs: calls.append(kwargs)
+        or {
+            "decision": "false",
+            "confidence": "none",
+            "reason": "test",
+        },
+    ).handle(
+        {"hz_label": "sample one"},
+        publication_context=None,
+        ontostore=store,
+    )
+
+    assert result["status"] == "skipped"
+    assert [hit["id"] for hit in calls[0]["unrestricted_hits"]] == [
+        "PREFERRED_0",
+        "PREFERRED_1",
+        "GENERAL_0",
+        "GENERAL_1",
+        "GENERAL_2",
+        "GENERAL_3",
+        "GENERAL_4",
+        "GENERAL_5",
+        "GENERAL_6",
+        "GENERAL_7",
+    ]
+    assert calls[0]["preferred_ontology_ids"] == ("preferred",)
 
 
 def test_apply_targets_ignores_terminally_skipped_target() -> None:
