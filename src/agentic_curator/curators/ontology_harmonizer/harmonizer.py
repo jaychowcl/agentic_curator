@@ -45,6 +45,9 @@ class OntologyHarmonizer:
     LLM_CANDIDATE_LIMIT = 10
     RAG_CANDIDATES_PER_ONTOLOGY = 2
     RAG_SIMILARITY_THRESHOLD = 0.5
+    RAG_PARENT_DEPTH = 2
+    RAG_CHILD_DEPTH = 1
+    RAG_HIERARCHY_THRESHOLD_OFFSET = 0.1
     METADATA_CONTEXT_MAX_CHARS = 500
     WORKFLOW = "local_rag_ols"
 
@@ -54,12 +57,30 @@ class OntologyHarmonizer:
         llm: Any | None = None,
         request_policy: RequestPolicy | None = None,
         rag_similarity_threshold: float = RAG_SIMILARITY_THRESHOLD,
+        rag_hierarchy: bool = False,
+        rag_parent_depth: int = RAG_PARENT_DEPTH,
+        rag_child_depth: int = RAG_CHILD_DEPTH,
+        rag_hierarchy_threshold_offset: float = RAG_HIERARCHY_THRESHOLD_OFFSET,
     ) -> None:
         self.request_policy = request_policy or getattr(ontostore, "request_policy", None) or RequestPolicy()
         self.ontostore = OntoStore(request_policy=self.request_policy) if ontostore is None else ontostore
         self.llm = llm
         self.rag_similarity_threshold = self._validate_rag_similarity_threshold(
             rag_similarity_threshold
+        )
+        if not isinstance(rag_hierarchy, bool):
+            raise ValueError("rag_hierarchy must be a boolean.")
+        self.rag_hierarchy = rag_hierarchy
+        self.rag_parent_depth = self._validate_rag_depth(
+            rag_parent_depth, "rag_parent_depth"
+        )
+        self.rag_child_depth = self._validate_rag_depth(
+            rag_child_depth, "rag_child_depth"
+        )
+        self.rag_hierarchy_threshold_offset = (
+            self._validate_rag_hierarchy_threshold_offset(
+                rag_hierarchy_threshold_offset
+            )
         )
         self.target_extractor = HarmonizationTargetExtractor()
 
@@ -636,13 +657,26 @@ class OntologyHarmonizer:
         if label is None:
             return False
         hits: list[dict[str, Any]] = []
+        hierarchy_hits: list[dict[str, Any]] = []
         errors: list[dict[str, str]] = []
         frameworks = self._candidate_ontology_ids(target, ontostore)
         try:
+            hierarchy_options = (
+                {
+                    "parent_depth": self.rag_parent_depth,
+                    "child_depth": self.rag_child_depth,
+                }
+                if self.rag_hierarchy
+                else {}
+            )
             rag_result = ontostore.lookup_rag_many(
-                str(label), frameworks, top_k=self.LLM_CANDIDATE_LIMIT
+                str(label),
+                frameworks,
+                top_k=self.LLM_CANDIDATE_LIMIT,
+                **hierarchy_options,
             )
             hits.extend(rag_result["hits"])
+            hierarchy_hits.extend(rag_result.get("hierarchy_hits", []))
             errors.extend(rag_result["errors"])
         except Exception as exc:  # Query embedding failures affect every framework.
             errors.extend(
@@ -661,11 +695,37 @@ class OntologyHarmonizer:
             ontology_ids=frameworks,
             thresholds=thresholds,
         )
+        selected_hierarchy_hits: list[dict[str, Any]] = []
+        if self.rag_hierarchy:
+            selected_hierarchy_hits = self._select_hierarchy_hits(
+                seed_hits=hits,
+                hierarchy_hits=hierarchy_hits,
+                ontology_ids=frameworks,
+                thresholds=thresholds,
+            )
+            for hit in hits:
+                hit["rag_relation"] = "seed"
+                hit["rag_depth"] = 0
+                hit["rag_seed_id"] = self._rag_hit_identity(hit)
+            hits.extend(selected_hierarchy_hits)
         target["ontology_rag"] = {
             "status": "candidates" if hits else "error" if errors else "missed",
             "frameworks": frameworks,
             "hits": hits,
             **({"similarity_thresholds": thresholds} if thresholds else {}),
+            **(
+                {
+                    "hierarchy": {
+                        "enabled": True,
+                        "parent_depth": self.rag_parent_depth,
+                        "child_depth": self.rag_child_depth,
+                        "threshold_offset": self.rag_hierarchy_threshold_offset,
+                        "hits": selected_hierarchy_hits,
+                    }
+                }
+                if self.rag_hierarchy
+                else {}
+            ),
             **({"errors": errors} if errors else {}),
         }
         if not hits or not lookup_llm_judge:
@@ -765,6 +825,94 @@ class OntologyHarmonizer:
             )
         )
         return [hit for _position, hit in selected]
+
+    def _select_hierarchy_hits(
+        self,
+        *,
+        seed_hits: list[dict[str, Any]],
+        hierarchy_hits: list[dict[str, Any]],
+        ontology_ids: list[str],
+        thresholds: dict[str, float],
+    ) -> list[dict[str, Any]]:
+        anchor_ids: dict[str, set[str]] = {ontology_id: set() for ontology_id in ontology_ids}
+        direct_identities: dict[str, set[str]] = {
+            ontology_id: set() for ontology_id in ontology_ids
+        }
+        for hit in seed_hits:
+            ontology_id = str(hit.get("ontology_id") or "")
+            if ontology_id not in direct_identities:
+                continue
+            identity = self._rag_hit_identity(hit)
+            direct_identities[ontology_id].add(identity)
+            if len(anchor_ids[ontology_id]) < self.RAG_CANDIDATES_PER_ONTOLOGY:
+                anchor_ids[ontology_id].add(identity)
+
+        grouped: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
+        for hit in hierarchy_hits:
+            if not isinstance(hit, dict):
+                continue
+            ontology_id = str(hit.get("ontology_id") or "")
+            relation = str(hit.get("rag_relation") or "")
+            depth = hit.get("rag_depth")
+            seed_id = str(hit.get("rag_seed_id") or "")
+            if ontology_id not in anchor_ids or seed_id not in anchor_ids[ontology_id]:
+                continue
+            if relation not in {"parent", "child"} or not isinstance(depth, int):
+                continue
+            if relation == "parent" and not 1 <= depth <= self.rag_parent_depth:
+                continue
+            if relation == "child" and not 1 <= depth <= self.rag_child_depth:
+                continue
+            try:
+                score = float(hit["rag_score"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            hierarchy_threshold = max(
+                -1.0,
+                thresholds[ontology_id] - self.rag_hierarchy_threshold_offset,
+            )
+            if not math.isfinite(score) or score < hierarchy_threshold:
+                continue
+            if self._rag_hit_identity(hit) in direct_identities[ontology_id]:
+                continue
+            grouped.setdefault((ontology_id, relation, depth), []).append(hit)
+
+        selected: list[dict[str, Any]] = []
+        selected_identities = {
+            ontology_id: set(identities)
+            for ontology_id, identities in direct_identities.items()
+        }
+        buckets = [
+            *(('parent', depth) for depth in range(1, self.rag_parent_depth + 1)),
+            *(('child', depth) for depth in range(1, self.rag_child_depth + 1)),
+        ]
+        for ontology_id in ontology_ids:
+            for relation, depth in buckets:
+                candidates = sorted(
+                    grouped.get((ontology_id, relation, depth), []),
+                    key=lambda hit: (
+                        -float(hit["rag_score"]),
+                        self._rag_hit_identity(hit),
+                    ),
+                )
+                for hit in candidates:
+                    identity = self._rag_hit_identity(hit)
+                    if identity in selected_identities[ontology_id]:
+                        continue
+                    selected.append(hit)
+                    selected_identities[ontology_id].add(identity)
+                    break
+        return selected
+
+    @staticmethod
+    def _rag_hit_identity(hit: dict[str, Any]) -> str:
+        return str(
+            hit.get("id")
+            or hit.get("accession")
+            or hit.get("iri")
+            or hit.get("title")
+            or ""
+        )
 
     def judge_lookup(
         self,
@@ -1045,6 +1193,26 @@ class OntologyHarmonizer:
         ):
             raise ValueError(
                 "rag_similarity_threshold must be a finite number from -1 to 1."
+            )
+        return float(value)
+
+    @staticmethod
+    def _validate_rag_depth(value: Any, name: str) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{name} must be a non-negative integer.")
+        return value
+
+    @staticmethod
+    def _validate_rag_hierarchy_threshold_offset(value: Any) -> float:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, Real)
+            or not math.isfinite(float(value))
+            or not 0.0 <= float(value) <= 2.0
+        ):
+            raise ValueError(
+                "rag_hierarchy_threshold_offset must be a finite number "
+                "from 0 to 2."
             )
         return float(value)
 
@@ -1365,7 +1533,18 @@ class OntologyHarmonizer:
         *,
         limit: int | None = None,
     ) -> list[dict[str, Any]]:
-        allowed = ("id", "accession", "iri", "title", "description", "ontology_id")
+        allowed = (
+            "id",
+            "accession",
+            "iri",
+            "title",
+            "description",
+            "ontology_id",
+            "rag_score",
+            "rag_relation",
+            "rag_depth",
+            "rag_seed_id",
+        )
         effective_limit = self.LLM_CANDIDATE_LIMIT if limit is None else limit
         return [
             {key: hit[key] for key in allowed if key in hit}

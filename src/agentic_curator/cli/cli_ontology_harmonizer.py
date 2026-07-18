@@ -25,6 +25,9 @@ from agentic_curator.curators.ontology_harmonizer import OntoStore, RequestPolic
 
 
 LOGGER = logging.getLogger(__name__)
+DEFAULT_RAG_PARENT_DEPTH = 2
+DEFAULT_RAG_CHILD_DEPTH = 1
+DEFAULT_RAG_HIERARCHY_THRESHOLD_OFFSET = 0.1
 
 
 def _add_publication_context(parser: argparse.ArgumentParser) -> None:
@@ -68,6 +71,18 @@ def _add_harmonize_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--request-backoff", type=float, default=1)
     parser.add_argument("--cache-ttl-seconds", type=int, default=7 * 24 * 60 * 60)
     parser.add_argument("--force-refresh", action="store_true")
+    parser.add_argument(
+        "--rag-hierarchy",
+        action="store_true",
+        help="Expand semantic candidates with cached ontology parents and children.",
+    )
+    parser.add_argument("--rag-parent-depth", type=int, default=None)
+    parser.add_argument("--rag-child-depth", type=int, default=None)
+    parser.add_argument(
+        "--rag-hierarchy-threshold-offset",
+        type=float,
+        default=None,
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -168,8 +183,33 @@ def _metadata_context(args: argparse.Namespace) -> str | None:
 
 def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Any:
     LOGGER.info("Running ontology harmonizer method %s.", args.command)
+    hierarchy_tuning = (
+        args.rag_parent_depth,
+        args.rag_child_depth,
+        args.rag_hierarchy_threshold_offset,
+    )
+    if not args.rag_hierarchy and any(value is not None for value in hierarchy_tuning):
+        parser.error("--rag-hierarchy is required when hierarchy tuning options are used.")
     ontostore = _store_from_args(args, parser)
-    harmonizer = OntologyHarmonizer(ontostore=ontostore)
+    harmonizer = OntologyHarmonizer(
+        ontostore=ontostore,
+        rag_hierarchy=args.rag_hierarchy,
+        rag_parent_depth=(
+            DEFAULT_RAG_PARENT_DEPTH
+            if args.rag_parent_depth is None
+            else args.rag_parent_depth
+        ),
+        rag_child_depth=(
+            DEFAULT_RAG_CHILD_DEPTH
+            if args.rag_child_depth is None
+            else args.rag_child_depth
+        ),
+        rag_hierarchy_threshold_offset=(
+            DEFAULT_RAG_HIERARCHY_THRESHOLD_OFFSET
+            if args.rag_hierarchy_threshold_offset is None
+            else args.rag_hierarchy_threshold_offset
+        ),
+    )
 
     if args.command == "harmonize":
         return harmonizer.harmonize(

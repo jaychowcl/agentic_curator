@@ -119,7 +119,7 @@ class OntoStore:
         },
     }
     DEFAULT_STORAGE_DIR = Path(__file__).resolve().parent / "ontology_frameworks"
-    SQLITE_SCHEMA_VERSION = "4"
+    SQLITE_SCHEMA_VERSION = "5"
     RAG_CHUNK_SCHEMA_VERSION = "1"
     RAG_BATCH_SIZE = 250
     LOOKUP_INDEXES = ("label", "id", "accession", "iri")
@@ -368,10 +368,15 @@ class OntoStore:
         label: str,
         ontology_ids: Iterable[str],
         top_k: int = 10,
+        parent_depth: int = 0,
+        child_depth: int = 0,
     ) -> dict[str, Any]:
         """Search cached ontology indexes sequentially with one query embedding."""
         if top_k < 1:
             raise ValueError("top_k must be positive.")
+        self._validate_hierarchy_depth(parent_depth, "parent_depth")
+        self._validate_hierarchy_depth(child_depth, "child_depth")
+        hierarchy_enabled = parent_depth > 0 or child_depth > 0
 
         prepared: list[tuple[str, Path]] = []
         errors: list[dict[str, str]] = []
@@ -380,28 +385,51 @@ class OntoStore:
             try:
                 if self._cached_framework_path(ontology_id) is None:
                     continue
-                prepared.append((ontology_id, self.build_rag_index(ontology_id)))
+                index_path = self.build_rag_index(ontology_id)
+                if hierarchy_enabled:
+                    self._ensure_hierarchy_index(ontology_id)
+                prepared.append((ontology_id, index_path))
             except Exception as exc:  # noqa: BLE001 - isolate framework failures.
                 errors.append({"ontology_id": ontology_id, "error": str(exc)})
 
         if not prepared:
-            return {"hits": [], "errors": errors}
+            result: dict[str, Any] = {"hits": [], "errors": errors}
+            if hierarchy_enabled:
+                result["hierarchy_hits"] = []
+            return result
 
         query = self._embedding_provider().embed_query(str(label))
         hits: list[dict[str, Any]] = []
+        hierarchy_hits: list[dict[str, Any]] = []
         for ontology_id, index_path in prepared:
             try:
-                hits.extend(
-                    self._search_rag_index(
-                        query=query,
-                        ontology_id=ontology_id,
-                        index_path=index_path,
-                        top_k=top_k,
-                    )
+                ontology_hits = self._search_rag_index(
+                    query=query,
+                    ontology_id=ontology_id,
+                    index_path=index_path,
+                    top_k=top_k,
+                    include_term_keys=hierarchy_enabled,
                 )
+                if hierarchy_enabled:
+                    hierarchy_hits.extend(
+                        self._hierarchy_rag_candidates(
+                            query=query,
+                            ontology_id=ontology_id,
+                            index_path=index_path,
+                            seed_hits=ontology_hits,
+                            parent_depth=parent_depth,
+                            child_depth=child_depth,
+                        )
+                    )
+                    for hit in ontology_hits:
+                        hit.pop("_rag_term_key", None)
+                hits.extend(ontology_hits)
             except Exception as exc:  # noqa: BLE001 - isolate framework failures.
                 errors.append({"ontology_id": ontology_id, "error": str(exc)})
-        return {"hits": hits, "errors": errors}
+        result: dict[str, Any] = {"hits": hits, "errors": errors}
+        if hierarchy_enabled:
+            result["hierarchy_hits"] = hierarchy_hits
+        return result
 
     def _search_rag_index(
         self,
@@ -410,6 +438,7 @@ class OntoStore:
         ontology_id: str,
         index_path: Path,
         top_k: int,
+        include_term_keys: bool = False,
     ) -> list[dict[str, Any]]:
         """Memory-map and search one prepared semantic index."""
         import numpy as np
@@ -433,7 +462,7 @@ class OntoStore:
         with self._sqlite_connection() as connection:
             rows = connection.execute(
                 f"""
-                SELECT rag_term_map.vector_id, terms.payload
+                SELECT rag_term_map.vector_id, rag_term_map.term_key, terms.payload
                 FROM rag_term_map
                 JOIN terms
                   ON terms.ontology_id = rag_term_map.ontology_id
@@ -443,20 +472,324 @@ class OntoStore:
                 """,
                 (ontology_id, *vector_ids),
             ).fetchall()
-        payload_by_id = {int(row[0]): json.loads(row[1]) for row in rows}
+        payload_by_id = {
+            int(row[0]): (str(row[1]), json.loads(row[2])) for row in rows
+        }
         hits = []
         for vector_id, distance in zip(vector_ids, distances):
-            payload = payload_by_id.get(vector_id)
-            if payload is None:
+            resolved = payload_by_id.get(vector_id)
+            if resolved is None:
                 continue
+            term_key, payload = resolved
             hits.append(
                 {
                     **payload,
                     "ontology_id": ontology_id,
                     "rag_score": float(1.0 - distance),
+                    **({"_rag_term_key": term_key} if include_term_keys else {}),
                 }
             )
         return hits
+
+    @staticmethod
+    def _validate_hierarchy_depth(value: Any, name: str) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{name} must be a non-negative integer.")
+        return value
+
+    def _ensure_hierarchy_index(self, ontology_id: str) -> None:
+        """Lazily resolve named parent references into local term edges."""
+        self.index_framework(ontology_id)
+        with self._sqlite_connection() as connection:
+            if connection.execute(
+                "SELECT 1 FROM hierarchy_frameworks WHERE ontology_id = ?",
+                (ontology_id,),
+            ).fetchone():
+                return
+
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                if connection.execute(
+                    "SELECT 1 FROM hierarchy_frameworks WHERE ontology_id = ?",
+                    (ontology_id,),
+                ).fetchone():
+                    connection.commit()
+                    return
+                connection.execute(
+                    "DELETE FROM term_hierarchy WHERE ontology_id = ?",
+                    (ontology_id,),
+                )
+                connection.execute(
+                    """
+                    CREATE TEMP TABLE IF NOT EXISTS hierarchy_parent_refs (
+                        child_term_key TEXT NOT NULL,
+                        lookup_key TEXT NOT NULL,
+                        PRIMARY KEY (child_term_key, lookup_key)
+                    ) WITHOUT ROWID
+                    """
+                )
+                connection.execute("DELETE FROM hierarchy_parent_refs")
+                reference_rows: list[tuple[str, str]] = []
+                cursor = connection.execute(
+                    "SELECT term_key, payload FROM terms WHERE ontology_id = ?",
+                    (ontology_id,),
+                )
+                for term_key, payload in cursor:
+                    term = json.loads(payload)
+                    references: list[Any] = []
+                    for field in ("parents", "parent_iris"):
+                        values = term.get(field, [])
+                        if isinstance(values, list):
+                            references.extend(values)
+                        elif values:
+                            references.append(values)
+                    for reference in references:
+                        reference_rows.append(
+                            (str(term_key), self.harmonize_key(reference))
+                        )
+                    if len(reference_rows) >= 5_000:
+                        connection.executemany(
+                            "INSERT OR IGNORE INTO hierarchy_parent_refs VALUES (?, ?)",
+                            reference_rows,
+                        )
+                        reference_rows.clear()
+                if reference_rows:
+                    connection.executemany(
+                        "INSERT OR IGNORE INTO hierarchy_parent_refs VALUES (?, ?)",
+                        reference_rows,
+                    )
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO term_hierarchy(
+                        ontology_id, child_term_key, parent_term_key
+                    )
+                    SELECT ?, refs.child_term_key, entries.term_key
+                    FROM hierarchy_parent_refs AS refs
+                    JOIN lookup_entries AS entries
+                      ON entries.ontology_id = ?
+                     AND entries.lookup_key = refs.lookup_key
+                     AND entries.index_name IN ('id', 'accession', 'iri')
+                    WHERE refs.child_term_key != entries.term_key
+                    """,
+                    (ontology_id, ontology_id),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO hierarchy_frameworks(ontology_id, built_at)
+                    VALUES (?, CURRENT_TIMESTAMP)
+                    """,
+                    (ontology_id,),
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+
+    def _hierarchy_rag_candidates(
+        self,
+        *,
+        query: list[float],
+        ontology_id: str,
+        index_path: Path,
+        seed_hits: list[dict[str, Any]],
+        parent_depth: int,
+        child_depth: int,
+    ) -> list[dict[str, Any]]:
+        """Return one vector-ranked relative per seed, relation, and depth."""
+        import numpy as np
+        from usearch.index import Index
+
+        index = Index(
+            ndim=int(self._embedding_provider().dimensions),
+            metric="cos",
+            dtype="f32",
+        )
+        index.view(index_path)
+        query_vector = np.asarray(query, dtype=np.float32)
+        query_norm = float(np.linalg.norm(query_vector))
+        if query_norm == 0:
+            return []
+
+        seed_term_keys = {
+            str(hit["_rag_term_key"])
+            for hit in seed_hits
+            if hit.get("_rag_term_key") is not None
+        }
+        candidates: list[dict[str, Any]] = []
+        for seed in seed_hits[:2]:
+            seed_term_key = seed.get("_rag_term_key")
+            if seed_term_key is None:
+                continue
+            seed_id = str(
+                seed.get("id")
+                or seed.get("accession")
+                or seed.get("iri")
+                or seed_term_key
+            )
+            candidates.extend(
+                self._traverse_hierarchy_direction(
+                    ontology_id=ontology_id,
+                    index=index,
+                    query_vector=query_vector,
+                    query_norm=query_norm,
+                    seed_term_key=str(seed_term_key),
+                    seed_id=seed_id,
+                    excluded_term_keys=seed_term_keys,
+                    relation="parent",
+                    max_depth=parent_depth,
+                )
+            )
+            candidates.extend(
+                self._traverse_hierarchy_direction(
+                    ontology_id=ontology_id,
+                    index=index,
+                    query_vector=query_vector,
+                    query_norm=query_norm,
+                    seed_term_key=str(seed_term_key),
+                    seed_id=seed_id,
+                    excluded_term_keys=seed_term_keys,
+                    relation="child",
+                    max_depth=child_depth,
+                )
+            )
+        return candidates
+
+    def _traverse_hierarchy_direction(
+        self,
+        *,
+        ontology_id: str,
+        index: Any,
+        query_vector: Any,
+        query_norm: float,
+        seed_term_key: str,
+        seed_id: str,
+        excluded_term_keys: set[str],
+        relation: str,
+        max_depth: int,
+    ) -> list[dict[str, Any]]:
+        if max_depth == 0:
+            return []
+        frontier = {seed_term_key}
+        visited = {seed_term_key}
+        selected: list[dict[str, Any]] = []
+        for depth in range(1, max_depth + 1):
+            rows = self._hierarchy_relative_rows(
+                ontology_id=ontology_id,
+                frontier=frontier,
+                relation=relation,
+            )
+            next_frontier: set[str] = set()
+            best: tuple[float, str, dict[str, Any]] | None = None
+            for row_batch in self._batches(rows, 500):
+                scored = self._score_hierarchy_rows(
+                    index=index,
+                    query_vector=query_vector,
+                    query_norm=query_norm,
+                    rows=row_batch,
+                )
+                for term_key, payload, score in scored:
+                    if term_key in visited:
+                        continue
+                    next_frontier.add(term_key)
+                    if term_key in excluded_term_keys:
+                        continue
+                    candidate = {
+                        **payload,
+                        "ontology_id": ontology_id,
+                        "rag_score": score,
+                        "rag_relation": relation,
+                        "rag_depth": depth,
+                        "rag_seed_id": seed_id,
+                    }
+                    if best is None or (-score, term_key) < (-best[0], best[1]):
+                        best = (score, term_key, candidate)
+            visited.update(next_frontier)
+            if best is not None:
+                selected.append(best[2])
+            frontier = next_frontier
+            if not frontier:
+                break
+        return selected
+
+    def _hierarchy_relative_rows(
+        self,
+        *,
+        ontology_id: str,
+        frontier: set[str],
+        relation: str,
+    ) -> Iterator[tuple[str, int, dict[str, Any]]]:
+        if not frontier:
+            return
+        source_column, relative_column = (
+            ("child_term_key", "parent_term_key")
+            if relation == "parent"
+            else ("parent_term_key", "child_term_key")
+        )
+        seen: set[str] = set()
+        with self._sqlite_connection() as connection:
+            for frontier_batch in self._batches(sorted(frontier), 500):
+                placeholders = ",".join("?" for _ in frontier_batch)
+                rows = connection.execute(
+                    f"""
+                    SELECT hierarchy.{relative_column}, rag.vector_id, terms.payload
+                    FROM term_hierarchy AS hierarchy
+                    JOIN rag_term_map AS rag
+                      ON rag.ontology_id = hierarchy.ontology_id
+                     AND rag.term_key = hierarchy.{relative_column}
+                    JOIN terms
+                      ON terms.ontology_id = hierarchy.ontology_id
+                     AND terms.term_key = hierarchy.{relative_column}
+                    WHERE hierarchy.ontology_id = ?
+                      AND hierarchy.{source_column} IN ({placeholders})
+                    ORDER BY hierarchy.{relative_column}
+                    """,
+                    (ontology_id, *frontier_batch),
+                )
+                for term_key, vector_id, payload in rows:
+                    normalized_term_key = str(term_key)
+                    if normalized_term_key in seen:
+                        continue
+                    seen.add(normalized_term_key)
+                    yield normalized_term_key, int(vector_id), json.loads(payload)
+
+    @staticmethod
+    def _score_hierarchy_rows(
+        *,
+        index: Any,
+        query_vector: Any,
+        query_norm: float,
+        rows: list[tuple[str, int, dict[str, Any]]],
+    ) -> list[tuple[str, dict[str, Any], float]]:
+        import numpy as np
+
+        if not rows:
+            return []
+        keys = np.asarray([row[1] for row in rows], dtype=np.uint64)
+        vectors = np.asarray(index.get(keys), dtype=np.float32)
+        if vectors.ndim == 1:
+            vectors = vectors.reshape(1, -1)
+        norms = np.linalg.norm(vectors, axis=1) * query_norm
+        scores = np.divide(
+            vectors @ query_vector,
+            norms,
+            out=np.full(len(rows), -1.0, dtype=np.float32),
+            where=norms != 0,
+        )
+        return [
+            (term_key, payload, float(score))
+            for (term_key, _vector_id, payload), score in zip(rows, scores)
+        ]
+
+    @staticmethod
+    def _batches(values: Any, size: int) -> Iterator[list[Any]]:
+        batch: list[Any] = []
+        for value in values:
+            batch.append(value)
+            if len(batch) >= size:
+                yield batch
+                batch = []
+        if batch:
+            yield batch
 
     def build_rag_index(self, ontology_id: str, force: bool = False) -> Path:
         """Build or reuse one persistent semantic index for a cached framework."""
@@ -1080,6 +1413,26 @@ class OntoStore:
                     PRIMARY KEY (ontology_id, vector_id),
                     FOREIGN KEY (ontology_id, term_key)
                         REFERENCES terms(ontology_id, term_key) ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS term_hierarchy (
+                    ontology_id TEXT NOT NULL,
+                    child_term_key TEXT NOT NULL,
+                    parent_term_key TEXT NOT NULL,
+                    PRIMARY KEY (ontology_id, child_term_key, parent_term_key),
+                    FOREIGN KEY (ontology_id, child_term_key)
+                        REFERENCES terms(ontology_id, term_key) ON DELETE CASCADE,
+                    FOREIGN KEY (ontology_id, parent_term_key)
+                        REFERENCES terms(ontology_id, term_key) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS term_hierarchy_parents
+                    ON term_hierarchy(ontology_id, child_term_key);
+                CREATE INDEX IF NOT EXISTS term_hierarchy_children
+                    ON term_hierarchy(ontology_id, parent_term_key);
+                CREATE TABLE IF NOT EXISTS hierarchy_frameworks (
+                    ontology_id TEXT PRIMARY KEY,
+                    built_at TEXT NOT NULL,
+                    FOREIGN KEY (ontology_id) REFERENCES frameworks(ontology_id)
+                        ON DELETE CASCADE
                 );
                 """
             )
