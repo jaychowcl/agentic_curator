@@ -307,6 +307,9 @@ def test_ontostore_configures_ordered_preferred_ontologies(tmp_path: Path) -> No
     store.set_preferred_ontology_ids(["mondo", "custom"])
 
     assert store.preferred_ontology_ids == ("mondo", "custom")
+    assert OntologyHarmonizer(ontostore=store).harmonize(
+        harmonization_targets=[]
+    )["preferred_ontology_ids"] == ["mondo", "custom"]
 
 
 @pytest.mark.parametrize(
@@ -3697,7 +3700,7 @@ def test_harmonize_post_strategy_lookup_miss_preserves_strategy_result(
     }
 
 
-def test_ols_strategy_uses_restricted_ols_hit_without_fallbacks() -> None:
+def test_ols_strategy_uses_single_unrestricted_ols_hit() -> None:
     term = {
         "iri": "http://purl.obolibrary.org/obo/UBERON_0002048",
         "ontology_name": "uberon",
@@ -3754,7 +3757,7 @@ def test_ols_strategy_uses_restricted_ols_hit_without_fallbacks() -> None:
         "status": "matched",
         "decision": "UBERON_0002048",
         "confidence": "medium",
-        "reason": "Restricted OLS search returned a usable ontology hit.",
+        "reason": "Unrestricted OLS search returned a usable ontology hit.",
         "ols_hits": [expected_lookup],
         "ontology_framework_config": {
             "id": "uberon",
@@ -3770,14 +3773,14 @@ def test_ols_strategy_uses_restricted_ols_hit_without_fallbacks() -> None:
     assert target["ontology_match"] is True
     assert target["ontology_id"] == "uberon"
     assert ols_client.search_calls == [
-        {"label": "lung", "ontology_id": "uberon", "rows": 25}
+        {"label": "lung", "ontology_id": None, "rows": 25}
     ]
     assert store.ontology_frameworks["uberon"]["title"] == "Uber-anatomy ontology"
     assert store.ontology_frameworks["uberon"]["version"] == "2026-06-19"
     assert store.ontology_frameworks["uberon"]["url"] == "https://example.org/uberon.owl"
 
 
-def test_ols_strategy_judge_selects_non_first_restricted_hit() -> None:
+def test_ols_strategy_judge_selects_non_first_unrestricted_hit() -> None:
     terms = [
         {
             "iri": f"https://example.org/{index}",
@@ -3817,11 +3820,11 @@ def test_ols_strategy_judge_selects_non_first_restricted_hit() -> None:
     assert result["decision"] == "UBERON_2"
     assert target["ontology_lookup"]["title"] == "right"
     assert target["search_llm_judgements"] == [
-        {"stage": "restricted", "decision": "UBERON_2", "confidence": "high", "reason": "Best."}
+        {"stage": "unrestricted", "decision": "UBERON_2", "confidence": "high", "reason": "Best."}
     ]
-    assert calls[0]["stage"] == "restricted"
-    assert calls[0]["restricted_hits"][0]["id"] == "UBERON_1"
-    assert calls[0]["unrestricted_hits"] == []
+    assert calls[0]["stage"] == "unrestricted"
+    assert calls[0]["restricted_hits"] == []
+    assert calls[0]["unrestricted_hits"][0]["id"] == "UBERON_1"
 
 
 def test_ols_strategy_keeps_full_hits_while_judging_top_ten() -> None:
@@ -3851,7 +3854,7 @@ def test_ols_strategy_keeps_full_hits_while_judging_top_ten() -> None:
     judged = []
 
     def judge(**kwargs):
-        judged.extend(kwargs["restricted_hits"])
+        judged.extend(kwargs["unrestricted_hits"])
         return {"decision": "UBERON_0", "confidence": "high", "reason": "Best."}
 
     target = {"hz_label": "term", "ontology_id": "uberon"}
@@ -3865,21 +3868,15 @@ def test_ols_strategy_keeps_full_hits_while_judging_top_ten() -> None:
     assert len(target["ontology_lookup_hits"]) == 12
 
 
-def test_ols_strategy_judge_rejection_is_terminal_at_restricted_stage() -> None:
+def test_ols_strategy_judge_rejection_is_terminal_at_unrestricted_stage() -> None:
     restricted = {
         "iri": "https://example.org/wrong",
         "ontology_name": "efo",
         "short_form": "EFO_WRONG",
         "label": "wrong",
     }
-    expanded = {
-        "iri": "https://example.org/right",
-        "ontology_name": "uberon",
-        "short_form": "UBERON_RIGHT",
-        "label": "right",
-    }
     ols_client = FakeOlsClient(
-        search_results=[[restricted], [expanded]],
+        search_results=[[restricted]],
         ontology_metadata={
             "uberon": {
                 "config": {
@@ -3896,9 +3893,7 @@ def test_ols_strategy_judge_rejection_is_terminal_at_restricted_stage() -> None:
 
     def judge(**kwargs):
         stages.append(kwargs)
-        if kwargs["stage"] == "restricted":
-            return {"decision": "false", "confidence": "none", "reason": "Poor."}
-        return {"decision": "UBERON_RIGHT", "confidence": "high", "reason": "Supported."}
+        return {"decision": "false", "confidence": "none", "reason": "Poor."}
 
     target = {"id": "target-0", "hz_label": "right", "ontology_id": "efo"}
     result = OlsStrategyHandler(
@@ -3908,8 +3903,10 @@ def test_ols_strategy_judge_rejection_is_terminal_at_restricted_stage() -> None:
 
     assert result["status"] == "skipped"
     assert result["decision"] == "false"
-    assert [call["stage"] for call in stages] == ["restricted"]
-    assert len(ols_client.search_calls) == 1
+    assert [call["stage"] for call in stages] == ["unrestricted"]
+    assert ols_client.search_calls == [
+        {"label": "right", "ontology_id": None, "rows": 25}
+    ]
     assert target["harmonization_status"] == "skipped"
 
 
@@ -3936,7 +3933,7 @@ def test_ols_strategy_judge_error_fails_closed() -> None:
     assert "ontology_lookup" not in target
 
 
-def test_ols_strategy_falls_back_to_unrestricted_ols() -> None:
+def test_ols_strategy_ignores_target_ontology_for_unrestricted_ols() -> None:
     term = {
         "iri": "http://purl.obolibrary.org/obo/CL_0000000",
         "ontology_name": "cl",
@@ -3948,7 +3945,7 @@ def test_ols_strategy_falls_back_to_unrestricted_ols() -> None:
         "type": "class",
     }
     ols_client = FakeOlsClient(
-        search_results=[[], [term]],
+        search_results=[[term]],
         ontology_metadata={
             "cl": {
                 "config": {
@@ -3988,7 +3985,6 @@ def test_ols_strategy_falls_back_to_unrestricted_ols() -> None:
     assert target["ontology_id"] == "cl"
     assert target["ontology_lookup"]["accession"] == "CL:0000000"
     assert ols_client.search_calls == [
-        {"label": "cell", "ontology_id": "uberon", "rows": 25},
         {"label": "cell", "ontology_id": None, "rows": 25},
     ]
     assert store.ontology_frameworks["cl"]["title"] == "Cell Ontology"

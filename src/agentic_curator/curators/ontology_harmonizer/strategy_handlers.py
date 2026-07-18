@@ -14,6 +14,9 @@ from typing import Any
 
 import requests
 
+from agentic_curator.curators.ontology_harmonizer.candidate_selection import (
+    preferred_judge_candidates,
+)
 from agentic_curator.curators.ontology_harmonizer.ontology_store import OntoStore
 from agentic_curator.curators.ontology_harmonizer.request_policy import RequestPolicy, request_with_retry
 
@@ -105,7 +108,6 @@ class OlsStrategyHandler:
     ) -> dict[str, Any]:
         target.pop("harmonization_status", None)
         target.pop("harmonization_skip", None)
-        ontology_id = target.get("ontology_id")
         label = target.get("hz_label", target.get("pre_hz_label"))
         if not label:
             return self._not_harmonized(
@@ -114,69 +116,7 @@ class OlsStrategyHandler:
                 ols_hits=[],
             )
 
-        restricted_hits: list[dict[str, Any]] = []
         judgements: list[dict[str, Any]] = []
-        if ontology_id:
-            restricted_docs = self.ols_client.search(
-                str(label),
-                ontology_id=str(ontology_id),
-                rows=self.max_results,
-            )
-            restricted_hits = self._hits_from_docs(restricted_docs)
-        if restricted_hits:
-            if self.search_judge is None:
-                return self._accept_hit(
-                    target,
-                    ontostore=ontostore,
-                    hit=restricted_hits[0],
-                    hits=restricted_hits,
-                    reason="Restricted OLS search returned a usable ontology hit.",
-                )
-            try:
-                judgement = self._judge_search_hits(
-                    target=target,
-                    publication_context=publication_context,
-                    stage="restricted",
-                    restricted_hits=restricted_hits[: self.judge_candidate_limit],
-                    unrestricted_hits=[],
-                    **({} if metadata_context is None else {"metadata_context": metadata_context}),
-                )
-            except Exception as exc:  # noqa: BLE001 - preserve judge failure trace.
-                return self._not_harmonized(
-                    target,
-                    reason="Search LLM judge failed.",
-                    ols_hits=restricted_hits,
-                    search_llm_judgements=judgements,
-                    search_llm_judge_error=str(exc),
-                )
-            judgements.append({"stage": "restricted", **judgement})
-            target["search_llm_judgements"] = judgements
-            if str(judgement["decision"]).lower() == "no_match":
-                return self._not_harmonized(
-                    target,
-                    reason=str(judgement["reason"]),
-                    ols_hits=restricted_hits,
-                    search_llm_judgements=judgements,
-                )
-            if str(judgement["decision"]).lower() != "false":
-                hit = self._selected_hit(restricted_hits, judgement["decision"])
-                return self._accept_hit(
-                    target,
-                    ontostore=ontostore,
-                    hit=hit,
-                    hits=restricted_hits,
-                    reason=str(judgement["reason"]),
-                    confidence=str(judgement["confidence"]),
-                    search_llm_judgements=judgements,
-                )
-            return self._skipped(
-                target,
-                stage="restricted",
-                judgement=judgement,
-                ols_hits=restricted_hits,
-                search_llm_judgements=judgements,
-            )
-
         unrestricted_docs = self.ols_client.search(
             str(label),
             ontology_id=None,
@@ -184,7 +124,7 @@ class OlsStrategyHandler:
         )
         unrestricted_hits = self._unique_hits(self._hits_from_docs(unrestricted_docs))
         if unrestricted_hits:
-            all_hits = [*restricted_hits, *unrestricted_hits]
+            all_hits = unrestricted_hits
             if self.search_judge is None:
                 return self._accept_hit(
                     target,
@@ -194,14 +134,18 @@ class OlsStrategyHandler:
                     reason="Unrestricted OLS search returned a usable ontology hit.",
                 )
             try:
+                judge_hits = preferred_judge_candidates(
+                    unrestricted_hits,
+                    preferred_ontology_ids=ontostore.preferred_ontology_ids,
+                    limit=self.judge_candidate_limit,
+                )
                 judgement = self._judge_search_hits(
                     target=target,
                     publication_context=publication_context,
                     stage="unrestricted",
                     restricted_hits=[],
-                    unrestricted_hits=unrestricted_hits[
-                        : self.judge_candidate_limit
-                    ],
+                    unrestricted_hits=judge_hits,
+                    preferred_ontology_ids=ontostore.preferred_ontology_ids,
                     **({} if metadata_context is None else {"metadata_context": metadata_context}),
                 )
             except Exception as exc:  # noqa: BLE001 - preserve judge failure trace.
@@ -243,7 +187,7 @@ class OlsStrategyHandler:
         return self._not_harmonized(
             target,
             reason="No usable OLS ontology hit was found.",
-            ols_hits=restricted_hits,
+            ols_hits=[],
             search_llm_judgements=judgements,
         )
 
@@ -374,6 +318,7 @@ class OlsStrategyHandler:
         stage: str,
         restricted_hits: list[dict[str, Any]],
         unrestricted_hits: list[dict[str, Any]],
+        preferred_ontology_ids: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         judgement = self.search_judge(
             target=target,
@@ -381,6 +326,7 @@ class OlsStrategyHandler:
             stage=stage,
             restricted_hits=restricted_hits,
             unrestricted_hits=unrestricted_hits,
+            preferred_ontology_ids=preferred_ontology_ids,
             **({} if metadata_context is None else {"metadata_context": metadata_context}),
         )
         if not isinstance(judgement, dict):

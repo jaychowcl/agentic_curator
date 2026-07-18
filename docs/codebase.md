@@ -210,6 +210,13 @@ Constructor hierarchy controls are `rag_hierarchy=False`,
 `rag_parent_depth=2`, `rag_child_depth=1`, and
 `rag_hierarchy_threshold_offset=0.1`.
 
+`OntoStore(..., preferred_ontology_ids=[...])` accepts an ordered runtime-only
+preference list after custom frameworks have been merged with the defaults.
+IDs must name configured frameworks, duplicates are removed while preserving
+order, and unknown or blank IDs fail fast. Preferences can be replaced with
+`set_preferred_ontology_ids(...)`; a preferred framework cannot be removed
+until the preference is changed. The list is not persisted in SQLite.
+
 Public methods:
 
 - `harmonize(publication_context=None, metadata_context=None, harmonization_targets=None, target=None, ontostore=None, target_paths=None, lookup_llm_judge=True, search_llm_judge=True, llm=True, target_checker=True) -> dict`
@@ -219,9 +226,10 @@ Public methods:
 - `harmonize_field(...)` and `assign_field(...)`
 - `apply_targets(miniml_json, harmonization_targets) -> dict | list | None`
 
-The top-level wrapper contains `workflow="local_rag_ols"`. Per-stage OLS
-results use `source="ols"`; there is no public `strategy` argument or
-`--strategy` CLI option.
+The top-level wrapper contains `workflow="local_rag_ols"` and includes
+`preferred_ontology_ids` when preferences are configured. Per-stage OLS results
+use `source="ols"`; there is no public `strategy` argument or `--strategy` CLI
+option.
 
 ### Dataset preprocessing and per-target workflow
 
@@ -254,9 +262,10 @@ disables this stage, and an empty target list records a no-target skip.
    same judge accept or reject the balanced candidates. Optional hierarchy
    expansion appends bounded vector-ranked parents and children before that
    same judge call; it is disabled by default.
-5. After a semantic miss or `no_match`, search OLS without first asking the
-   model to select a framework. OLS is the only external ontology search;
-   grounded web search is not part of this workflow.
+5. After a semantic miss or `no_match`, make exactly one unrestricted OLS
+   search, even when the target already contains an ontology ID. OLS is the
+   only external ontology search; grounded web search is not part of this
+   workflow.
 6. An OLS judge selection is locally enriched by exact identifier only. A
    `no_match` result remains unmatched and a `false` result terminally skips
    the target.
@@ -286,9 +295,9 @@ paths, prior traces, or internal framework file metadata.
 | Logical call | When | Model-facing context |
 | --- | --- | --- |
 | Target checker | Once per non-empty `harmonize(...)` invocation when enabled. | Publication context; metadata context; the complete list of original target IDs and original field/label pairs; configured field keys, labels, aliases, and descriptions; correction details on the one retry. It returns additional atomic label/field-hint proposals only. |
-| Local lookup judge | Exact or FTS candidates exist and judging is enabled. | Publication context; metadata context; semantic target with original field/label; top 10 compact local hits. |
-| Semantic lookup judge | Local lookup misses and semantic neighbours meet their thresholds. | The same contexts and target; balanced compact RAG hits including ontology IDs and scores. Up to two hits are reserved per qualifying ontology; the list expands beyond 10 when required, otherwise remaining seats are filled globally by similarity. When hierarchy expansion is enabled, accepted relatives also include `rag_relation`, `rag_depth`, and `rag_seed_id`. |
-| OLS judge | Local and semantic lookup miss and OLS returns candidates. | Publication context; metadata context; semantic target; one neutral OLS candidate list. No restricted/unrestricted stage literal is included. |
+| Local lookup judge | Exact or FTS candidates exist and judging is enabled. | Publication context; metadata context; semantic target with original field/label; top 10 compact local hits; ordered preferred ontology IDs when configured. |
+| Semantic lookup judge | Local lookup misses and semantic neighbours meet their thresholds. | The same contexts and target; balanced compact RAG hits including ontology IDs and scores; ordered preferred ontology IDs when configured. Up to two hits are reserved per qualifying ontology; the list expands beyond 10 when required, otherwise remaining seats are filled globally by similarity. When hierarchy expansion is enabled, accepted relatives also include `rag_relation`, `rag_depth`, and `rag_seed_id`. |
+| OLS judge | Local and semantic lookup miss and OLS returns candidates. | Publication context; metadata context; semantic target; one neutral OLS candidate list from one unrestricted request; ordered preferred ontology IDs when configured. |
 | Field assignment | Registry lookup misses after label harmonization. | Publication context; metadata context; semantic target containing the original field, current harmonized label, and `pre_hz_label`; current ontology ID; compact selected-term identifiers, title, and description; configured field keys, labels, aliases, and descriptions. |
 
 Compact candidate hits contain identifiers, title, complete description, and
@@ -300,6 +309,16 @@ it. For a selected candidate, the judge copies one non-null identifier exactly;
 validation resolves only identifiers from the candidate list actually sent to
 that judge. This supports ontology caches whose canonical terms provide an
 accession but no separate `id`.
+
+Preferences affect judge evidence, not retrieval scope or field assignment.
+Within the existing judge pool size, candidate selection reserves at most two
+hits for each preferred ontology in ordered round-robin order (first hit from
+each, then second from each), then fills remaining seats in the existing hit
+order. This applies to local, semantic, and OLS judge pools; semantic pool
+expansion rules remain unchanged. Judge prompts describe preferences as
+advisory: a preferred candidate is selected only when semantically suitable,
+never merely because its ontology is preferred. Target-checker and field
+assignment prompts receive no preference context.
 
 The default RAG threshold is inclusive `rag_score >= 0.5`. The harmonizer-wide
 value is configurable through `rag_similarity_threshold`; a framework's

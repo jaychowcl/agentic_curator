@@ -18,6 +18,9 @@ from pathlib import Path
 from typing import Any
 
 from agentic_curator.curators.json_response import parse_json_response
+from agentic_curator.curators.ontology_harmonizer.candidate_selection import (
+    preferred_judge_candidates,
+)
 from agentic_curator.curators.ontology_harmonizer.harmonization_target_extractor import (
     HarmonizationTargetExtractor,
     StartPathSpec,
@@ -202,7 +205,7 @@ class OntologyHarmonizer:
             len(normalized_targets) - matched - skipped,
             self.WORKFLOW,
         )
-        return {
+        result = {
             "publication_context": publication_context,
             "metadata_context": metadata_context,
             "harmonization_targets": normalized_targets,
@@ -210,6 +213,11 @@ class OntologyHarmonizer:
             "target_paths": target_paths,
             "target_checker": target_checker_trace,
         }
+        if effective_ontostore.preferred_ontology_ids:
+            result["preferred_ontology_ids"] = list(
+                effective_ontostore.preferred_ontology_ids
+            )
+        return result
 
     def harmonize_miniml_json(
         self,
@@ -935,6 +943,7 @@ class OntologyHarmonizer:
             hits=hits,
             lookup_llm_judge=lookup_llm_judge,
             source="local",
+            preferred_ontology_ids=ontostore.preferred_ontology_ids,
         )
         if not lookup:
             return False
@@ -959,6 +968,7 @@ class OntologyHarmonizer:
         lookup_llm_judge: bool,
         source: str,
         candidate_limit: int | None = None,
+        preferred_ontology_ids: tuple[str, ...] = (),
     ) -> dict[str, Any] | bool:
         if not lookup_llm_judge:
             return hits[0]
@@ -969,13 +979,18 @@ class OntologyHarmonizer:
             if candidate_limit is None
             else candidate_limit
         )
-        judged_hits = hits[:effective_limit]
+        judged_hits = preferred_judge_candidates(
+            hits,
+            preferred_ontology_ids=preferred_ontology_ids,
+            limit=effective_limit,
+        )
         judgement = self.judge_lookup(
             target,
             publication_context=publication_context,
             metadata_context=metadata_context,
             hits=judged_hits,
             candidate_limit=effective_limit,
+            preferred_ontology_ids=preferred_ontology_ids,
         )
         target["ontology_lookup_judgement"] = judgement
         target.setdefault("ontology_lookup_judgements", []).append(
@@ -1098,6 +1113,7 @@ class OntologyHarmonizer:
             lookup_llm_judge=True,
             source="rag",
             candidate_limit=len(hits),
+            preferred_ontology_ids=ontostore.preferred_ontology_ids,
         )
         if not selected:
             target["ontology_rag"]["status"] = (
@@ -1282,6 +1298,7 @@ class OntologyHarmonizer:
         metadata_context: str | None = None,
         hits: list[dict[str, Any]],
         candidate_limit: int = LLM_CANDIDATE_LIMIT,
+        preferred_ontology_ids: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         effective_limit = (
             self.LLM_CANDIDATE_LIMIT
@@ -1300,6 +1317,7 @@ class OntologyHarmonizer:
             metadata_context=metadata_context,
             hits=hits[:effective_limit],
             candidate_limit=effective_limit,
+            preferred_ontology_ids=preferred_ontology_ids,
         )
         response = self._generate_response(
             prompt,
@@ -1321,6 +1339,7 @@ class OntologyHarmonizer:
         stage: str,
         restricted_hits: list[dict[str, Any]],
         unrestricted_hits: list[dict[str, Any]],
+        preferred_ontology_ids: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         prompt = self._judge_search_prompt(
             target=target,
@@ -1329,6 +1348,7 @@ class OntologyHarmonizer:
             stage=stage,
             restricted_hits=restricted_hits,
             unrestricted_hits=unrestricted_hits,
+            preferred_ontology_ids=preferred_ontology_ids,
         )
         response = self._generate_response(
             prompt,
@@ -1899,6 +1919,7 @@ class OntologyHarmonizer:
         metadata_context: str | None,
         hits: list[dict[str, Any]],
         candidate_limit: int | None = None,
+        preferred_ontology_ids: tuple[str, ...] = (),
     ) -> str:
         initial_prompt = files(PROMPT_PACKAGE).joinpath(
             "prompts/judge_lookup.md"
@@ -1908,6 +1929,7 @@ class OntologyHarmonizer:
             ("Publication Context", publication_context),
             ("Metadata Context", metadata_context),
             ("Harmonization Target", self._semantic_target_context(target)),
+            ("Preferred Ontologies", list(preferred_ontology_ids)),
             (
                 "Lookup Hits",
                 self._candidate_prompt_context(hits, limit=candidate_limit),
@@ -1923,6 +1945,7 @@ class OntologyHarmonizer:
         stage: str,
         restricted_hits: list[dict[str, Any]],
         unrestricted_hits: list[dict[str, Any]],
+        preferred_ontology_ids: tuple[str, ...] = (),
     ) -> str:
         initial_prompt = files(PROMPT_PACKAGE).joinpath(
             "prompts/judge_search.md"
@@ -1935,6 +1958,7 @@ class OntologyHarmonizer:
                 "Harmonization Target",
                 self._semantic_target_context(target, include_ontology_id=True),
             ),
+            ("Preferred Ontologies", list(preferred_ontology_ids)),
             ("OLS Hits", self._candidate_prompt_context(hits)),
         ]
         return self._structured_prompt(initial_prompt, *sections)

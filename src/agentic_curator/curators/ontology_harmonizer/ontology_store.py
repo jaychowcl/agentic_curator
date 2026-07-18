@@ -20,7 +20,7 @@ import re
 import sqlite3
 import os
 import time
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterable, Iterator, Sequence
 from urllib.parse import urlparse
 
 import ijson
@@ -127,6 +127,7 @@ class OntoStore:
     def __init__(
         self,
         ontology_frameworks: OntologyFrameworkConfig | None = None,
+        preferred_ontology_ids: Sequence[str] | None = None,
         fields: dict[str, dict[str, Any]] | None = None,
         storage_dir: str | Path | None = None,
         sqlite_path: str | Path | None = None,
@@ -142,6 +143,8 @@ class OntoStore:
                 **(ontology_frameworks or {}),
             }
         )
+        self.preferred_ontology_ids: tuple[str, ...] = ()
+        self.set_preferred_ontology_ids(preferred_ontology_ids or ())
         self.sqlite_path = (
             self.storage_dir / "sqlite" / "ontologies.sqlite3"
             if sqlite_path is None
@@ -186,6 +189,10 @@ class OntoStore:
                 raise ValueError(
                     "remove=True cannot be combined with url, path, or metadata."
                 )
+            if name in self.preferred_ontology_ids:
+                raise ValueError(
+                    f"Cannot remove preferred ontology framework {name!r}."
+                )
             del self.ontology_frameworks[name]
             LOGGER.info("Removed ontology framework %s.", name)
             return
@@ -207,6 +214,26 @@ class OntoStore:
             framework=raw_framework,
         )
         LOGGER.debug("Configured ontology framework %s.", name)
+
+    def set_preferred_ontology_ids(
+        self,
+        ontology_ids: Sequence[str],
+    ) -> None:
+        """Set ordered, runtime-only ontology preferences for judge context."""
+        if isinstance(ontology_ids, (str, bytes)):
+            raise ValueError("preferred ontology IDs must be a sequence of IDs.")
+        normalized: list[str] = []
+        for ontology_id in ontology_ids:
+            if not isinstance(ontology_id, str) or not ontology_id.strip():
+                raise ValueError("Each preferred ontology ID must be non-empty.")
+            candidate = ontology_id.strip()
+            if candidate not in self.ontology_frameworks:
+                raise ValueError(
+                    f"Unknown preferred ontology ID {candidate!r}; configure it first."
+                )
+            if candidate not in normalized:
+                normalized.append(candidate)
+        self.preferred_ontology_ids = tuple(normalized)
 
     def add_url(
         self,

@@ -3,6 +3,10 @@ You are judging ontology search candidates for a harmonization target.
 Use the publication context, compact metadata context, target context, and
 supplied OLS candidates to select the single best supplied ontology candidate.
 
+When preferred ontologies are supplied, prefer a candidate from them only when
+it is semantically suitable for the target. Never select a wrong or weaker term
+solely because its ontology is preferred.
+
 Return JSON only with:
 - decision: the id, accession, or IRI of one supplied OLS candidate, "no_match"
   when none is sufficiently good but the target remains semantically valid, or
