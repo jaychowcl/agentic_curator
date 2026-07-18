@@ -264,8 +264,9 @@ Options:
 #### `OntologyHarmonizer`
 
 `OntologyHarmonizer(ontostore=None, llm=None, request_policy=None,
-rag_similarity_threshold=0.5)` coordinates target normalization, lookup,
-assignment, search, enrichment, and application.
+rag_similarity_threshold=0.5, rag_hierarchy=False, rag_parent_depth=2,
+rag_child_depth=1, rag_hierarchy_threshold_offset=0.1)` coordinates target
+normalization, lookup, assignment, search, enrichment, and application.
 
 | Method | Main options |
 | --- | --- |
@@ -299,6 +300,15 @@ ontology, remaining seats up to 10 are filled by global similarity, and the
 single judge context expands when the reservations exceed 10. Effective
 thresholds and balanced hits are retained in the `ontology_rag` trace.
 
+Hierarchy-aware semantic expansion is disabled by default. When
+`rag_hierarchy=True`, the best two reserved semantic terms in each ontology
+become graph anchors. Cached named `rdfs:subClassOf` edges contribute at most
+one best parent at each configured depth and one best child at each configured
+depth. The defaults inspect parents through depth two and children through
+depth one. Relatives reuse the original query vector and persisted term vectors,
+must meet `max(-1, ontology_threshold - 0.1)`, and are appended to the same
+single semantic judge call with relation, depth, seed, and score provenance.
+
 #### `OntoStore`
 
 `OntoStore(ontology_frameworks=None, fields=None, storage_dir=None,
@@ -313,7 +323,7 @@ SQLite database.
 | `lookup_with_metadata(value, ontology_id)` | Return `match_type`, hits, and FTS ranking |
 | `lookup_exact(value, ontology_id, ensure_index=True)` | Exact normalized lookup only |
 | `lookup_rag(value, ontology_id, top_k=10)` | Semantic top-k lookup over one cached local framework |
-| `lookup_rag_many(value, ontology_ids, top_k=10)` | Embed once and search cached framework partitions sequentially, with isolated errors |
+| `lookup_rag_many(value, ontology_ids, top_k=10, parent_depth=0, child_depth=0)` | Embed once and search cached framework partitions sequentially; optional depths return hierarchy hits separately |
 | `build_rag_index(ontology_id, force=False)` | Build or reuse its persistent Gemini/USearch partition |
 | `index_framework(...)`, `index_owl_framework(...)`, `sync_sqlite(...)`, `remove_indexed_framework(...)` | Import legacy JSON or stream OWL into SQLite term indexes |
 | `cache_all(..., force_frameworks=())` | Stream-cache every selected active framework, optionally forcing named downloads |
@@ -377,10 +387,17 @@ their `-file` counterparts are mutually substitutable; files take precedence.
 | `--request-backoff SECONDS` | Exponential backoff base; default `1` |
 | `--cache-ttl-seconds N` | External cache TTL; default seven days |
 | `--force-refresh` | Bypass cached external responses |
+| `--rag-hierarchy` | Enable cached parent/child expansion; disabled by default |
+| `--rag-parent-depth N` | Parent traversal depth; default `2` when hierarchy is enabled |
+| `--rag-child-depth N` | Child traversal depth; default `1` when hierarchy is enabled |
+| `--rag-hierarchy-threshold-offset SCORE` | Relax each ontology threshold for relatives; default `0.1` |
 | `--harmonization-targets`, `--harmonization-targets-file` | Target object/list for `harmonize` |
 | `--target`, `--target-file` | Single target for `harmonize`; cannot accompany target list |
 | `--miniml-json`, `--miniml-json-file` | MINiML JSON for `harmonize-miniml-json` |
 | `--out` | Pretty JSON file; otherwise stdout |
+
+The three hierarchy tuning options require `--rag-hierarchy`; using one without
+the enable flag is a parser error.
 
 ### Ontology Cache Builder Guide
 
@@ -474,7 +491,10 @@ def harmonize(targets, publication_context):
             semantic = lookup_cached_framework_vectors(target.label)
             qualifying = apply_per_ontology_similarity_thresholds(semantic)
             balanced = reserve_two_per_ontology_then_fill_globally(qualifying)
-            local = judge_semantic_candidates_or_continue(balanced)
+            if hierarchy_enabled:
+                relatives = best_cached_relatives(top_two_per_ontology(balanced))
+                balanced.extend(apply_relative_thresholds(relatives))
+            local = judge_semantic_candidates_or_continue(balanced)  # one call
         if not local:
             unrestricted = OLS.search(target.label)
             selected = judge_ols_candidates_or_skip(unrestricted)
@@ -509,14 +529,20 @@ def lookup(value, framework):
     exact = lookup_exact(normalize(value), framework)
     return exact or fts5_rank(value, framework)
 
-def lookup_rag_many(value, cached_frameworks):
+def lookup_rag_many(value, cached_frameworks, parent_depth=0, child_depth=0):
     indexes = build_or_reuse_each_partition_sequentially(cached_frameworks)
     query_vector = embed_query_once(value)
-    return search_each_memory_mapped_partition(query_vector, indexes)
+    semantic = search_each_memory_mapped_partition(query_vector, indexes)
+    if parent_depth or child_depth:
+        edges = lazily_backfill_named_subclass_edges_from_sqlite_terms()
+        anchors = top_two_per_ontology(semantic)
+        hierarchy = traverse_and_score_relatives(query_vector, anchors, edges)
+    return semantic, hierarchy
 ```
 
 The SQLite database stores framework freshness, terms, exact lookup entries,
-FTS5 rows, persistent fields/aliases, and cached OLS/Gemini responses.
+FTS5 rows, persistent hierarchy edges, persistent fields/aliases, and cached
+OLS/Gemini responses.
 
 #### CLI and providers
 

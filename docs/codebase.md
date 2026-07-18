@@ -206,6 +206,9 @@ bridge them. This is prompt guidance rather than semantic response validation.
 `agentic_curator.curators.ontology_harmonizer.OntologyHarmonizer` maps extracted
 metadata targets to local ontology terms, semantic neighbours, OLS terms, and
 canonical fields. The workflow is fixed; callers no longer select a strategy.
+Constructor hierarchy controls are `rag_hierarchy=False`,
+`rag_parent_depth=2`, `rag_child_depth=1`, and
+`rag_hierarchy_threshold_offset=0.1`.
 
 Public methods:
 
@@ -231,7 +234,9 @@ results use `source="ols"`; there is no public `strategy` argument or
    the locally cached candidate frameworks. It embeds the label once, searches
    each framework partition sequentially, filters by the effective similarity
    threshold, reserves up to two hits per qualifying ontology, and lets the
-   same judge accept or reject the balanced candidates.
+   same judge accept or reject the balanced candidates. Optional hierarchy
+   expansion appends bounded vector-ranked parents and children before that
+   same judge call; it is disabled by default.
 5. After a semantic miss or `no_match`, search OLS without first asking the
    model to select a framework. OLS is the only external ontology search;
    grounded web search is not part of this workflow.
@@ -264,13 +269,14 @@ paths, prior traces, or internal framework file metadata.
 | Logical call | When | Model-facing context |
 | --- | --- | --- |
 | Local lookup judge | Exact or FTS candidates exist and judging is enabled. | Publication context; metadata context; semantic target with original field/label; top 10 compact local hits. |
-| Semantic lookup judge | Local lookup misses and semantic neighbours meet their thresholds. | The same contexts and target; balanced compact RAG hits including ontology IDs. Up to two hits are reserved per qualifying ontology; the list expands beyond 10 when required, otherwise remaining seats are filled globally by similarity. |
+| Semantic lookup judge | Local lookup misses and semantic neighbours meet their thresholds. | The same contexts and target; balanced compact RAG hits including ontology IDs and scores. Up to two hits are reserved per qualifying ontology; the list expands beyond 10 when required, otherwise remaining seats are filled globally by similarity. When hierarchy expansion is enabled, accepted relatives also include `rag_relation`, `rag_depth`, and `rag_seed_id`. |
 | OLS judge | Local and semantic lookup miss and OLS returns candidates. | Publication context; metadata context; semantic target; one neutral OLS candidate list. No restricted/unrestricted stage literal is included. |
 | Field assignment | Registry lookup misses after label harmonization. | Publication context; metadata context; semantic target containing the current harmonized label plus `pre_hz_label`; current ontology ID when known; configured field projections. |
 
 Compact candidate hits contain identifiers, title, complete description, and
-ontology ID. Lookup-judge decisions must be one supplied hit ID, `no_match`,
-or `false`. OLS decisions may use a supplied ID, accession, or IRI, plus
+ontology ID; semantic hits also contain their RAG score and optional hierarchy
+provenance. Lookup-judge decisions must be one supplied hit ID, `no_match`, or
+`false`. OLS decisions may use a supplied ID, accession, or IRI, plus
 `no_match` or `false`. `no_match` rejects the candidates but continues the
 workflow; `false` declares the target non-harmonizable and stops it.
 
@@ -280,6 +286,17 @@ value is configurable through `rag_similarity_threshold`; a framework's
 recorded in `ontology_rag.similarity_thresholds`. An ontology with no hit above
 its threshold has no reserved candidate. Deduplication is ontology-scoped so a
 shared identifier can remain represented in more than one framework.
+
+`rag_hierarchy=False` is the default and preserves non-expanding behavior.
+When enabled, the first two reserved semantic terms per ontology become
+anchors. Defaults add at most one best direct parent, one best second-level
+parent, and one best direct child per ontology. A relative must meet
+`max(-1, ontology_threshold - rag_hierarchy_threshold_offset)`, whose default
+offset is `0.1`. Selection reuses the original query and stored term vectors,
+so there is still one query embedding and one semantic judge call. With the 11
+built-in frameworks, 22 reserved semantic candidates can grow to at most 55.
+The `ontology_rag.hierarchy` trace records enabled depths, offset, and selected
+relatives.
 
 The maximum is four logical LLM calls per target: local judge, semantic judge,
 OLS judge, and field assignment. A stage without candidates makes no judge call.
@@ -311,7 +328,7 @@ Important methods:
 
 - `lookup(...)`, `lookup_with_metadata(...)`, and `lookup_exact(...)`
 - `lookup_rag(label, ontology_id, top_k=10)`
-- `lookup_rag_many(label, ontology_ids, top_k=10)`
+- `lookup_rag_many(label, ontology_ids, top_k=10, parent_depth=0, child_depth=0)`
 - `build_rag_index(ontology_id, force=False)`
 - `index_framework(...)`, `index_owl_framework(...)`, `sync_sqlite(...)`,
   and `remove_indexed_framework(...)`
@@ -339,6 +356,16 @@ framework's threshold, reserves its best two qualifying unique terms, and fills
 any remaining capacity up to 10 from the global score order. If the reservations
 alone exceed 10, every reservation is retained in the single judge call.
 
+Non-zero hierarchy depths lazily build persistent same-ontology edges from the
+named `parents` and `parent_iris` already stored in SQLite. Anonymous,
+unresolved, external, and self references are ignored. Parent traversal uses
+the forward `subClassOf` edge and child traversal uses its indexed reverse;
+shortest-depth cycle detection prevents revisits. Only the best two semantic
+hits in each ontology are traversed. Related vector rows are read and scored in
+batches of 500 with exact cosine similarity to the original query vector.
+`lookup_rag_many(...)` returns direct `hits` unchanged and hierarchy candidates
+separately in `hierarchy_hits` whenever expansion is requested.
+
 Automatic local and semantic framework selection is cache-based, not
 URL-configuration-based. A built-in or custom URL-backed framework participates
 when its configured JSON or OWL path exists. URL-only frameworks without a
@@ -364,8 +391,10 @@ rebuild; a new process can reuse a current on-disk partition without re-embeddin
 documents.
 
 The shared schema also stores framework metadata, term payloads, exact lookup
-entries, FTS rows, persistent controlled fields, external response cache rows,
-semantic manifests, and vector-to-term mappings. WAL mode and a busy timeout
+entries, FTS rows, persistent hierarchy edges and completion markers,
+controlled fields, external response cache rows, semantic manifests, and
+vector-to-term mappings. Framework replacement transactionally cascades stale
+hierarchy rows and causes lazy reconstruction. WAL mode and a busy timeout
 support concurrent readers.
 
 `build_ontology_cache --rag-index` first materializes framework JSON and
@@ -718,11 +747,20 @@ class OntologyHarmonizer:
         return selected or False
 
     def lookup_rag_label(...):
-        result = store.lookup_rag_many(hz_label, cached_frameworks, top_k=10)
+        result = store.lookup_rag_many(
+            hz_label,
+            cached_frameworks,
+            top_k=10,
+            parent_depth=2 if rag_hierarchy else 0,
+            child_depth=1 if rag_hierarchy else 0,
+        )
         preserve result.errors and isolate failed framework partitions
         for each framework, filter hits below its threshold (default 0.5)
         dedupe within each framework and reserve its best two qualifying hits
         fill remaining seats to 10 globally; expand if reservations exceed 10
+        if rag_hierarchy:
+            choose one best qualifying relative per ontology/direction/depth
+            append relatives with score, relation, depth, and seed provenance
         write balanced hits and effective thresholds to ontology_rag trace
         if no candidates or judging disabled:
             return False
@@ -1518,6 +1556,10 @@ Ontology inputs include:
 - `--storage-dir`
 - `--request-timeout`, `--request-max-attempts`, and `--request-backoff`
 - `--cache-ttl-seconds` and `--force-refresh`
+- `--rag-hierarchy` to opt into cached parent/child expansion
+- `--rag-parent-depth`, `--rag-child-depth`, and
+  `--rag-hierarchy-threshold-offset` to tune an enabled expansion; supplying
+  any tuning option without `--rag-hierarchy` is a parser error
 
 By default the CLI writes pretty JSON to stdout. When `--out` is provided, it
 writes pretty JSON to that file and keeps stdout quiet.
@@ -1538,7 +1580,8 @@ Test coverage includes:
 - ontology harmonizer imports, root exports, fixed local-semantic-OLS routing,
   local and OLS `no_match`/`false` behavior, MINiML target application,
   persistent semantic index build/reuse, threshold filtering, two-per-ontology
-  RAG balancing, dynamic semantic judge limits, and `OntoStore`
+  RAG balancing, optional hierarchy edge backfill/traversal, cycle handling,
+  dynamic semantic judge limits, and `OntoStore`
   defaults/overrides/download/get/exact/FTS/RAG behavior
 - ontology cache builder framework ordering, default worker count, threaded
   scheduling, force flags, failure collection, SQLite/RAG synchronization,
