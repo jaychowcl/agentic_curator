@@ -1700,6 +1700,52 @@ def test_lookup_judge_prompt_limits_and_compacts_candidates() -> None:
     assert "Publication Context:\ncomplete user context" in prompt
 
 
+def test_lookup_judge_accepts_an_explicit_dynamic_candidate_limit() -> None:
+    hits = [
+        {"id": f"TERM_{index}", "title": f"term {index}", "ontology_id": "test"}
+        for index in range(12)
+    ]
+    fake_llm = FakeLLM(
+        response={"decision": "TERM_11", "confidence": "high", "reason": "Best."}
+    )
+
+    OntologyHarmonizer(llm=fake_llm).judge_lookup(
+        {"pre_hz_field": "tissue", "pre_hz_label": "lung"},
+        publication_context=None,
+        hits=hits,
+        candidate_limit=12,
+    )
+
+    assert '"TERM_11"' in fake_llm.calls[0]["prompt"]
+
+
+@pytest.mark.parametrize("threshold", [True, "0.5", float("nan"), -1.01, 1.01])
+def test_harmonizer_rejects_invalid_rag_similarity_threshold(threshold) -> None:
+    with pytest.raises(ValueError, match="rag_similarity_threshold"):
+        OntologyHarmonizer(rag_similarity_threshold=threshold)
+
+
+def test_ontostore_validates_and_configures_framework_rag_threshold(
+    tmp_path: Path,
+) -> None:
+    store = OntoStore(ontology_frameworks={}, storage_dir=tmp_path)
+    owl_path = tmp_path / "custom.owl"
+
+    store.configure_framework(
+        "custom",
+        path=owl_path,
+        rag_similarity_threshold=0.65,
+    )
+
+    assert store.ontology_frameworks["custom"]["rag_similarity_threshold"] == 0.65
+    with pytest.raises(ValueError, match="rag_similarity_threshold"):
+        store.configure_framework(
+            "invalid",
+            path=tmp_path / "invalid.owl",
+            rag_similarity_threshold=1.1,
+        )
+
+
 def test_lookup_label_llm_judge_rejects_unknown_decision(
     tmp_path: Path,
 ) -> None:

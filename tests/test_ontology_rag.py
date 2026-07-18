@@ -235,6 +235,193 @@ def test_lookup_rag_many_isolates_one_framework_index_failure(
     ]
 
 
+def test_rag_judge_reserves_two_candidates_for_each_qualifying_ontology(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    ontology_ids = [f"ontology_{index}" for index in range(6)]
+    frameworks = {}
+    hits = []
+    for framework_index, ontology_id in enumerate(ontology_ids):
+        owl_path = tmp_path / f"{ontology_id}.owl"
+        owl_path.write_text("cached", encoding="utf-8")
+        frameworks[ontology_id] = {"owl_path": owl_path}
+        for hit_index in range(3):
+            hits.append(
+                {
+                    "id": f"{ontology_id}:{hit_index}",
+                    "title": f"{ontology_id} term {hit_index}",
+                    "ontology_id": ontology_id,
+                    "rag_score": 0.99 - (framework_index * 0.02) - (hit_index * 0.005),
+                }
+            )
+    store = OntoStore(ontology_frameworks=frameworks, storage_dir=tmp_path)
+    monkeypatch.setattr(
+        store,
+        "lookup_rag_many",
+        lambda label, selected_ids, top_k: {"hits": hits, "errors": []},
+    )
+
+    class CapturingHarmonizer(OntologyHarmonizer):
+        def __init__(self) -> None:
+            super().__init__()
+            self.judge_calls: list[list[dict[str, object]]] = []
+
+        def judge_lookup(self, *args, hits, **kwargs):
+            self.judge_calls.append(hits)
+            return {
+                "decision": hits[0]["id"],
+                "confidence": "high",
+                "reason": "Best balanced candidate.",
+            }
+
+    harmonizer = CapturingHarmonizer()
+    target = {
+        "hz_label": "target label",
+        "ontology_ids": ontology_ids,
+    }
+
+    harmonizer.lookup_rag_label(
+        target,
+        publication_context=None,
+        ontostore=store,
+    )
+
+    assert len(harmonizer.judge_calls) == 1
+    judged_hits = harmonizer.judge_calls[0]
+    assert len(judged_hits) == 12
+    assert {
+        ontology_id: sum(hit["ontology_id"] == ontology_id for hit in judged_hits)
+        for ontology_id in ontology_ids
+    } == {ontology_id: 2 for ontology_id in ontology_ids}
+    assert target["ontology_rag"]["hits"] == judged_hits
+    assert target["ontology_rag"]["similarity_thresholds"] == {
+        ontology_id: 0.5 for ontology_id in ontology_ids
+    }
+
+
+def test_rag_balance_fills_ten_slots_after_reserving_two_per_ontology(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    ontology_ids = ["dominant", "specialist"]
+    frameworks = {}
+    for ontology_id in ontology_ids:
+        owl_path = tmp_path / f"{ontology_id}.owl"
+        owl_path.write_text("cached", encoding="utf-8")
+        frameworks[ontology_id] = {"owl_path": owl_path}
+    hits = [
+        {
+            "id": f"DOM:{index}",
+            "ontology_id": "dominant",
+            "title": f"dominant {index}",
+            "rag_score": 0.99 - (index * 0.01),
+        }
+        for index in range(10)
+    ] + [
+        {
+            "id": f"SPEC:{index}",
+            "ontology_id": "specialist",
+            "title": f"specialist {index}",
+            "rag_score": 0.60 - (index * 0.01),
+        }
+        for index in range(10)
+    ]
+    store = OntoStore(ontology_frameworks=frameworks, storage_dir=tmp_path)
+    monkeypatch.setattr(
+        store,
+        "lookup_rag_many",
+        lambda label, selected_ids, top_k: {"hits": hits, "errors": []},
+    )
+
+    class CapturingHarmonizer(OntologyHarmonizer):
+        def judge_lookup(self, *args, hits, **kwargs):
+            self.judged_hits = hits
+            return {
+                "decision": hits[0]["id"],
+                "confidence": "high",
+                "reason": "Best balanced candidate.",
+            }
+
+    harmonizer = CapturingHarmonizer()
+    harmonizer.lookup_rag_label(
+        {"hz_label": "target", "ontology_ids": ontology_ids},
+        publication_context=None,
+        ontostore=store,
+    )
+
+    assert len(harmonizer.judged_hits) == 10
+    assert sum(hit["ontology_id"] == "specialist" for hit in harmonizer.judged_hits) == 2
+
+
+def test_rag_thresholds_filter_before_reservation_and_allow_framework_override(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    ontology_ids = ["strict", "default", "weak"]
+    frameworks = {}
+    for ontology_id in ontology_ids:
+        owl_path = tmp_path / f"{ontology_id}.owl"
+        owl_path.write_text("cached", encoding="utf-8")
+        frameworks[ontology_id] = {"owl_path": owl_path}
+    frameworks["strict"]["rag_similarity_threshold"] = 0.7
+    hits = [
+        {"id": "STRICT:1", "ontology_id": "strict", "rag_score": 0.69},
+        {"id": "DEFAULT:1", "ontology_id": "default", "rag_score": 0.50},
+        {"id": "WEAK:1", "ontology_id": "weak", "rag_score": 0.49},
+    ]
+    store = OntoStore(ontology_frameworks=frameworks, storage_dir=tmp_path)
+    monkeypatch.setattr(
+        store,
+        "lookup_rag_many",
+        lambda label, selected_ids, top_k: {"hits": hits, "errors": []},
+    )
+
+    class CapturingHarmonizer(OntologyHarmonizer):
+        def judge_lookup(self, *args, hits, **kwargs):
+            self.judged_hits = hits
+            return {
+                "decision": hits[0]["id"],
+                "confidence": "high",
+                "reason": "Only qualifying candidate.",
+            }
+
+    harmonizer = CapturingHarmonizer(rag_similarity_threshold=0.5)
+    target = {"hz_label": "target", "ontology_ids": ontology_ids}
+    harmonizer.lookup_rag_label(
+        target,
+        publication_context=None,
+        ontostore=store,
+    )
+
+    assert [hit["id"] for hit in harmonizer.judged_hits] == ["DEFAULT:1"]
+    assert target["ontology_rag"]["similarity_thresholds"] == {
+        "strict": 0.7,
+        "default": 0.5,
+        "weak": 0.5,
+    }
+
+
+def test_rag_deduplicates_within_an_ontology_but_not_across_ontologies() -> None:
+    harmonizer = OntologyHarmonizer()
+    hits = [
+        {"id": "SHARED:1", "ontology_id": "first", "rag_score": 0.9},
+        {"id": "SHARED:1", "ontology_id": "first", "rag_score": 0.8},
+        {"id": "SHARED:1", "ontology_id": "second", "rag_score": 0.7},
+    ]
+
+    balanced = harmonizer._balance_rag_hits(
+        hits,
+        ontology_ids=["first", "second"],
+        thresholds={"first": 0.5, "second": 0.5},
+    )
+
+    assert [(hit["ontology_id"], hit["rag_score"]) for hit in balanced] == [
+        ("first", 0.9),
+        ("second", 0.7),
+    ]
+
+
 def test_reused_rag_index_is_viewed_from_disk_instead_of_loaded(
     tmp_path: Path,
     monkeypatch,
