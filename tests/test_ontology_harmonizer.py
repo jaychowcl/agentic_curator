@@ -2678,7 +2678,7 @@ def test_harmonize_routes_each_lookup_miss_directly_to_search() -> None:
     ]
 
 
-def test_harmonize_calls_lookup_then_field_then_search_without_framework_assignment() -> None:
+def test_harmonize_calls_lookup_then_search_then_field_without_framework_assignment() -> None:
     calls = []
 
     class RecordingHarmonizer(OntologyHarmonizer):
@@ -2723,8 +2723,8 @@ def test_harmonize_calls_lookup_then_field_then_search_without_framework_assignm
 
     assert calls == [
         ("lookup", "target-0", "context", "websearch"),
-        ("field", "target-0", "context"),
         ("search", "target-0", "context", "websearch"),
+        ("field", "target-0", "context"),
     ]
 
 

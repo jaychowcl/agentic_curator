@@ -108,14 +108,6 @@ class OntologyHarmonizer:
                 )
                 self._mark_ontology_miss(normalized_target)
 
-            self.harmonize_field(
-                normalized_target,
-                publication_context=publication_context,
-                ontostore=effective_ontostore,
-                llm=llm,
-                **self._metadata_context_kwargs(metadata_context),
-            )
-
             if not lookup:
                 if normalized_strategy in self.STRATEGY_HANDLERS:
                     LOGGER.info(
@@ -136,6 +128,15 @@ class OntologyHarmonizer:
                             normalized_target,
                             ontostore=effective_ontostore,
                         )
+
+            self._apply_selected_ontology_label(normalized_target)
+            self.harmonize_field(
+                normalized_target,
+                publication_context=publication_context,
+                ontostore=effective_ontostore,
+                llm=llm,
+                **self._metadata_context_kwargs(metadata_context),
+            )
 
         matched = sum(bool(item.get("ontology_match")) for item in normalized_targets)
         LOGGER.info(
@@ -906,6 +907,24 @@ class OntologyHarmonizer:
         return False
 
     @staticmethod
+    def _apply_selected_ontology_label(target: dict[str, Any]) -> str | None:
+        lookup = target.get("ontology_lookup")
+        if not isinstance(lookup, dict):
+            return None
+        title = lookup.get("title")
+        if not isinstance(title, str) or not title.strip():
+            return None
+
+        canonical_label = " ".join(title.split())
+        target["hz_label"] = canonical_label
+        occurrences = target.get("occurrences")
+        if isinstance(occurrences, list):
+            for occurrence in occurrences:
+                if isinstance(occurrence, dict):
+                    occurrence["hz_label"] = canonical_label
+        return canonical_label
+
+    @staticmethod
     def _term_identifiers(term: dict[str, Any]) -> set[str]:
         values = []
         for key in ("id", "accession", "iri"):
@@ -1038,7 +1057,7 @@ class OntologyHarmonizer:
             ("Metadata Context", metadata_context),
             (
                 "Harmonization Target",
-                self._semantic_target_context(target, include_ontology_id=True),
+                self._field_assignment_target_context(target),
             ),
             ("Fields", self._field_prompt_context(fields)),
         )
@@ -1113,6 +1132,15 @@ class OntologyHarmonizer:
         }
         if include_ontology_id and target.get("ontology_id") is not None:
             context["ontology_id"] = target["ontology_id"]
+        return context
+
+    def _field_assignment_target_context(
+        self,
+        target: dict[str, Any],
+    ) -> dict[str, Any]:
+        context = self._semantic_target_context(target, include_ontology_id=True)
+        if target.get("hz_label") is not None:
+            context["label"] = target["hz_label"]
         return context
 
     def _field_prompt_context(
