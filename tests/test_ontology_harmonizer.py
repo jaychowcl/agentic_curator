@@ -4560,6 +4560,7 @@ def test_harmonize_miniml_json_extracts_default_targets() -> None:
     result = NoSearchOntologyHarmonizer(llm=FakeLLM()).harmonize_miniml_json(
         publication_context="Full publication context",
         miniml_json=miniml_json,
+        target_checker=False,
     )
 
     assert result["publication_context"] == "Full publication context"
@@ -4696,6 +4697,7 @@ def test_harmonize_miniml_json_accepts_explicit_target_paths(tmp_path: Path) -> 
     ).harmonize_miniml_json(
         miniml_json=miniml_json,
         target_paths=["/sample"],
+        target_checker=False,
     )
 
     assert result == {
@@ -4736,6 +4738,11 @@ def test_harmonize_miniml_json_accepts_explicit_target_paths(tmp_path: Path) -> 
         ],
         "workflow": "local_rag_ols",
         "target_paths": ["/sample"],
+        "target_checker": {
+            "status": "disabled",
+            "reason": "target_checker_disabled",
+            "added_count": 0,
+        },
         "miniml_json": {
             "sample": {
                 "tissue": "lung",
@@ -4788,6 +4795,7 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
         miniml_json=miniml_json,
         ontostore=store,
         target_paths=["/sample"],
+        target_checker=False,
     )
 
     assert result == {
@@ -4805,6 +4813,11 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
                 "hz_label": "lung",
             }
         ],
+        "target_checker": {
+            "status": "disabled",
+            "reason": "target_checker_disabled",
+            "added_count": 0,
+        },
         "miniml_json": {
             "sample": {
                 "tissue": "lung",

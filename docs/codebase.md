@@ -213,7 +213,7 @@ Constructor hierarchy controls are `rag_hierarchy=False`,
 Public methods:
 
 - `harmonize(publication_context=None, metadata_context=None, harmonization_targets=None, target=None, ontostore=None, target_paths=None, lookup_llm_judge=True, search_llm_judge=True, llm=True) -> dict`
-- `harmonize_miniml_json(publication_context=None, miniml_json=None, ontostore=None, target_paths=None, lookup_llm_judge=True, search_llm_judge=True, llm=True) -> dict`
+- `harmonize_miniml_json(publication_context=None, miniml_json=None, ontostore=None, target_paths=None, lookup_llm_judge=True, search_llm_judge=True, llm=True, target_checker=True) -> dict`
 - `lookup_label(...)`, `lookup_rag_label(...)`, and `harmonize_label(...)`
 - `judge_lookup(..., candidate_limit=10)`
 - `harmonize_field(...)` and `assign_field(...)`
@@ -223,7 +223,20 @@ The top-level wrapper contains `workflow="local_rag_ols"`. Per-stage OLS
 results use `source="ols"`; there is no public `strategy` argument or
 `--strategy` CLI option.
 
-### Per-target workflow
+### Dataset preprocessing and per-target workflow
+
+For MINiML input, one dataset-level target-checker call runs after extraction
+and deduplication but before any ontology lookup. It receives every original
+target together with publication context, compact metadata context, and the
+controlled-field registry. The model returns additions only: original targets
+are never replaced or split in place. Only medium/high-confidence proposals
+from known source target IDs are accepted, with at most three per source.
+Additions must introduce another semantic role, not a same-role abbreviation,
+synonym, or broader/narrower restatement that later ontology lookup can handle.
+Equivalent field-hint/label additions are merged across source targets while
+preserving source-specific confidence, reason, and occurrence provenance.
+Malformed or failed calls receive one correction attempt, then fail open with
+the originals. `target_checker=False` or `llm=False` disables this stage.
 
 1. Normalize `pre_hz_field` and `pre_hz_label` into working `hz_field` and
    `hz_label`.
@@ -268,6 +281,7 @@ paths, prior traces, or internal framework file metadata.
 
 | Logical call | When | Model-facing context |
 | --- | --- | --- |
+| MINiML target checker | Once after dataset target extraction when enabled. | Publication context; metadata context; the complete list of original target IDs and original field/label pairs; configured field keys, labels, aliases, and descriptions; correction details on the one retry. It returns additional atomic label/field-hint proposals only. |
 | Local lookup judge | Exact or FTS candidates exist and judging is enabled. | Publication context; metadata context; semantic target with original field/label; top 10 compact local hits. |
 | Semantic lookup judge | Local lookup misses and semantic neighbours meet their thresholds. | The same contexts and target; balanced compact RAG hits including ontology IDs and scores. Up to two hits are reserved per qualifying ontology; the list expands beyond 10 when required, otherwise remaining seats are filled globally by similarity. When hierarchy expansion is enabled, accepted relatives also include `rag_relation`, `rag_depth`, and `rag_seed_id`. |
 | OLS judge | Local and semantic lookup miss and OLS returns candidates. | Publication context; metadata context; semantic target; one neutral OLS candidate list. No restricted/unrestricted stage literal is included. |
@@ -301,7 +315,9 @@ built-in frameworks, 22 reserved semantic candidates can grow to at most 55.
 The `ontology_rag.hierarchy` trace records enabled depths, offset, and selected
 relatives.
 
-The maximum is four logical LLM stages per target: local judge, semantic judge,
+MINiML adds one logical target-checker call per dataset, independent of target
+count. Its malformed/failing response can cause one correction call. The
+per-target maximum remains four logical stages: local judge, semantic judge,
 OLS judge, and field assignment. A stage without candidates makes no judge call.
 A successful earlier term match skips later term-search calls. Field assignment
 can make one additional correction call when its first model response is
@@ -327,6 +343,14 @@ field/label targets while preserving all occurrence paths. It creates a
 deterministic metadata context from the first series title and unique
 `field=value` pairs, collapsed to one line and capped at 500 characters.
 `build_miniml_metadata_context(...)` exposes the same behavior.
+
+The target checker then appends accepted additions before the normal
+per-target workflow. Each addition has `source="target_checker"`, its
+provisional field hint in `pre_hz_field`, source provenance under
+`target_checker_addition.sources`, and merged occurrence paths. Its field hint
+is not authoritative: normal label harmonization and field assignment still
+run. The wrapper's top-level `target_checker` trace reports attempts,
+additions, rejections, and merge counts (or why the stage was disabled).
 
 `apply_targets(...)` writes direct sibling `hz_<field>` values for scalars,
 additional tag/value rows for tag-shaped data, and sibling lists for container
@@ -1387,6 +1411,9 @@ The active ontology harmonizer prompt files are:
 - `assign_field.md` distinguishes field categories from ontology values, asks the
   model to reason over the original field/label pair and wider context, prefers
   existing keys, and returns `decision`, `confidence`, `reason`, and `new_field`.
+- `target_checker.md` conservatively identifies additional atomic concepts in
+  compound MINiML targets without replacing originals and returns source ID,
+  label, provisional field hint, confidence, and reason.
 - `judge_lookup.md` instructs the model to choose the best local or semantic
   lookup hit ID, return `no_match`, or terminally reject with `false`.
 - `judge_search.md` instructs the model to select one supplied OLS candidate or
@@ -1575,6 +1602,7 @@ Ontology inputs include:
 - `--lookup-llm-judge` or `--no-lookup-llm-judge` (enabled by default)
 - `--search-llm-judge` or `--no-search-llm-judge` (enabled by default)
 - `--llm` or `--no-llm`
+- `--target-checker` or `--no-target-checker` for MINiML preprocessing
 - `--ontology-frameworks` or `--ontology-frameworks-file`
 - `--fields` or `--fields-file`
 - `--storage-dir`
@@ -1603,6 +1631,8 @@ Test coverage includes:
   construction, schema construction, and two-call ordering
 - ontology harmonizer imports, root exports, fixed local-semantic-OLS routing,
   local and OLS `no_match`/`false` behavior, MINiML target application,
+  dataset-level compound-target additions, confidence/limit rejection,
+  provenance-preserving merges, correction/fail-open behavior, CLI opt-out,
   persistent semantic index build/reuse, threshold filtering, two-per-ontology
   RAG balancing, optional hierarchy edge backfill/traversal, cycle handling,
   dynamic semantic judge limits, and `OntoStore`

@@ -77,6 +77,7 @@ class RecordingHarmonizer:
         lookup_llm_judge=False,
         search_llm_judge=True,
         llm=True,
+        target_checker=True,
     ):
         self.__class__.calls.append(
             {
@@ -88,6 +89,7 @@ class RecordingHarmonizer:
                 "lookup_llm_judge": lookup_llm_judge,
                 "search_llm_judge": search_llm_judge,
                 "llm": llm,
+                "target_checker": target_checker,
             }
         )
         return {"miniml_json": miniml_json}
@@ -194,8 +196,28 @@ def test_cli_harmonize_miniml_json_passes_json_file_inputs(
             "lookup_llm_judge": True,
             "search_llm_judge": True,
             "llm": True,
+            "target_checker": True,
         }
     ]
+
+
+def test_cli_can_disable_miniml_target_checker(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert (
+        cli_ontology_harmonizer.main(
+            [
+                "harmonize-miniml-json",
+                "--miniml-json",
+                '{"sample": []}',
+                "--no-target-checker",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    assert RecordingHarmonizer.calls[0]["target_checker"] is False
 
 
 def test_cli_invalid_json_exits_with_parser_error(

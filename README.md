@@ -189,7 +189,8 @@ stage traces. The wrapper is:
 `harmonize_miniml_json(...)` also returns the same input object under
 `miniml_json` after applying direct `hz_<field>`, `hz_<field>_id`, and
 `hz_<field>_onto` values. Tag/value inputs receive additional tag/value rows;
-container inputs receive a sibling `hz_<field>` list.
+container inputs receive a sibling `hz_<field>` list. Its `target_checker`
+trace describes dataset-level compound-label additions made before lookup.
 
 `OntoStore.lookup(...)` returns term dictionaries with `ontology_id`.
 `LLM.generate_response_with_metadata(...)` returns `text`, `raw_response`,
@@ -271,7 +272,7 @@ normalization, lookup, assignment, search, enrichment, and application.
 | Method | Main options |
 | --- | --- |
 | `harmonize(...)` | User `publication_context`, compact `metadata_context`, `harmonization_targets` or `target`, `ontostore`, `target_paths`, and judge/LLM controls |
-| `harmonize_miniml_json(...)` | User `publication_context`, `miniml_json`, `ontostore`, `target_paths`, and the same judge/LLM controls; `metadata_context` is generated automatically |
+| `harmonize_miniml_json(...)` | User `publication_context`, `miniml_json`, `ontostore`, `target_paths`, the same judge/LLM controls, and `target_checker=True`; `metadata_context` is generated automatically |
 | `lookup_label(...)` | Target, publication context, store, and local judge toggle |
 | `lookup_rag_label(...)` | Target, contexts, store, and semantic judge toggle |
 | `judge_lookup(..., candidate_limit=10)` | Judge compact local or balanced semantic candidates |
@@ -292,6 +293,16 @@ may be enriched locally only by matching its identifier. The OLS judge receives
 one neutral `OLS Hits` candidate section without restricted/unrestricted stage
 cues. Field-assignment context includes both the canonical `label` and the
 original `pre_hz_label` when available.
+
+Before per-target lookup, MINiML harmonization makes one target-checker LLM
+call over the complete deduplicated target list. It can append missing atomic
+concepts from compound labels while preserving every original target. Only
+medium/high-confidence additions are accepted, capped at three per source;
+equivalent additions are merged with per-source reasons and occurrence paths.
+Same-role abbreviations, synonyms, and broader/narrower restatements are not
+additions. The field is a hint and is finalized by the normal field stage.
+Invalid calls are retried once and then fail open. Set `target_checker=False`
+to opt out.
 
 Semantic candidates must meet the inclusive default `rag_score >= 0.5`.
 Framework configuration may set `rag_similarity_threshold` to override the
@@ -382,6 +393,7 @@ their `-file` counterparts are mutually substitutable; files take precedence.
 | `--lookup-llm-judge`, `--no-lookup-llm-judge` | Enable/disable judging every local candidate set; enabled by default |
 | `--search-llm-judge`, `--no-search-llm-judge` | Enable/disable OLS candidate judge; enabled by default |
 | `--llm`, `--no-llm` | Enable/disable assignment and judging calls; enabled by default |
+| `--target-checker`, `--no-target-checker` | Enable/disable the dataset-level compound-target check for `harmonize-miniml-json`; enabled by default |
 | `--request-timeout SECONDS` | Per-request timeout; default `30` |
 | `--request-max-attempts N` | Maximum attempts; default `3` |
 | `--request-backoff SECONDS` | Exponential backoff base; default `1` |
@@ -509,7 +521,8 @@ def harmonize(targets, publication_context):
 ```
 
 `harmonize_miniml_json(...)` calls target-path discovery, extraction and
-deduplication, delegates to `harmonize(...)`, then calls `apply_targets(...)`;
+deduplication, asks the target checker for additions, delegates the combined
+list to `harmonize(...)`, then calls `apply_targets(...)`;
 application defensively ignores every skipped target.
 
 #### Ontology store and cache

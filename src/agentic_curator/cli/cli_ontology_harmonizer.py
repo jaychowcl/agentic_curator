@@ -116,6 +116,18 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_publication_context(miniml)
     _add_store_options(miniml)
     _add_harmonize_options(miniml)
+    miniml.add_argument(
+        "--target-checker",
+        dest="target_checker",
+        action="store_true",
+        default=True,
+        help="Add missing concepts from compound targets before ontology lookup.",
+    )
+    miniml.add_argument(
+        "--no-target-checker",
+        dest="target_checker",
+        action="store_false",
+    )
     miniml.add_argument("--miniml-json", default=None)
     miniml.add_argument("--miniml-json-file", default=None)
     miniml.add_argument("--out", default=None)
@@ -246,6 +258,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Any:
             lookup_llm_judge=args.lookup_llm_judge,
             search_llm_judge=args.search_llm_judge,
             llm=args.llm,
+            target_checker=args.target_checker,
         )
 
     parser.error(f"Unknown command {args.command!r}.")

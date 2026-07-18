@@ -51,6 +51,8 @@ class OntologyHarmonizer:
     METADATA_CONTEXT_MAX_CHARS = 500
     FIELD_TERM_DESCRIPTION_MAX_CHARS = 500
     FIELD_ASSIGNMENT_MAX_ATTEMPTS = 2
+    TARGET_CHECKER_MAX_ATTEMPTS = 2
+    TARGET_CHECKER_MAX_ADDITIONS_PER_TARGET = 3
     WORKFLOW = "local_rag_ols"
 
     def __init__(
@@ -193,6 +195,7 @@ class OntologyHarmonizer:
         lookup_llm_judge: bool = True,
         search_llm_judge: bool = True,
         llm: bool = True,
+        target_checker: bool = True,
     ) -> dict[str, Any]:
         LOGGER.info("Starting MINiML JSON ontology harmonization.")
         should_dedupe_targets = target_paths is None
@@ -214,21 +217,332 @@ class OntologyHarmonizer:
             miniml_json,
             harmonization_targets,
         )
+        effective_ontostore = self._effective_ontostore(ontostore)
+        if target_checker and llm:
+            added_targets, target_checker_trace = self._run_target_checker(
+                targets=harmonization_targets,
+                publication_context=publication_context,
+                metadata_context=metadata_context,
+                ontostore=effective_ontostore,
+            )
+            harmonization_targets = [*harmonization_targets, *added_targets]
+        else:
+            target_checker_trace = {
+                "status": "disabled",
+                "reason": (
+                    "llm_disabled" if not llm else "target_checker_disabled"
+                ),
+                "added_count": 0,
+            }
         result = self.harmonize(
             publication_context=publication_context,
             metadata_context=metadata_context,
             harmonization_targets=harmonization_targets,
             target=None,
-            ontostore=ontostore,
+            ontostore=effective_ontostore,
             target_paths=effective_target_paths,
             lookup_llm_judge=lookup_llm_judge,
             search_llm_judge=search_llm_judge,
             llm=llm,
         )
+        result["target_checker"] = target_checker_trace
         applied_targets = result.get("harmonization_targets", harmonization_targets)
         result["miniml_json"] = self.apply_targets(miniml_json, applied_targets)
         LOGGER.info("Completed MINiML JSON ontology harmonization.")
         return result
+
+    def _run_target_checker(
+        self,
+        *,
+        targets: list[dict[str, Any]],
+        publication_context: str | None,
+        metadata_context: str | None,
+        ontostore: OntoStore,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        attempts: list[dict[str, Any]] = []
+        correction: dict[str, Any] | None = None
+        for attempt_number in range(1, self.TARGET_CHECKER_MAX_ATTEMPTS + 1):
+            prompt = self._target_checker_prompt(
+                targets=targets,
+                publication_context=publication_context,
+                metadata_context=metadata_context,
+                fields=ontostore.fields,
+                correction=correction,
+            )
+            response: Any = None
+            try:
+                response = self._generate_response(
+                    prompt,
+                    config={
+                        "response_mime_type": "application/json",
+                        "response_schema": self._target_checker_response_schema(),
+                    },
+                )
+                parsed = parse_json_response(response)
+                proposals = self._validate_target_checker_response(parsed)
+            except Exception as exc:
+                attempts.append(
+                    {
+                        "attempt": attempt_number,
+                        "status": "invalid",
+                        "error": str(exc),
+                    }
+                )
+                correction = {
+                    "validation_error": str(exc),
+                    "previous_response": self._field_response_for_correction(
+                        response
+                    ),
+                }
+                continue
+
+            attempts.append({"attempt": attempt_number, "status": "accepted"})
+            added_targets, addition_trace = self._build_target_checker_additions(
+                targets=targets,
+                proposals=proposals,
+                ontostore=ontostore,
+            )
+            return added_targets, {
+                "status": "completed",
+                "attempts": attempts,
+                "proposed_count": len(proposals),
+                **addition_trace,
+            }
+
+        LOGGER.warning(
+            "Target checker failed after %d attempts; continuing original targets.",
+            len(attempts),
+        )
+        return [], {
+            "status": "failed",
+            "attempts": attempts,
+            "proposed_count": 0,
+            "added_count": 0,
+            "rejected_count": 0,
+            "merged_proposal_count": 0,
+            "additions": [],
+            "rejected": [],
+        }
+
+    @staticmethod
+    def _validate_target_checker_response(response: Any) -> list[Any]:
+        if not isinstance(response, dict):
+            raise ValueError("Target checker response must be a JSON object.")
+        additions = response.get("additions")
+        if not isinstance(additions, list):
+            raise ValueError("Target checker response additions must be a list.")
+        return additions
+
+    def _build_target_checker_additions(
+        self,
+        *,
+        targets: list[dict[str, Any]],
+        proposals: list[Any],
+        ontostore: OntoStore,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        targets_by_id = {
+            str(target["id"]): target
+            for target in targets
+            if isinstance(target, dict) and target.get("id") is not None
+        }
+        existing_pairs = {
+            (
+                ontostore.harmonize_key(target.get("pre_hz_field", "")),
+                ontostore.harmonize_key(target.get("pre_hz_label", "")),
+            )
+            for target in targets
+            if isinstance(target, dict)
+        }
+        accepted_per_source: dict[str, int] = {}
+        groups: dict[tuple[str, str], dict[str, Any]] = {}
+        rejected: list[dict[str, Any]] = []
+
+        for proposal_index, proposal in enumerate(proposals):
+            rejection = self._target_checker_proposal_rejection(
+                proposal=proposal,
+                targets_by_id=targets_by_id,
+                existing_pairs=existing_pairs,
+                accepted_per_source=accepted_per_source,
+                ontostore=ontostore,
+            )
+            if rejection is not None:
+                rejected.append(
+                    {
+                        "proposal_index": proposal_index,
+                        "reason": rejection,
+                        **({"proposal": proposal} if isinstance(proposal, dict) else {}),
+                    }
+                )
+                continue
+
+            source_target_id = str(proposal["source_target_id"])
+            field_hint = ontostore.harmonize_key(proposal["field_hint"])
+            label = " ".join(str(proposal["label"]).split())
+            pair = (field_hint, ontostore.harmonize_key(label))
+            group = groups.setdefault(
+                pair,
+                {
+                    "field_hint": field_hint,
+                    "label": label,
+                    "sources": [],
+                },
+            )
+            if any(
+                source["source_target_id"] == source_target_id
+                for source in group["sources"]
+            ):
+                rejected.append(
+                    {
+                        "proposal_index": proposal_index,
+                        "reason": "duplicate_proposal",
+                        "proposal": proposal,
+                    }
+                )
+                continue
+            source_target = targets_by_id[source_target_id]
+            group["sources"].append(
+                {
+                    "source_target_id": source_target_id,
+                    "confidence": str(proposal["confidence"]).lower(),
+                    "reason": str(proposal["reason"]).strip(),
+                    "original_field": source_target.get("pre_hz_field"),
+                    "original_label": source_target.get("pre_hz_label"),
+                }
+            )
+            accepted_per_source[source_target_id] = (
+                accepted_per_source.get(source_target_id, 0) + 1
+            )
+
+        added_targets: list[dict[str, Any]] = []
+        used_ids = {str(target.get("id")) for target in targets}
+        addition_summaries: list[dict[str, Any]] = []
+        for group in groups.values():
+            target_id = self._next_target_checker_id(
+                start=len(targets) + len(added_targets),
+                used_ids=used_ids,
+            )
+            used_ids.add(target_id)
+            occurrences = self._target_checker_occurrences(
+                group=group,
+                targets_by_id=targets_by_id,
+            )
+            added = {
+                "id": target_id,
+                "source": "target_checker",
+                "pre_hz_field": group["field_hint"],
+                "pre_hz_label": group["label"],
+                "hz_field": group["field_hint"],
+                "hz_label": group["label"],
+                "occurrences": occurrences,
+                "target_checker_addition": {
+                    "field_hint": group["field_hint"],
+                    "sources": group["sources"],
+                },
+            }
+            added_targets.append(added)
+            addition_summaries.append(
+                {
+                    "target_id": target_id,
+                    "field_hint": group["field_hint"],
+                    "label": group["label"],
+                    "source_target_ids": [
+                        source["source_target_id"] for source in group["sources"]
+                    ],
+                }
+            )
+
+        accepted_proposals = sum(len(group["sources"]) for group in groups.values())
+        return added_targets, {
+            "added_count": len(added_targets),
+            "rejected_count": len(rejected),
+            "merged_proposal_count": accepted_proposals - len(added_targets),
+            "additions": addition_summaries,
+            "rejected": rejected,
+        }
+
+    def _target_checker_proposal_rejection(
+        self,
+        *,
+        proposal: Any,
+        targets_by_id: dict[str, dict[str, Any]],
+        existing_pairs: set[tuple[str, str]],
+        accepted_per_source: dict[str, int],
+        ontostore: OntoStore,
+    ) -> str | None:
+        if not isinstance(proposal, dict):
+            return "invalid_proposal"
+        required = {
+            "source_target_id",
+            "label",
+            "field_hint",
+            "confidence",
+            "reason",
+        }
+        if not required.issubset(proposal):
+            return "invalid_proposal"
+        source_target_id = str(proposal["source_target_id"])
+        if source_target_id not in targets_by_id:
+            return "unknown_source_target"
+        label = proposal["label"]
+        field_hint = proposal["field_hint"]
+        reason = proposal["reason"]
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in (label, field_hint, reason)
+        ):
+            return "invalid_proposal"
+        confidence = str(proposal["confidence"]).lower()
+        if confidence not in {"medium", "high"}:
+            return "confidence_below_medium"
+        pair = (
+            ontostore.harmonize_key(field_hint),
+            ontostore.harmonize_key(label),
+        )
+        if pair in existing_pairs:
+            return "already_present"
+        if (
+            accepted_per_source.get(source_target_id, 0)
+            >= self.TARGET_CHECKER_MAX_ADDITIONS_PER_TARGET
+        ):
+            return "per_source_limit_exceeded"
+        return None
+
+    def _target_checker_occurrences(
+        self,
+        *,
+        group: dict[str, Any],
+        targets_by_id: dict[str, dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        occurrences: list[dict[str, Any]] = []
+        seen: set[tuple[Any, Any, Any]] = set()
+        for source in group["sources"]:
+            target = targets_by_id[source["source_target_id"]]
+            for occurrence in self._target_occurrences(target):
+                identity = (
+                    occurrence.get("pre_hz_field_path"),
+                    occurrence.get("pre_hz_label_path"),
+                    occurrence.get("parent_path"),
+                )
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                occurrences.append(
+                    {
+                        "pre_hz_field_path": identity[0],
+                        "pre_hz_label_path": identity[1],
+                        "parent_path": identity[2],
+                        "hz_field": group["field_hint"],
+                        "hz_label": group["label"],
+                    }
+                )
+        return occurrences
+
+    @staticmethod
+    def _next_target_checker_id(*, start: int, used_ids: set[str]) -> str:
+        index = start
+        while f"target-{index}" in used_ids:
+            index += 1
+        return f"target-{index}"
 
     def apply_targets(
         self,
@@ -1485,6 +1799,30 @@ class OntologyHarmonizer:
             ("Ontology Framework Config", ontology_frameworks),
         )
 
+    def _target_checker_prompt(
+        self,
+        *,
+        targets: list[dict[str, Any]],
+        publication_context: str | None,
+        metadata_context: str | None,
+        fields: dict[str, Any],
+        correction: dict[str, Any] | None = None,
+    ) -> str:
+        initial_prompt = files(PROMPT_PACKAGE).joinpath(
+            "prompts/target_checker.md"
+        ).read_text(encoding="utf-8").strip()
+        return self._structured_prompt(
+            initial_prompt,
+            ("Publication Context", publication_context),
+            ("Metadata Context", metadata_context),
+            (
+                "Original Harmonization Targets",
+                self._target_checker_target_context(targets),
+            ),
+            ("Fields", self._field_prompt_context(fields)),
+            ("Correction Required", correction),
+        )
+
     def _assign_field_prompt(
         self,
         *,
@@ -1586,6 +1924,21 @@ class OntologyHarmonizer:
             context["pre_hz_label"] = target["pre_hz_label"]
         return context
 
+    @staticmethod
+    def _target_checker_target_context(
+        targets: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        allowed = ("id", "pre_hz_field", "pre_hz_label")
+        return [
+            {
+                key: target[key]
+                for key in allowed
+                if target.get(key) is not None
+            }
+            for target in targets
+            if isinstance(target, dict)
+        ]
+
     def _field_prompt_context(
         self,
         fields: dict[str, Any],
@@ -1685,6 +2038,38 @@ class OntologyHarmonizer:
                 "new_field": {"type": "BOOLEAN"},
             },
             "required": ["decision", "confidence", "reason", "new_field"],
+        }
+
+    @staticmethod
+    def _target_checker_response_schema() -> dict[str, Any]:
+        return {
+            "type": "OBJECT",
+            "properties": {
+                "additions": {
+                    "type": "ARRAY",
+                    "items": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "source_target_id": {"type": "STRING"},
+                            "label": {"type": "STRING"},
+                            "field_hint": {"type": "STRING"},
+                            "confidence": {
+                                "type": "STRING",
+                                "enum": ["high", "medium", "low", "none"],
+                            },
+                            "reason": {"type": "STRING"},
+                        },
+                        "required": [
+                            "source_target_id",
+                            "label",
+                            "field_hint",
+                            "confidence",
+                            "reason",
+                        ],
+                    },
+                }
+            },
+            "required": ["additions"],
         }
 
     def _lookup_judge_response_schema(self) -> dict[str, Any]:
