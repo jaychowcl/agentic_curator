@@ -730,7 +730,7 @@ def test_get_uses_existing_downloaded_file(monkeypatch, tmp_path: Path) -> None:
     assert store.ontology_frameworks["CL"]["owl_path"] == existing
 
 
-def test_get_returns_existing_json_without_calling_download(tmp_path: Path) -> None:
+def test_get_returns_existing_json_unchanged_without_calling_download(tmp_path: Path) -> None:
     existing = tmp_path / "cl.owl"
     existing.write_bytes(b"invalid existing ontology")
     existing_json = tmp_path / "jsons" / "cl.json"
@@ -754,12 +754,12 @@ def test_get_returns_existing_json_without_calling_download(tmp_path: Path) -> N
     assert result == existing_json
     assert json.loads(result.read_text(encoding="utf-8")) == {
         "cached": True,
-        "ontology": {"title": "cached ontology", "id": "CL"},
+        "ontology": {"title": "cached ontology"},
     }
     assert store.ontology_frameworks["CL"]["json_path"] == existing_json
 
 
-def test_get_updates_stale_existing_json_ontology_id(tmp_path: Path) -> None:
+def test_get_does_not_rewrite_stale_existing_json_ontology_id(tmp_path: Path) -> None:
     existing = tmp_path / "cl.owl"
     existing.write_bytes(b"invalid existing ontology")
     existing_json = tmp_path / "jsons" / "cl.json"
@@ -777,7 +777,7 @@ def test_get_updates_stale_existing_json_ontology_id(tmp_path: Path) -> None:
 
     assert result == existing_json
     assert json.loads(result.read_text(encoding="utf-8"))["ontology"] == {
-        "id": "CL",
+        "id": "old",
         "title": "cached ontology",
     }
 
@@ -952,6 +952,9 @@ def test_lookup_matches_label_index(tmp_path: Path) -> None:
             "uberon": {"path": tmp_path / "missing.owl", "json_path": json_path}
         },
         storage_dir=tmp_path,
+    )
+    store._load_ontology_json = lambda path: (_ for _ in ()).throw(
+        AssertionError("ontology JSON must be streamed")
     )
 
     assert store.lookup(" Lung, ", "uberon") == [{**term, "ontology_id": "uberon"}]

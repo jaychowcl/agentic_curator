@@ -14,6 +14,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
+
 from agentic_curator import OntologyHarmonizer
 from agentic_curator.curators.ontology_harmonizer import OntoStore
 from agentic_curator.cli.cli_ontology_harmonizer import _build_parser
@@ -133,6 +135,85 @@ def test_lookup_rag_does_not_download_uncached_framework(tmp_path: Path) -> None
     assert store.lookup_rag("lung", "remote") == []
     assert provider.document_calls == []
     assert provider.query_calls == []
+
+
+def test_url_backed_framework_with_local_cache_is_automatically_selected(
+    tmp_path: Path,
+) -> None:
+    json_path = tmp_path / "cached.json"
+    _write_toy_ontology(json_path)
+    store = OntoStore(
+        ontology_frameworks={
+            "cached": {
+                "url": "https://example.org/cached.owl",
+                "json_path": json_path,
+            },
+            "remote": {"url": "https://example.org/remote.owl"},
+        },
+        storage_dir=tmp_path,
+    )
+
+    assert OntologyHarmonizer()._candidate_ontology_ids({}, store) == ["cached"]
+
+
+def test_lookup_rag_many_embeds_query_once_and_searches_frameworks_in_order(
+    tmp_path: Path,
+) -> None:
+    provider = FakeEmbeddingProvider()
+    first_path = tmp_path / "first.json"
+    second_path = tmp_path / "second.json"
+    _write_toy_ontology(first_path)
+    _write_toy_ontology(second_path)
+    store = OntoStore(
+        ontology_frameworks={
+            "first": {"json_path": first_path, "owl_path": tmp_path / "first.owl"},
+            "second": {"json_path": second_path, "owl_path": tmp_path / "second.owl"},
+        },
+        storage_dir=tmp_path,
+        embedding_provider=provider,
+    )
+
+    result = store.lookup_rag_many(
+        "breathing structure", ["first", "second"], top_k=1
+    )
+
+    assert provider.query_calls == ["breathing structure"]
+    assert [hit["ontology_id"] for hit in result["hits"]] == ["first", "second"]
+    assert result["errors"] == []
+
+
+def test_reused_rag_index_is_viewed_from_disk_instead_of_loaded(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    provider = FakeEmbeddingProvider()
+    store = _toy_store(tmp_path, provider)
+    store.build_rag_index("toy")
+    viewed: list[Path] = []
+
+    class ViewingIndex:
+        def __init__(self, **kwargs):
+            pass
+
+        def view(self, path):
+            viewed.append(Path(path))
+
+        def load(self, path):
+            raise AssertionError("RAG queries must not load the full index")
+
+        def __len__(self):
+            return 2
+
+        def search(self, query, count):
+            return SimpleNamespace(
+                keys=np.asarray([0], dtype=np.uint64),
+                distances=np.asarray([0.1], dtype=np.float32),
+            )
+
+    monkeypatch.setattr("usearch.index.Index", ViewingIndex)
+
+    assert store.lookup_rag("breathing structure", "toy", top_k=1)
+    assert viewed == [store.build_rag_index("toy")]
 
 
 def test_fixed_workflow_removes_strategy_public_api_and_cli() -> None:

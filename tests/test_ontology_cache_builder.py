@@ -124,6 +124,28 @@ def test_build_ontology_cache_uses_default_max_workers(
     assert manifest["max_workers"] == 3
 
 
+def test_validate_successes_streams_json_without_json_loads(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    json_path = tmp_path / "alpha.json"
+    json_path.write_text(
+        '{"ontology":{"id":"alpha"},"terms":{"iri":{}}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        cache_builder.json,
+        "loads",
+        lambda value: (_ for _ in ()).throw(
+            AssertionError("validation must not load the complete JSON")
+        ),
+    )
+
+    assert cache_builder.validate_successes(
+        [{"framework": "alpha", "status": "cached", "json_path": str(json_path)}]
+    )[0]["valid"] is True
+
+
 def test_build_ontology_cache_optionally_builds_rag_indexes(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
