@@ -34,9 +34,11 @@ class RecordingStore:
 
 class RecordingHarmonizer:
     calls: list[dict] = []
+    init_calls: list[dict] = []
 
-    def __init__(self, ontostore=None) -> None:
+    def __init__(self, ontostore=None, **kwargs) -> None:
         self.ontostore = ontostore
+        self.__class__.init_calls.append({"ontostore": ontostore, **kwargs})
 
     def harmonize(
         self,
@@ -95,6 +97,7 @@ class RecordingHarmonizer:
 def _patch_cli(monkeypatch):
     RecordingStore.calls = []
     RecordingHarmonizer.calls = []
+    RecordingHarmonizer.init_calls = []
     monkeypatch.setattr(cli_ontology_harmonizer, "OntoStore", RecordingStore)
     monkeypatch.setattr(
         cli_ontology_harmonizer,
@@ -204,3 +207,63 @@ def test_cli_invalid_json_exits_with_parser_error(
     output = capsys.readouterr()
     assert exc_info.value.code == 2
     assert "Invalid JSON" in output.err
+
+
+def test_cli_rag_hierarchy_is_disabled_by_default(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert cli_ontology_harmonizer.main(["harmonize", "--target", "{}"]) == 0
+    capsys.readouterr()
+
+    assert RecordingHarmonizer.init_calls == [
+        {
+            "ontostore": RecordingHarmonizer.init_calls[0]["ontostore"],
+            "rag_hierarchy": False,
+            "rag_parent_depth": 2,
+            "rag_child_depth": 1,
+            "rag_hierarchy_threshold_offset": 0.1,
+        }
+    ]
+
+
+def test_cli_passes_enabled_rag_hierarchy_configuration(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert (
+        cli_ontology_harmonizer.main(
+            [
+                "harmonize-miniml-json",
+                "--miniml-json",
+                "{}",
+                "--rag-hierarchy",
+                "--rag-parent-depth",
+                "3",
+                "--rag-child-depth",
+                "2",
+                "--rag-hierarchy-threshold-offset",
+                "0.2",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    assert RecordingHarmonizer.init_calls[0] == {
+        "ontostore": RecordingHarmonizer.init_calls[0]["ontostore"],
+        "rag_hierarchy": True,
+        "rag_parent_depth": 3,
+        "rag_child_depth": 2,
+        "rag_hierarchy_threshold_offset": 0.2,
+    }
+
+
+def test_cli_rejects_hierarchy_tuning_without_enable_flag(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        cli_ontology_harmonizer.main(
+            ["harmonize", "--target", "{}", "--rag-parent-depth", "3"]
+        )
+
+    assert exc_info.value.code == 2
+    assert "--rag-hierarchy is required" in capsys.readouterr().err
