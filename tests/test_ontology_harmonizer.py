@@ -2523,27 +2523,46 @@ def test_harmonize_accepts_ontostore_override() -> None:
     }
 
 
-def test_harmonize_calls_assign_onto_framework_for_each_target() -> None:
+def test_harmonize_routes_each_lookup_miss_directly_to_search() -> None:
     calls = []
 
     class RecordingHarmonizer(OntologyHarmonizer):
-        def assign_onto_framework(
+        def lookup_label(
             self,
             target,
             *,
             publication_context,
             ontostore,
+            strategy,
+            lookup_llm_judge=False,
+            lookup_llm_threshold=2,
+        ):
+            return False
+
+        def assign_onto_framework(self, *args, **kwargs):
+            raise AssertionError("lookup misses must not assign a framework")
+
+        def harmonize_field(self, target, *, publication_context, ontostore, llm=True):
+            return False
+
+        def harmonize_label(
+            self,
+            target,
+            *,
+            publication_context,
+            ontostore,
+            strategy,
+            search_llm_judge=True,
         ):
             calls.append(
                 {
                     "target": target,
                     "publication_context": publication_context,
                     "ontostore": ontostore,
+                    "strategy": strategy,
                 }
             )
-
-        def harmonize_field(self, target, *, publication_context, ontostore, llm=True):
-            return False
+            return {"status": "not_harmonized"}
 
     store = OntoStore()
     targets = [
@@ -2562,16 +2581,18 @@ def test_harmonize_calls_assign_onto_framework_for_each_target() -> None:
             "target": targets[0],
             "publication_context": "context",
             "ontostore": store,
+            "strategy": "websearch",
         },
         {
             "target": targets[1],
             "publication_context": "context",
             "ontostore": store,
+            "strategy": "websearch",
         },
     ]
 
 
-def test_harmonize_calls_lookup_label_before_assign_onto_framework() -> None:
+def test_harmonize_calls_lookup_then_field_then_search_without_framework_assignment() -> None:
     calls = []
 
     class RecordingHarmonizer(OntologyHarmonizer):
@@ -2588,18 +2609,24 @@ def test_harmonize_calls_lookup_label_before_assign_onto_framework() -> None:
             calls.append(("lookup", target["id"], publication_context, strategy))
             return False
 
-        def assign_onto_framework(
+        def assign_onto_framework(self, *args, **kwargs):
+            raise AssertionError("lookup misses must not assign a framework")
+
+        def harmonize_field(self, target, *, publication_context, ontostore, llm=True):
+            calls.append(("field", target["id"], publication_context))
+            return False
+
+        def harmonize_label(
             self,
             target,
             *,
             publication_context,
             ontostore,
+            strategy,
+            search_llm_judge=True,
         ):
-            calls.append(("assign", target["id"], publication_context))
-            return False
-
-        def harmonize_field(self, target, *, publication_context, ontostore, llm=True):
-            return False
+            calls.append(("search", target["id"], publication_context, strategy))
+            return {"status": "not_harmonized"}
 
     target = {"id": "target-0", "pre_hz_label": "lung"}
 
@@ -2610,7 +2637,8 @@ def test_harmonize_calls_lookup_label_before_assign_onto_framework() -> None:
 
     assert calls == [
         ("lookup", "target-0", "context", "websearch"),
-        ("assign", "target-0", "context"),
+        ("field", "target-0", "context"),
+        ("search", "target-0", "context", "websearch"),
     ]
 
 
@@ -3556,23 +3584,49 @@ def test_websearch_strategy_does_not_harmonize_without_complete_framework_config
     assert store.ontology_frameworks["uberon"] == before
 
 
-def test_websearch_strategy_returns_not_harmonized_without_assigned_framework() -> None:
+def test_websearch_strategy_without_framework_starts_with_unrestricted_ols() -> None:
+    term = {
+        "iri": "http://purl.obolibrary.org/obo/UBERON_0002048",
+        "ontology_name": "uberon",
+        "short_form": "UBERON_0002048",
+        "obo_id": "UBERON:0002048",
+        "label": "lung",
+        "description": ["Respiration organ."],
+    }
+    ols_client = FakeOlsClient(
+        search_results=[[term]],
+        ontology_metadata={
+            "uberon": {
+                "config": {
+                    "id": "uberon",
+                    "title": "Uber-anatomy ontology",
+                    "description": "An anatomy ontology.",
+                    "version": "2026-06-19",
+                    "versionIri": "https://example.org/uberon.owl",
+                }
+            }
+        },
+    )
+    search_client = FakeSearchClient()
     target = {"id": "target-0", "hz_label": "lung"}
-    result = WebsearchStrategyHandler().handle(
+    result = WebsearchStrategyHandler(
+        ols_client=ols_client,
+        search_client=search_client,
+    ).handle(
         target,
         publication_context=None,
         ontostore=OntoStore(),
     )
 
-    assert result == {
-        "strategy": "websearch",
-        "status": "not_harmonized",
-        "decision": "false",
-        "confidence": "none",
-        "reason": "No assigned ontology framework is available for websearch.",
-        "ols_hits": [],
-        "web_hits": [],
-    }
+    assert result["status"] == "matched"
+    assert result["decision"] == "UBERON_0002048"
+    assert target["ontology_id"] == "uberon"
+    assert ols_client.search_calls == [
+        {"label": "lung", "ontology_id": None, "rows": 25}
+    ]
+    assert search_client.calls == [
+        {"query": "field: lung ontology", "max_results": 25}
+    ]
     assert target["ontology_strategy_result"] == result
 
 
