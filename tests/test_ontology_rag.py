@@ -100,8 +100,10 @@ def test_lookup_rag_builds_reuses_and_returns_semantic_top_k(tmp_path: Path) -> 
     assert isinstance(hits[0]["rag_score"], float)
     assert len(first_provider.document_calls) == 1
     assert len(first_provider.document_calls[0]) == 2
-    assert "Term: lung" in first_provider.document_calls[0][0]
-    assert "Synonyms: pulmonary organ" in first_provider.document_calls[0][0]
+    assert any(
+        "Term: lung" in chunk and "Synonyms: pulmonary organ" in chunk
+        for chunk in first_provider.document_calls[0]
+    )
     assert first_provider.query_calls == ["breathing structure"]
 
     second_provider = FakeEmbeddingProvider()

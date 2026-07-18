@@ -16,6 +16,7 @@ import logging
 from pathlib import Path
 import re
 import sqlite3
+import os
 import time
 from typing import Any, Iterable, Iterator
 from urllib.parse import urlparse
@@ -115,7 +116,9 @@ class OntoStore:
         },
     }
     DEFAULT_STORAGE_DIR = Path(__file__).resolve().parent / "ontology_frameworks"
-    SQLITE_SCHEMA_VERSION = "3"
+    SQLITE_SCHEMA_VERSION = "4"
+    RAG_CHUNK_SCHEMA_VERSION = "1"
+    RAG_BATCH_SIZE = 250
     LOOKUP_INDEXES = ("label", "id", "accession", "iri")
 
     def __init__(
@@ -125,6 +128,7 @@ class OntoStore:
         storage_dir: str | Path | None = None,
         sqlite_path: str | Path | None = None,
         request_policy: RequestPolicy | None = None,
+        embedding_provider: Any | None = None,
     ) -> None:
         self.storage_dir = (
             self.DEFAULT_STORAGE_DIR if storage_dir is None else Path(storage_dir)
@@ -141,6 +145,7 @@ class OntoStore:
             else Path(sqlite_path)
         )
         self.request_policy = request_policy or RequestPolicy()
+        self.embedding_provider = embedding_provider
         with self._sqlite_connection():
             pass
         self.fields = self._load_persisted_fields()
@@ -311,6 +316,254 @@ class OntoStore:
 
     def lookup(self, label: str, ontology_id: str) -> list[dict[str, Any]]:
         return self.lookup_with_metadata(label, ontology_id)["hits"]
+
+    def lookup_rag(
+        self,
+        label: str,
+        ontology_id: str,
+        top_k: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Return semantic nearest neighbours from one cached local ontology."""
+        if top_k < 1:
+            raise ValueError("top_k must be positive.")
+        if self._cached_framework_path(ontology_id) is None:
+            return []
+        index_path = self.build_rag_index(ontology_id)
+        provider = self._embedding_provider()
+        query = provider.embed_query(str(label))
+
+        import numpy as np
+        from usearch.index import Index
+
+        index = Index(
+            ndim=int(provider.dimensions), metric="cos", dtype="f32"
+        )
+        index.load(index_path)
+        matches = index.search(
+            np.asarray(query, dtype=np.float32), min(top_k, len(index))
+        )
+        vector_ids = [int(value) for value in matches.keys]
+        distances = [float(value) for value in matches.distances]
+        if not vector_ids:
+            return []
+
+        placeholders = ",".join("?" for _ in vector_ids)
+        with self._sqlite_connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT rag_term_map.vector_id, terms.payload
+                FROM rag_term_map
+                JOIN terms
+                  ON terms.ontology_id = rag_term_map.ontology_id
+                 AND terms.term_key = rag_term_map.term_key
+                WHERE rag_term_map.ontology_id = ?
+                  AND rag_term_map.vector_id IN ({placeholders})
+                """,
+                (ontology_id, *vector_ids),
+            ).fetchall()
+        payload_by_id = {int(row[0]): json.loads(row[1]) for row in rows}
+        hits = []
+        for vector_id, distance in zip(vector_ids, distances):
+            payload = payload_by_id.get(vector_id)
+            if payload is None:
+                continue
+            hits.append(
+                {
+                    **payload,
+                    "ontology_id": ontology_id,
+                    "rag_score": float(1.0 - distance),
+                }
+            )
+        return hits
+
+    def build_rag_index(self, ontology_id: str, force: bool = False) -> Path:
+        """Build or reuse one persistent semantic index for a cached framework."""
+        source_path = self._cached_framework_path(ontology_id)
+        if source_path is None:
+            raise FileNotFoundError(
+                f"Ontology framework {ontology_id!r} has no cached local source."
+            )
+        self.index_framework(ontology_id)
+        provider = self._embedding_provider()
+        index_dir = self.storage_dir / "vectors"
+        index_dir.mkdir(parents=True, exist_ok=True)
+        safe_model = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(provider.model))
+        index_path = index_dir / f"{ontology_id}.{safe_model}.{provider.dimensions}.usearch"
+
+        from filelock import FileLock
+
+        with FileLock(f"{index_path}.lock"):
+            manifest = self._rag_manifest(ontology_id)
+            if (
+                not force
+                and index_path.exists()
+                and manifest == self._expected_rag_manifest(ontology_id, index_path)
+            ):
+                return index_path
+            self._build_rag_partition(ontology_id, index_path, provider)
+        return index_path
+
+    def _build_rag_partition(self, ontology_id: str, index_path: Path, provider: Any) -> None:
+        import numpy as np
+        from usearch.index import Index
+
+        index = Index(ndim=int(provider.dimensions), metric="cos", dtype="f32")
+        with self._sqlite_connection() as connection:
+            cursor = connection.execute(
+                "SELECT term_key, payload FROM terms WHERE ontology_id = ? ORDER BY term_key",
+                (ontology_id,),
+            )
+            vector_id = 0
+            while True:
+                rows = cursor.fetchmany(self.RAG_BATCH_SIZE)
+                if not rows:
+                    break
+                texts = [
+                    self._rag_term_chunk(ontology_id, json.loads(row[1]))
+                    for row in rows
+                ]
+                vectors = provider.embed_documents(texts)
+                if len(vectors) != len(rows):
+                    raise ValueError("Embedding provider returned an invalid vector count.")
+                keys = np.arange(vector_id, vector_id + len(rows), dtype=np.uint64)
+                index.add(keys, np.asarray(vectors, dtype=np.float32))
+                vector_id += len(rows)
+
+        temporary = index_path.with_name(f".{index_path.name}.{os.getpid()}.tmp")
+        try:
+            index.save(temporary)
+            os.replace(temporary, index_path)
+            expected = self._expected_rag_manifest(ontology_id, index_path)
+            with self._sqlite_connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    connection.execute(
+                        "DELETE FROM rag_frameworks WHERE ontology_id = ?", (ontology_id,)
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO rag_frameworks(
+                            ontology_id, source_path, source_size, source_mtime_ns,
+                            model, dimensions, chunk_schema, index_path, term_count,
+                            built_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        """,
+                        (
+                            ontology_id,
+                            expected["source_path"],
+                            expected["source_size"],
+                            expected["source_mtime_ns"],
+                            expected["model"],
+                            expected["dimensions"],
+                            expected["chunk_schema"],
+                            expected["index_path"],
+                            vector_id,
+                        ),
+                    )
+                    mapping_cursor = connection.execute(
+                        "SELECT term_key FROM terms WHERE ontology_id = ? ORDER BY term_key",
+                        (ontology_id,),
+                    )
+                    batch = []
+                    for position, (term_key,) in enumerate(mapping_cursor):
+                        batch.append((ontology_id, position, term_key))
+                        if len(batch) >= 5_000:
+                            connection.executemany(
+                                "INSERT INTO rag_term_map VALUES (?, ?, ?)", batch
+                            )
+                            batch.clear()
+                    if batch:
+                        connection.executemany(
+                            "INSERT INTO rag_term_map VALUES (?, ?, ?)", batch
+                        )
+                    connection.commit()
+                except Exception:
+                    connection.rollback()
+                    raise
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _embedding_provider(self) -> Any:
+        if self.embedding_provider is None:
+            from agentic_curator.wrappers.gemini_embeddings import GeminiEmbeddingProvider
+
+            self.embedding_provider = GeminiEmbeddingProvider(
+                request_policy=self.request_policy
+            )
+        return self.embedding_provider
+
+    def _cached_framework_path(self, ontology_id: str) -> Path | None:
+        if ontology_id not in self.ontology_frameworks:
+            raise KeyError(ontology_id)
+        json_path = self._json_target_path(ontology_id)
+        if json_path.exists():
+            return json_path
+        owl_path = self._target_path(ontology_id)
+        return owl_path if owl_path.exists() else None
+
+    def _expected_rag_manifest(self, ontology_id: str, index_path: Path) -> dict[str, Any]:
+        provider = self._embedding_provider()
+        with self._sqlite_connection() as connection:
+            row = connection.execute(
+                "SELECT json_path, json_size, json_mtime_ns FROM frameworks WHERE ontology_id = ?",
+                (ontology_id,),
+            ).fetchone()
+        if row is None:
+            raise ValueError(f"Ontology framework {ontology_id!r} is not indexed.")
+        return {
+            "source_path": str(row[0]),
+            "source_size": int(row[1]),
+            "source_mtime_ns": int(row[2]),
+            "model": str(provider.model),
+            "dimensions": int(provider.dimensions),
+            "chunk_schema": self.RAG_CHUNK_SCHEMA_VERSION,
+            "index_path": str(index_path.resolve()),
+        }
+
+    def _rag_manifest(self, ontology_id: str) -> dict[str, Any] | None:
+        with self._sqlite_connection() as connection:
+            row = connection.execute(
+                """
+                SELECT source_path, source_size, source_mtime_ns, model,
+                       dimensions, chunk_schema, index_path
+                FROM rag_frameworks WHERE ontology_id = ?
+                """,
+                (ontology_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        keys = (
+            "source_path", "source_size", "source_mtime_ns", "model",
+            "dimensions", "chunk_schema", "index_path",
+        )
+        return dict(zip(keys, row))
+
+    @staticmethod
+    def _rag_term_chunk(ontology_id: str, term: dict[str, Any]) -> str:
+        synonyms = term.get("synonyms", {})
+        if isinstance(synonyms, dict):
+            synonym_values = [
+                str(value)
+                for values in synonyms.values()
+                for value in (values if isinstance(values, list) else [values])
+                if value
+            ]
+        elif isinstance(synonyms, list):
+            synonym_values = [str(value) for value in synonyms if value]
+        else:
+            synonym_values = [str(synonyms)] if synonyms else []
+        description = term.get("description")
+        if isinstance(description, list):
+            description = " ".join(str(value) for value in description if value)
+        parts = [
+            f"Ontology: {ontology_id}",
+            f"Term: {term.get('title', '')}",
+            f"Synonyms: {'; '.join(synonym_values)}",
+            f"Description: {description or ''}",
+            f"Accession: {term.get('accession') or term.get('id') or ''}",
+            f"IRI: {term.get('iri', '')}",
+        ]
+        return "\n".join(parts)
 
     def lookup_with_metadata(
         self,
@@ -725,6 +978,28 @@ class OntoStore:
                     response_json TEXT NOT NULL,
                     created_at REAL NOT NULL,
                     PRIMARY KEY (provider, operation, cache_key)
+                );
+                CREATE TABLE IF NOT EXISTS rag_frameworks (
+                    ontology_id TEXT PRIMARY KEY,
+                    source_path TEXT NOT NULL,
+                    source_size INTEGER NOT NULL,
+                    source_mtime_ns INTEGER NOT NULL,
+                    model TEXT NOT NULL,
+                    dimensions INTEGER NOT NULL,
+                    chunk_schema TEXT NOT NULL,
+                    index_path TEXT NOT NULL,
+                    term_count INTEGER NOT NULL,
+                    built_at TEXT NOT NULL,
+                    FOREIGN KEY (ontology_id) REFERENCES frameworks(ontology_id)
+                        ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS rag_term_map (
+                    ontology_id TEXT NOT NULL,
+                    vector_id INTEGER NOT NULL,
+                    term_key TEXT NOT NULL,
+                    PRIMARY KEY (ontology_id, vector_id),
+                    FOREIGN KEY (ontology_id, term_key)
+                        REFERENCES terms(ontology_id, term_key) ON DELETE CASCADE
                 );
                 """
             )

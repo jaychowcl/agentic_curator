@@ -14,6 +14,7 @@ from agentic_curator.wrappers.gemini_enterprise import (
     GeminiEnterprisePlatform,
     GeminiModelAdapter,
 )
+from agentic_curator.wrappers.gemini_embeddings import GeminiEmbeddingProvider
 from agentic_curator.wrappers.llm import LLM
 
 __all__ = [
@@ -21,6 +22,7 @@ __all__ = [
     "ClaudeModelAdapter",
     "ClaudeVertexPlatform",
     "GeminiEnterprisePlatform",
+    "GeminiEmbeddingProvider",
     "GeminiModelAdapter",
     "LLM",
 ]
