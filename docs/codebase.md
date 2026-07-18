@@ -104,7 +104,9 @@ The package uses a `src/` layout with setuptools:
 - project name: `agentic-curator`
 - import package: `agentic_curator`
 - Python requirement: `>=3.10`
-- runtime dependencies: `anthropic[vertex]>=0.107,<1`, `google-genai>=1.72,<2`, `rdflib>=7,<8`, and `requests>=2,<3`
+- runtime dependencies: `anthropic[vertex]>=0.107,<1`, `filelock>=3,<4`,
+  `google-genai>=1.72,<2`, `ijson>=3,<4`, `rdflib>=7,<8`,
+  `requests>=2,<3`, and `usearch>=2,<3`
 - dev extra: `pytest>=8`
 - `requirements.txt` mirrors the direct runtime/dev dependencies for pip-based
   environment bootstrap and includes `-e .`
@@ -224,9 +226,10 @@ results use `source="ols"`; there is no public `strategy` argument or
 2. Run exact local SQLite lookup, then FTS5 when exact lookup misses.
 3. If local candidates exist, the lookup judge either selects an ID, returns
    `no_match` to continue, or returns `false` to terminally skip the target.
-4. After a local miss or `no_match`, call `OntoStore.lookup_rag(...)` across
-   locally cached candidate frameworks. The same judge accepts or rejects the
-   aggregated semantic candidates.
+4. After a local miss or `no_match`, call `OntoStore.lookup_rag_many(...)` for
+   the locally cached candidate frameworks. It embeds the label once, searches
+   each framework partition sequentially, and the same judge accepts or rejects
+   the globally ranked semantic candidates.
 5. After a semantic miss or `no_match`, search OLS without first asking the
    model to select a framework. OLS is the only external ontology search;
    grounded web search is not part of this workflow.
@@ -299,6 +302,7 @@ Important methods:
 
 - `lookup(...)`, `lookup_with_metadata(...)`, and `lookup_exact(...)`
 - `lookup_rag(label, ontology_id, top_k=10)`
+- `lookup_rag_many(label, ontology_ids, top_k=10)`
 - `build_rag_index(ontology_id, force=False)`
 - `index_framework(...)`, `index_owl_framework(...)`, `sync_sqlite(...)`,
   and `remove_indexed_framework(...)`
@@ -306,8 +310,10 @@ Important methods:
 - field registry and external-response cache CRUD methods
 
 Exact normalized lookup precedes FTS5 over labels, synonyms, descriptions, IDs,
-accessions, and IRIs. Indexing can import legacy JSON or stream RDF/XML classes
-through a bounded temporary SQLite staging database. Framework replacement is
+accessions, and IRIs. Legacy JSON is parsed incrementally with `ijson`: each of
+the label, ID, accession, and IRI maps is streamed into bounded SQLite batches,
+then canonical stored terms are streamed into FTS5 batches. RDF/XML classes use
+a bounded temporary SQLite staging database. Framework replacement is
 transactional and freshness uses source path, size, and nanosecond mtime.
 
 `lookup_rag(...)` never downloads an uncached framework. It returns an empty
@@ -315,6 +321,16 @@ list unless a local JSON or OWL source already exists. For a cached framework it
 ensures SQLite terms exist, builds or reuses one USearch cosine index partition,
 embeds the query, retrieves top-k vector IDs, joins those IDs back to canonical
 SQLite term payloads, and returns terms with `ontology_id` and `rag_score`.
+`lookup_rag_many(...)` prepares eligible partitions in configuration order,
+isolates per-framework build/search failures, embeds the query exactly once,
+and searches the partitions sequentially. It returns all per-partition hits and
+errors; the harmonizer deduplicates and globally ranks the combined candidates.
+
+Automatic local and semantic framework selection is cache-based, not
+URL-configuration-based. A built-in or custom URL-backed framework participates
+when its configured JSON or OWL path exists. URL-only frameworks without a
+local file are excluded, including when named explicitly by a target, so lookup
+and semantic lookup never trigger an ontology download.
 
 Each ontology term is one chunk containing its framework ID, title, synonyms,
 complete description, ID, accession, and IRI. The default
@@ -322,6 +338,11 @@ complete description, ID, accession, and IRI. The default
 model `gemini-embedding-001`, 768 dimensions,
 `RETRIEVAL_DOCUMENT` for chunks, and `RETRIEVAL_QUERY` for queries. Document
 requests are batched to at most 250 texts.
+All batches use the same provider model and dimensionality and therefore occupy
+the same vector space. Building one partition still holds that framework's
+USearch vectors in process memory; it does not load the source JSON document.
+Query-time reuse opens each persisted partition with `Index.view(...)`, so it is
+memory-mapped rather than fully loaded. Partitions are not merged or sharded.
 
 Semantic partitions and their SQLite mappings are guarded by a file lock.
 Manifests bind the index to source freshness, embedding model/dimensions, chunk
@@ -684,9 +705,8 @@ class OntologyHarmonizer:
         return selected or False
 
     def lookup_rag_label(...):
-        for each locally cached candidate framework:
-            hits += store.lookup_rag(hz_label, framework, top_k=10)
-            preserve per-framework errors
+        result = store.lookup_rag_many(hz_label, cached_frameworks, top_k=10)
+        preserve result.errors and isolate failed framework partitions
         dedupe and rank all hits by rag_score; retain top 10
         write ontology_rag trace
         if no candidates or judging disabled:

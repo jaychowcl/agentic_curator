@@ -304,6 +304,7 @@ SQLite database.
 | `lookup_with_metadata(value, ontology_id)` | Return `match_type`, hits, and FTS ranking |
 | `lookup_exact(value, ontology_id, ensure_index=True)` | Exact normalized lookup only |
 | `lookup_rag(value, ontology_id, top_k=10)` | Semantic top-k lookup over one cached local framework |
+| `lookup_rag_many(value, ontology_ids, top_k=10)` | Embed once and search cached framework partitions sequentially, with isolated errors |
 | `build_rag_index(ontology_id, force=False)` | Build or reuse its persistent Gemini/USearch partition |
 | `index_framework(...)`, `index_owl_framework(...)`, `sync_sqlite(...)`, `remove_indexed_framework(...)` | Import legacy JSON or stream OWL into SQLite term indexes |
 | `cache_all(..., force_frameworks=())` | Stream-cache every selected active framework, optionally forcing named downloads |
@@ -394,6 +395,19 @@ attempts active frameworks in configuration order before raising
 manifest through `.results`; pass `fail_on_error=False` to continue with a
 partial cache.
 
+Existing legacy JSON caches are also indexed without materializing the complete
+document: `ijson` streams their lookup maps into bounded SQLite batches. A
+URL-backed default framework is eligible for exact, FTS, and semantic lookup
+whenever its configured JSON or OWL cache path exists. An uncached framework is
+skipped—even when explicitly requested—so lookup never downloads ontology data.
+
+For multi-framework semantic lookup, the query is embedded once and each
+ontology's persistent USearch partition is searched sequentially. Query-time
+partitions are memory-mapped from disk. Document embeddings are still generated
+in batches of at most 250 with one model and dimensionality, placing every batch
+in the same vector space. Building a partition keeps that one framework's
+USearch vectors in memory; the indexes remain separate rather than being merged.
+
 | Option | Behavior |
 | --- | --- |
 | `--timeout SECONDS` | Per-framework child-process timeout |
@@ -479,6 +493,11 @@ def index_owl_framework(framework):
 def lookup(value, framework):
     exact = lookup_exact(normalize(value), framework)
     return exact or fts5_rank(value, framework)
+
+def lookup_rag_many(value, cached_frameworks):
+    indexes = build_or_reuse_each_partition_sequentially(cached_frameworks)
+    query_vector = embed_query_once(value)
+    return search_each_memory_mapped_partition(query_vector, indexes)
 ```
 
 The SQLite database stores framework freshness, terms, exact lookup entries,
