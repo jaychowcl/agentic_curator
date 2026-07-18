@@ -212,6 +212,7 @@ Public methods:
 - `harmonize(publication_context=None, metadata_context=None, harmonization_targets=None, target=None, ontostore=None, target_paths=None, lookup_llm_judge=True, search_llm_judge=True, llm=True) -> dict`
 - `harmonize_miniml_json(publication_context=None, miniml_json=None, ontostore=None, target_paths=None, lookup_llm_judge=True, search_llm_judge=True, llm=True) -> dict`
 - `lookup_label(...)`, `lookup_rag_label(...)`, and `harmonize_label(...)`
+- `judge_lookup(..., candidate_limit=10)`
 - `harmonize_field(...)` and `assign_field(...)`
 - `apply_targets(miniml_json, harmonization_targets) -> dict | list | None`
 
@@ -228,8 +229,9 @@ results use `source="ols"`; there is no public `strategy` argument or
    `no_match` to continue, or returns `false` to terminally skip the target.
 4. After a local miss or `no_match`, call `OntoStore.lookup_rag_many(...)` for
    the locally cached candidate frameworks. It embeds the label once, searches
-   each framework partition sequentially, and the same judge accepts or rejects
-   the globally ranked semantic candidates.
+   each framework partition sequentially, filters by the effective similarity
+   threshold, reserves up to two hits per qualifying ontology, and lets the
+   same judge accept or reject the balanced candidates.
 5. After a semantic miss or `no_match`, search OLS without first asking the
    model to select a framework. OLS is the only external ontology search;
    grounded web search is not part of this workflow.
@@ -262,7 +264,7 @@ paths, prior traces, or internal framework file metadata.
 | Logical call | When | Model-facing context |
 | --- | --- | --- |
 | Local lookup judge | Exact or FTS candidates exist and judging is enabled. | Publication context; metadata context; semantic target with original field/label; top 10 compact local hits. |
-| Semantic lookup judge | Local lookup misses and semantic neighbours exist. | The same contexts and target; top 10 aggregated RAG hits, including ontology IDs and similarity scores. |
+| Semantic lookup judge | Local lookup misses and semantic neighbours meet their thresholds. | The same contexts and target; balanced compact RAG hits including ontology IDs. Up to two hits are reserved per qualifying ontology; the list expands beyond 10 when required, otherwise remaining seats are filled globally by similarity. |
 | OLS judge | Local and semantic lookup miss and OLS returns candidates. | Publication context; metadata context; semantic target; one neutral OLS candidate list. No restricted/unrestricted stage literal is included. |
 | Field assignment | Registry lookup misses after label harmonization. | Publication context; metadata context; semantic target containing the current harmonized label plus `pre_hz_label`; current ontology ID when known; configured field projections. |
 
@@ -271,6 +273,13 @@ ontology ID. Lookup-judge decisions must be one supplied hit ID, `no_match`,
 or `false`. OLS decisions may use a supplied ID, accession, or IRI, plus
 `no_match` or `false`. `no_match` rejects the candidates but continues the
 workflow; `false` declares the target non-harmonizable and stops it.
+
+The default RAG threshold is inclusive `rag_score >= 0.5`. The harmonizer-wide
+value is configurable through `rag_similarity_threshold`; a framework's
+`rag_similarity_threshold` metadata overrides it. Effective thresholds are
+recorded in `ontology_rag.similarity_thresholds`. An ontology with no hit above
+its threshold has no reserved candidate. Deduplication is ontology-scoped so a
+shared identifier can remain represented in more than one framework.
 
 The maximum is four logical LLM calls per target: local judge, semantic judge,
 OLS judge, and field assignment. A stage without candidates makes no judge call.
@@ -325,6 +334,10 @@ SQLite term payloads, and returns terms with `ontology_id` and `rag_score`.
 isolates per-framework build/search failures, embeds the query exactly once,
 and searches the partitions sequentially. It returns all per-partition hits and
 errors; the harmonizer deduplicates and globally ranks the combined candidates.
+The harmonizer requests up to 10 neighbours from every partition, applies each
+framework's threshold, reserves its best two qualifying unique terms, and fills
+any remaining capacity up to 10 from the global score order. If the reservations
+alone exceed 10, every reservation is retained in the single judge call.
 
 Automatic local and semantic framework selection is cache-based, not
 URL-configuration-based. A built-in or custom URL-backed framework participates
@@ -707,8 +720,10 @@ class OntologyHarmonizer:
     def lookup_rag_label(...):
         result = store.lookup_rag_many(hz_label, cached_frameworks, top_k=10)
         preserve result.errors and isolate failed framework partitions
-        dedupe and rank all hits by rag_score; retain top 10
-        write ontology_rag trace
+        for each framework, filter hits below its threshold (default 0.5)
+        dedupe within each framework and reserve its best two qualifying hits
+        fill remaining seats to 10 globally; expand if reservations exceed 10
+        write balanced hits and effective thresholds to ontology_rag trace
         if no candidates or judging disabled:
             return False
         selected = _select_lookup_hit(source="rag")
@@ -719,7 +734,7 @@ class OntologyHarmonizer:
     def _select_lookup_hit(target, hits, source, lookup_llm_judge):
         if judging disabled:
             return hits[0]
-        judgement = judge_lookup(compact target and top 10 hits)
+        judgement = judge_lookup(compact target and stage-specific candidate limit)
         append source-tagged judgement to ontology_lookup_judgements
         if decision == "no_match":
             return False
@@ -1522,7 +1537,8 @@ Test coverage includes:
   construction, schema construction, and two-call ordering
 - ontology harmonizer imports, root exports, fixed local-semantic-OLS routing,
   local and OLS `no_match`/`false` behavior, MINiML target application,
-  persistent semantic index build/reuse, and `OntoStore`
+  persistent semantic index build/reuse, threshold filtering, two-per-ontology
+  RAG balancing, dynamic semantic judge limits, and `OntoStore`
   defaults/overrides/download/get/exact/FTS/RAG behavior
 - ontology cache builder framework ordering, default worker count, threaded
   scheduling, force flags, failure collection, SQLite/RAG synchronization,

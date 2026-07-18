@@ -263,8 +263,9 @@ Options:
 
 #### `OntologyHarmonizer`
 
-`OntologyHarmonizer(ontostore=None, llm=None, request_policy=None)` coordinates
-target normalization, lookup, assignment, search, enrichment, and application.
+`OntologyHarmonizer(ontostore=None, llm=None, request_policy=None,
+rag_similarity_threshold=0.5)` coordinates target normalization, lookup,
+assignment, search, enrichment, and application.
 
 | Method | Main options |
 | --- | --- |
@@ -272,6 +273,7 @@ target normalization, lookup, assignment, search, enrichment, and application.
 | `harmonize_miniml_json(...)` | User `publication_context`, `miniml_json`, `ontostore`, `target_paths`, and the same judge/LLM controls; `metadata_context` is generated automatically |
 | `lookup_label(...)` | Target, publication context, store, and local judge toggle |
 | `lookup_rag_label(...)` | Target, contexts, store, and semantic judge toggle |
+| `judge_lookup(..., candidate_limit=10)` | Judge compact local or balanced semantic candidates |
 | `harmonize_field(...)` | Target, publication context, store, and `llm` toggle |
 | `harmonize_label(...)` | Target, publication context, store, and OLS judge toggle |
 | `apply_targets(miniml_json, harmonization_targets)` | Mutates and returns MINiML JSON |
@@ -290,6 +292,13 @@ one neutral `OLS Hits` candidate section without restricted/unrestricted stage
 cues. Field-assignment context includes both the canonical `label` and the
 original `pre_hz_label` when available.
 
+Semantic candidates must meet the inclusive default `rag_score >= 0.5`.
+Framework configuration may set `rag_similarity_threshold` to override the
+harmonizer-wide value. Up to two qualifying candidates are reserved from every
+ontology, remaining seats up to 10 are filled by global similarity, and the
+single judge context expands when the reservations exceed 10. Effective
+thresholds and balanced hits are retained in the `ontology_rag` trace.
+
 #### `OntoStore`
 
 `OntoStore(ontology_frameworks=None, fields=None, storage_dir=None,
@@ -298,7 +307,7 @@ SQLite database.
 
 | Method | Purpose |
 | --- | --- |
-| `configure_framework(...)`, `add_url(...)`, `add_urls(...)` | Add, edit, or remove framework configuration |
+| `configure_framework(...)`, `add_url(...)`, `add_urls(...)` | Add, edit, or remove framework configuration, including an optional RAG similarity threshold |
 | `download(name)`, `get(name, force=False)` | Download OWL and create/reuse JSON |
 | `lookup(value, ontology_id)` | Compatible exact-then-FTS term lookup |
 | `lookup_with_metadata(value, ontology_id)` | Return `match_type`, hits, and FTS ranking |
@@ -407,6 +416,10 @@ partitions are memory-mapped from disk. Document embeddings are still generated
 in batches of at most 250 with one model and dimensionality, placing every batch
 in the same vector space. Building a partition keeps that one framework's
 USearch vectors in memory; the indexes remain separate rather than being merged.
+Before the semantic judge call, results are thresholded per ontology and
+balanced by reserving its best two qualifying terms. The base context remains
+10 candidates, but grows when more than five ontologies have two qualifying
+reservations.
 
 | Option | Behavior |
 | --- | --- |
@@ -459,7 +472,9 @@ def harmonize(targets, publication_context):
             continue
         if not local:
             semantic = lookup_cached_framework_vectors(target.label)
-            local = judge_semantic_candidates_or_continue(semantic)
+            qualifying = apply_per_ontology_similarity_thresholds(semantic)
+            balanced = reserve_two_per_ontology_then_fill_globally(qualifying)
+            local = judge_semantic_candidates_or_continue(balanced)
         if not local:
             unrestricted = OLS.search(target.label)
             selected = judge_ols_candidates_or_skip(unrestricted)
