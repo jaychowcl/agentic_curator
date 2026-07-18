@@ -196,6 +196,63 @@ def test_apply_targets_ignores_terminally_skipped_target() -> None:
     assert result == {"sample": {"characteristics": "sample one"}}
 
 
+def test_ols_skip_bypasses_field_and_later_target_continues() -> None:
+    field_calls = []
+
+    class MixedOutcomeHarmonizer(OntologyHarmonizer):
+        def lookup_label(self, target, **kwargs):
+            if target["id"] == "skip-me":
+                return False
+            target["ontology_match"] = True
+            target["ontology_lookup"] = {
+                "id": "UBERON:0002048",
+                "title": "lung",
+                "ontology_id": "uberon",
+            }
+            return target["ontology_lookup"]
+
+        def harmonize_label(self, target, **kwargs):
+            return OlsStrategyHandler(
+                ols_client=FakeOlsClient(
+                    search_results=[
+                        [
+                            {
+                                "iri": "https://example.org/1",
+                                "ontology_name": "test",
+                                "short_form": "TEST_1",
+                                "label": "sample one",
+                            }
+                        ]
+                    ],
+                    ontology_metadata={},
+                ),
+                search_judge=lambda **judge_kwargs: {
+                    "decision": "false",
+                    "confidence": "none",
+                    "reason": "Identifier target should be skipped.",
+                },
+            ).handle(
+                target,
+                publication_context=kwargs["publication_context"],
+                ontostore=kwargs["ontostore"],
+            )
+
+        def harmonize_field(self, target, **kwargs):
+            field_calls.append(target["id"])
+            return False
+
+    targets = [
+        {"id": "skip-me", "pre_hz_field": "sample id", "pre_hz_label": "sample one"},
+        {"id": "continue", "pre_hz_field": "tissue", "pre_hz_label": "lung"},
+    ]
+
+    result = MixedOutcomeHarmonizer().harmonize(harmonization_targets=targets)
+
+    assert result["harmonization_targets"][0]["harmonization_status"] == "skipped"
+    assert result["harmonization_targets"][1]["ontology_match"] is True
+    assert field_calls == ["continue"]
+
+
 def test_lookup_llm_threshold_is_removed_from_public_methods() -> None:
     for method in (
         OntologyHarmonizer.harmonize,
