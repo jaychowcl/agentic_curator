@@ -175,13 +175,13 @@ flat structured decision over the complete publication:
 Ontology harmonization accepts a target, a target list, or MINiML-style JSON.
 Targets use human-readable `pre_hz_field` and `pre_hz_label`; outputs add
 normalized `hz_field`, `hz_label`, ontology match metadata, assignments, and
-strategy traces. The wrapper is:
+stage traces. The wrapper is:
 
 ```json
 {
   "publication_context": "...",
   "harmonization_targets": [],
-  "strategy": "ols",
+  "workflow": "local_rag_ols",
   "target_paths": []
 }
 ```
@@ -268,12 +268,12 @@ target normalization, lookup, assignment, search, enrichment, and application.
 
 | Method | Main options |
 | --- | --- |
-| `harmonize(...)` | User `publication_context`, compact `metadata_context`, `harmonization_targets` or `target`, `strategy="ols"`, `ontostore`, `target_paths`, and judge/LLM controls |
-| `harmonize_miniml_json(...)` | User `publication_context`, `miniml_json`, `ontostore`, `target_paths`, and the same strategy/judge/LLM controls; `metadata_context` is generated automatically |
-| `lookup_label(...)` | Target, publication context, store, strategy, and local judge toggle |
-| `assign_onto_framework(...)` | Target, publication context, and store |
+| `harmonize(...)` | User `publication_context`, compact `metadata_context`, `harmonization_targets` or `target`, `ontostore`, `target_paths`, and judge/LLM controls |
+| `harmonize_miniml_json(...)` | User `publication_context`, `miniml_json`, `ontostore`, `target_paths`, and the same judge/LLM controls; `metadata_context` is generated automatically |
+| `lookup_label(...)` | Target, publication context, store, and local judge toggle |
+| `lookup_rag_label(...)` | Target, contexts, store, and semantic judge toggle |
 | `harmonize_field(...)` | Target, publication context, store, and `llm` toggle |
-| `harmonize_label(...)` | Target, publication context, store, strategy, and search-judge toggle |
+| `harmonize_label(...)` | Target, publication context, store, and OLS judge toggle |
 | `apply_targets(miniml_json, harmonization_targets)` | Mutates and returns MINiML JSON |
 
 Local term lookup uses exact normalized SQLite keys first, then FTS5 over
@@ -282,8 +282,9 @@ set is judged by default, including a single exact hit. A local or OLS judge can
 return `decision="false"` to terminally skip a non-harmonizable target. Skipped
 targets record `harmonization_status="skipped"` and a structured
 `harmonization_skip` trace, then bypass OLS fallback, label promotion, field
-harmonization, and MINiML application. A genuine local miss proceeds directly
-to unrestricted OLS. A selected OLS term supplies its framework metadata and
+harmonization, and MINiML application. A genuine local miss proceeds to
+semantic lookup over cached local frameworks, then to OLS if semantic lookup
+also misses. A selected OLS term supplies its framework metadata and
 may be enriched locally only by matching its identifier. The OLS judge receives
 one neutral `OLS Hits` candidate section without restricted/unrestricted stage
 cues. Field-assignment context includes both the canonical `label` and the
@@ -302,6 +303,8 @@ SQLite database.
 | `lookup(value, ontology_id)` | Compatible exact-then-FTS term lookup |
 | `lookup_with_metadata(value, ontology_id)` | Return `match_type`, hits, and FTS ranking |
 | `lookup_exact(value, ontology_id, ensure_index=True)` | Exact normalized lookup only |
+| `lookup_rag(value, ontology_id, top_k=10)` | Semantic top-k lookup over one cached local framework |
+| `build_rag_index(ontology_id, force=False)` | Build or reuse its persistent Gemini/USearch partition |
 | `index_framework(...)`, `index_owl_framework(...)`, `sync_sqlite(...)`, `remove_indexed_framework(...)` | Import legacy JSON or stream OWL into SQLite term indexes |
 | `cache_all(..., force_frameworks=())` | Stream-cache every selected active framework, optionally forcing named downloads |
 | `lookup_fields(field)` | Resolve a canonical field or alias |
@@ -355,7 +358,6 @@ their `-file` counterparts are mutually substitutable; files take precedence.
 | `--ontology-frameworks`, `--ontology-frameworks-file` | JSON framework configuration |
 | `--fields`, `--fields-file` | JSON controlled-field configuration |
 | `--storage-dir` | OWL, JSON, and SQLite storage root |
-| `--strategy {ols,rag}` | Label strategy; default `ols` |
 | `--target-paths`, `--target-paths-file` | JSON path specifications |
 | `--lookup-llm-judge`, `--no-lookup-llm-judge` | Enable/disable judging every local candidate set; enabled by default |
 | `--search-llm-judge`, `--no-search-llm-judge` | Enable/disable OLS candidate judge; enabled by default |
@@ -374,6 +376,7 @@ their `-file` counterparts are mutually substitutable; files take precedence.
 
 `build_ontology_cache` downloads and parses built-in frameworks concurrently,
 then synchronizes successful JSON caches into the shared SQLite database.
+Pass `--rag-index` to build persistent semantic partitions after SQLite sync.
 
 Programmatic callers can eagerly prepare one configured store before a workflow:
 
@@ -398,6 +401,7 @@ partial cache.
 | `--out-prefix TEXT` | Status filename prefix |
 | `--max-workers N` | Concurrent framework workers |
 | `--force-framework ID` | Redownload/reparse one framework; repeatable |
+| `--rag-index` | Embed successful framework terms and build USearch partitions |
 
 ### Python LLM Facade
 
@@ -431,7 +435,7 @@ def review_relevancy(inputs):
 #### Ontology harmonizer
 
 ```python
-def harmonize(targets, publication_context, strategy="ols"):
+def harmonize(targets, publication_context):
     for target in normalize_targets(targets):
         normalize_working_field_and_label(target)
         local = lookup_exact_then_fts(target)
@@ -439,6 +443,9 @@ def harmonize(targets, publication_context, strategy="ols"):
             local = judge_lookup_or_skip(local[:10], publication_context)
         if target.is_skipped:
             continue
+        if not local:
+            semantic = lookup_cached_framework_vectors(target.label)
+            local = judge_semantic_candidates_or_continue(semantic)
         if not local:
             unrestricted = OLS.search(target.label)
             selected = judge_ols_candidates_or_skip(unrestricted)

@@ -201,498 +201,152 @@ bridge them. This is prompt guidance rather than semantic response validation.
 <a id="ontology-harmonizer"></a>
 ## Ontology Harmonizer
 
-`agentic_curator.curators.ontology_harmonizer.OntologyHarmonizer` is the
-metadata harmonization curator. It uses `OntoStore` for exact ontology lookup
-and an injected or lazy `LLM` for framework assignment when lookup fails.
+`agentic_curator.curators.ontology_harmonizer.OntologyHarmonizer` maps extracted
+metadata targets to local ontology terms, semantic neighbours, OLS terms, and
+canonical fields. The workflow is fixed; callers no longer select a strategy.
 
 Public methods:
 
+- `harmonize(publication_context=None, metadata_context=None, harmonization_targets=None, target=None, ontostore=None, target_paths=None, lookup_llm_judge=True, search_llm_judge=True, llm=True) -> dict`
+- `harmonize_miniml_json(publication_context=None, miniml_json=None, ontostore=None, target_paths=None, lookup_llm_judge=True, search_llm_judge=True, llm=True) -> dict`
+- `lookup_label(...)`, `lookup_rag_label(...)`, and `harmonize_label(...)`
+- `harmonize_field(...)` and `assign_field(...)`
 - `apply_targets(miniml_json, harmonization_targets) -> dict | list | None`
-- `assign_field(target, *, publication_context, metadata_context=None, ontostore) -> dict`
-- `assign_onto_framework(target, *, publication_context, metadata_context=None, ontostore) -> dict`
-- `harmonize_miniml_json(publication_context=None, miniml_json=None, ontostore=None, target_paths=None, strategy="websearch", lookup_llm_judge=True, lookup_llm_threshold=2, search_llm_judge=True, llm=True) -> dict`
-- `harmonize(publication_context=None, metadata_context=None, harmonization_targets=None, target=None, strategy="websearch", ontostore=None, target_paths=None, lookup_llm_judge=True, lookup_llm_threshold=2, search_llm_judge=True, llm=True) -> dict`
-- `harmonize_field(target, *, publication_context, ontostore) -> Any`
-- `harmonize_label(target, *, publication_context, ontostore, strategy, search_llm_judge=True) -> dict`
-- `judge_lookup(target, *, publication_context, hits) -> dict`
-- `judge_search_results(target, *, publication_context, stage, restricted_hits, unrestricted_hits, web_hits) -> dict`
-- `lookup_label(target, *, publication_context, ontostore, strategy) -> Any`
 
-`harmonize_miniml_json(...)` extracts targets from MINiML-style JSON with
-`HarmonizationTargetExtractor`, then calls `harmonize(...)`. When `target_paths`
-is omitted, it builds paths for every `sample[*].channel[*]`, extracts
-meaningful sample metadata (`source`, `molecule`, `organism`, and
-`characteristics`), and dedupes targets by exact
-`pre_hz_field:pre_hz_label` while preserving every source path in
-`occurrences`. Supplying `target_paths` keeps explicit path extraction behavior.
-It also creates a deterministic `metadata_context` from the first series title
-and first-seen unique `field=value` target pairs. Whitespace is collapsed,
-protocols and paths are excluded, and the single-line result is capped at 500
-characters with an ellipsis. Callers cannot override this generated MINiML
-context; `publication_context` remains a separate user-supplied value.
-The same behavior is publicly available as
-`build_miniml_metadata_context(miniml_json, *, harmonization_targets=None,
-max_chars=500)`. When targets are omitted, it discovers and deduplicates the
-default MINiML sample-channel targets itself, allowing thematic review and
-ontology harmonization to share one compact context implementation.
-After harmonization, `harmonize_miniml_json(...)` calls `apply_targets(...)`,
-mutates the supplied MINiML JSON in place, and includes that same object in the
-return wrapper under `miniml_json`.
+The top-level wrapper contains `workflow="local_rag_ols"`. Per-stage OLS
+results use `source="ols"`; there is no public `strategy` argument or
+`--strategy` CLI option.
 
-The lower-level `harmonize(...)` returns a target wrapper:
+### Per-target workflow
 
-```python
-{
-    "publication_context": publication_context,
-    "metadata_context": metadata_context,
-    "harmonization_targets": normalized_targets,
-    "strategy": "websearch",
-    "target_paths": target_paths,
-}
-```
+1. Normalize `pre_hz_field` and `pre_hz_label` into working `hz_field` and
+   `hz_label`.
+2. Run exact local SQLite lookup, then FTS5 when exact lookup misses.
+3. If local candidates exist, the lookup judge either selects an ID, returns
+   `no_match` to continue, or returns `false` to terminally skip the target.
+4. After a local miss or `no_match`, call `OntoStore.lookup_rag(...)` across
+   locally cached candidate frameworks. The same judge accepts or rejects the
+   aggregated semantic candidates.
+5. After a semantic miss or `no_match`, search OLS without first asking the
+   model to select a framework. OLS is the only external ontology search;
+   grounded web search is not part of this workflow.
+6. An OLS judge selection is locally enriched by exact identifier only. A
+   `no_match` result remains unmatched and a `false` result terminally skips
+   the target.
+7. Promote the selected ontology term title to `hz_label`.
+8. Harmonize the field using that harmonized label. Registry lookup runs first;
+   an unknown field may be assigned and persisted by the field LLM.
+9. `harmonize_miniml_json(...)` applies non-skipped targets back to the supplied
+   object.
 
-`apply_targets(miniml_json, harmonization_targets)` applies target-level
-`hz_field` and `hz_label` to each occurrence path without creating
-`hz_alternatives` objects. Scalar `field_value` and `scalar` occurrences keep
-the original scalar and add direct sibling keys such as `hz_source`,
-`hz_source_id`, and `hz_source_onto`. If the same scalar key receives multiple
-distinct values, the first value keeps the base key and later values use
-numeric suffixes such as `hz_source_1`, `hz_source_id_1`, and
-`hz_source_onto_1`. Object-shaped `tag_value` occurrences append generated
-`{"tag": ..., "value": ...}` rows to the same list that contains the original
-tag/value object. `container_value` occurrences keep the original container and
-add a sibling `hz_<field>` list containing objects with `value`, optional `id`,
-and optional `onto`. Term `id` comes from lookup `id` with an accession
-fallback; `onto` is the ontology framework ID. IRI values stay in
-`harmonization_targets` and are not copied into the MINiML JSON. Malformed or
-unresolved occurrence paths are skipped.
+`llm=False` disables semantic lookup because semantic candidates require an
+LLM judge, disables OLS judging, and disables field assignment. It does not
+disable deterministic exact/FTS lookup or raw OLS retrieval behavior.
 
-`publication_context` and `metadata_context` may each be a string or `None`;
-they are emitted as separate prompt sections. `miniml_json` may be a
-dictionary, list, or `None`, `harmonization_targets` may be a list of extracted
-target dictionaries, a single target dictionary, or `None`, and `target` may be
-a single target dictionary. Passing both `target` and `harmonization_targets`
-raises `ValueError`. Supported strategies are `websearch` and `rag`; the
-default strategy is `websearch`. A per-call `ontostore` override must be an
-`OntoStore`.
-`harmonize(...)` calls `lookup_label(...)` once for each normalized target. On a
-match, `lookup_label(...)` mutates the target with `ontology_match=True`,
-`ontology_id`, selected `ontology_lookup`, and all `ontology_lookup_hits`.
-Before lookup, the harmonizer normalizes working `hz_field` and `hz_label`
-values from existing `hz_*` fields or from `pre_hz_field` and `pre_hz_label`:
-lowercase, trim, strip edge punctuation, and collapse whitespace to underscores.
-The same normalization is applied to occurrence-level values when a target has
-`occurrences`. By default lookup selects the first hit without an LLM. When
-`lookup_llm_judge=True` and at least `lookup_llm_threshold` hits exist
-(default `2`), the LLM receives the hits, publication context, and target
-context and returns `decision`, `confidence`, and `reason`; the judgement is
-stored at `ontology_lookup_judgement`. When `lookup_label(...)` returns
-`False`, `harmonize(...)` marks the target unmatched and, when `llm=True`, calls
-`assign_onto_framework(...)` as the fallback assignment step. The fallback
-prompts the LLM with task-specific compact target and framework projections.
-Framework prompt metadata includes only `id`, `title`, and complete
-`description`; versions, download URLs, and configured file paths remain
-internal to `OntoStore`. Ontology LLM prompts never serialize the full mutable
-target or occurrence paths. `assign_onto_framework(...)` parses JSON with `decision`,
-`confidence`, and `reason`, stores it at `ontology_framework_assignment`, and
-sets `ontology_id` when `decision` is a configured framework ID.
-`harmonize(...)` then calls `harmonize_field(...)` for every target, whether
-the first ontology lookup matched or missed. Field harmonization uses
-`OntoStore.lookup_fields(...)` and falls back to LLM-backed
-`assign_field(...)` only when `llm=True`. When the first lookup missed,
-`harmonize(...)` calls `harmonize_label(...)` only for `websearch` and `rag`.
-After a matched strategy handler returns, identifier-only local enrichment
-looks up the judged term's `id`, `accession`, or `iri` in its selected
-framework. Local metadata can enrich that term but cannot replace its identity
-or select a same-label alternative. The outcome is traced in
-`ontology_local_enrichment`; URL-backed frameworks may still be downloaded and
-indexed for enrichment. The websearch handler uses OLS4 restricted to the
-assigned `ontology_id`. With the default `search_llm_judge=True`, an LLM
-selects one supplied candidate or returns `false`. A restricted-stage rejection
-continues to unrestricted OLS plus Gemini grounded web evidence and a second
-judgement over the unrestricted candidates and compact web evidence. Rejected
-restricted candidates are not resent. Unknown decisions and judge failures fail
-closed; ordered decisions are stored in `search_llm_judgements`, with failures
-in `search_llm_judge_error`. Grounded web evidence can introduce a candidate ID
-only after that extracted ID resolves successfully through OLS.
-`search_llm_judge=False` preserves first-hit
-behavior, and `llm=False` disables the judge and grounded search.
-`GeminiGroundedSearchClient` calls
-`generate_response_with_metadata(..., tools=[{"type": "google_search"}])`,
-normalizes returned citation annotations into `web_hits`, stores the grounded
-response at `last_response`, and records quota or provider failures at
-`last_error`. Its per-process `request_budget` defaults to `100` to avoid
-unbounded requests against Gemini project-level RPM/TPM/RPD quotas. Strategy
-results always include `strategy`, `status`, `decision`, `confidence`, and
-`reason`, and include `web_search_error` when the search client reports one.
-The `rag` strategy currently routes to a placeholder handler.
+A selected term mutates the target with `ontology_match=True`,
+`ontology_id`, `ontology_lookup`, and `ontology_lookup_hits`. Semantic
+traces live at `ontology_rag`; OLS traces live at `ontology_ols_result`.
+Terminal rejections record `harmonization_status="skipped"` and
+`harmonization_skip`, and bypass later stages and MINiML application.
 
-### Ontology LLM Calls Per Target And Context Contracts
+### LLM calls and model context
 
-With the default `websearch` strategy, `llm=True`, and both lookup judges
-enabled, one target makes between zero and five logical LLM calls. Six call
-types exist, but the local lookup judge and the external fallback sequence are
-mutually exclusive after a successful local match. A transient failure may
-cause up to three physical provider attempts for one logical call under the
-default `RequestPolicy`. A grounded-search cache hit makes no new Gemini
-provider call.
+All structured calls preserve the full user `publication_context` and the
+separate compact `metadata_context` when supplied. They use compact semantic
+target projections rather than serializing the mutable target, occurrences,
+paths, prior traces, or internal framework file metadata.
 
-User-supplied `publication_context` is preserved in full for every structured
-ontology LLM call and omitted only when empty. The grounded-search provider call
-uses its own compact search query. All structured calls use a semantic target
-projection with original human-readable values:
-
-```json
-{"field": "source", "label": "100-200 cell embryos"}
-```
-
-Field and search calls add `ontology_id` only when available and relevant.
-Target IDs, source markers, normalized duplicates, ontology constraints,
-occurrences, JSON Pointer paths, match flags, prior assignments, and prior
-strategy/lookup traces are excluded from prompts but retained in outputs.
-
-| LLM call | When it runs | Model-facing context |
+| Logical call | When | Model-facing context |
 | --- | --- | --- |
-| Local lookup judge | Exact lookup has at least `lookup_llm_threshold` hits, or FTS5 returns any candidates. | User publication context; compact metadata context; semantic target; top 10 ranked hits with `id`, `accession`, `iri`, `title`, complete `description`, and `ontology_id`. |
-| Framework assignment | Exact and FTS lookup produce no accepted match. | User publication context; compact metadata context; semantic target; candidate framework `id`, `title`, and complete `description`. |
-| Field assignment | `OntoStore.lookup_fields(...)` cannot resolve the field. | User publication context; compact metadata context; semantic target plus current `ontology_id`; configured field key with `label`, `aliases`, and complete `description`. Field provenance, confidence, and reasons are excluded. |
-| Restricted search judge | Local lookup missed, a framework was assigned, and framework-restricted OLS returned candidates. | User publication context; compact metadata context; semantic target plus assigned `ontology_id`; stage `restricted`; top 10 restricted OLS candidates in the same compact hit shape. Empty unrestricted/web sections are omitted. |
-| Gemini grounded search | Restricted OLS has no candidates or the restricted judge rejects every candidate. | Original field and label in `{field}: {label} ontology`; no full target, publication context, or OLS candidates. |
-| Expanded search judge | Restricted search failed or was rejected, and unrestricted OLS or safely resolved web IDs produced candidates. | User publication context; compact metadata context; semantic target plus initial `ontology_id`; stage `expanded`; top 10 unrestricted OLS and resolved web candidates; one grounded response summary plus source title/URL pairs. Rejected restricted candidates are omitted. |
+| Local lookup judge | Exact or FTS candidates exist and judging is enabled. | Publication context; metadata context; semantic target with original field/label; top 10 compact local hits. |
+| Semantic lookup judge | Local lookup misses and semantic neighbours exist. | The same contexts and target; top 10 aggregated RAG hits, including ontology IDs and similarity scores. |
+| OLS judge | Local and semantic lookup miss and OLS returns candidates. | Publication context; metadata context; semantic target; one neutral OLS candidate list. No restricted/unrestricted stage literal is included. |
+| Field assignment | Registry lookup misses after label harmonization. | Publication context; metadata context; semantic target containing the current harmonized label plus `pre_hz_label`; current ontology ID when known; configured field projections. |
 
-The expected logical call count per target is:
+Compact candidate hits contain identifiers, title, complete description, and
+ontology ID. Lookup-judge decisions must be one supplied hit ID, `no_match`,
+or `false`. OLS decisions may use a supplied ID, accession, or IRI, plus
+`no_match` or `false`. `no_match` rejects the candidates but continues the
+workflow; `false` declares the target non-harmonizable and stops it.
 
-| Target path | Calls |
-| --- | ---: |
-| Unique exact local match and known field | 0 |
-| Unique exact local match and unknown field | 1: field assignment |
-| Ambiguous exact or FTS match and known field | 1: local lookup judge |
-| Ambiguous exact or FTS match and unknown field | 2: local lookup judge and field assignment |
-| Local miss, known field, restricted OLS accepted | 2: framework assignment and restricted judge |
-| Local miss, unknown field, restricted OLS accepted | 3: framework assignment, field assignment, and restricted judge |
-| Local miss, known field, restricted rejected, expanded path completed | 4: framework assignment, restricted judge, grounded search, and expanded judge |
-| Local miss, unknown field, restricted rejected, expanded path completed | 5: framework assignment, field assignment, restricted judge, grounded search, and expanded judge |
+The maximum is four logical LLM calls per target: local judge, semantic judge,
+OLS judge, and field assignment. A stage without candidates makes no judge call.
+A successful earlier term match skips later term-search calls. Retry policy can
+make multiple provider attempts for one logical call.
 
-When restricted OLS returns no candidates, the restricted judge is skipped, so
-the expanded paths use one fewer call. If framework assignment returns no usable
-framework, external strategy calls are skipped. If expanded search produces no
-resolved candidates, its judge is also skipped.
+### MINiML extraction and application
 
-Candidate descriptions are never truncated: string values and every entry in
-list-valued descriptions are passed completely. Candidate `ontology_prefix`,
-`type`, parents, xrefs, synonyms, and internal search metadata are excluded
-from prompts. Search-judge decisions may still use a supplied candidate's
-`id`, `accession`, or `iri`. Top-10 limits affect prompts only; complete local
-and OLS hit lists remain in `ontology_lookup_hits` and strategy traces.
-OLS requests, SQLite exact/FTS lookup, ontology downloads, web-ID resolution,
-and post-strategy local enrichment are internal API or storage operations, not
-LLM calls.
+`harmonize_miniml_json(...)` uses `HarmonizationTargetExtractor`. With no
+explicit `target_paths`, it discovers meaningful sample/channel source,
+molecule, organism, and characteristic values, then deduplicates identical
+field/label targets while preserving all occurrence paths. It creates a
+deterministic metadata context from the first series title and unique
+`field=value` pairs, collapsed to one line and capped at 500 characters.
+`build_miniml_metadata_context(...)` exposes the same behavior.
 
-`OntologyHarmonizer(ontostore=None, llm=None)` creates a default `OntoStore`
-when no store is supplied and lazily creates `LLM()` only when framework
-assignment needs generation. Custom ontology framework dictionaries should be
-passed to `OntoStore(ontology_frameworks=...)`, then injected into the
-harmonizer. A per-call `ontostore` can override the constructor value for
-harmonization. The effective store is validated before lookup and assignment.
-Targets may constrain
-lookup by setting `ontology_frameworks` or `ontology_ids` to a string or
-sequence of framework IDs. Without an explicit constraint, `lookup_label(...)`
-searches only path-backed frameworks with existing local OWL or JSON files,
-avoiding implicit downloads of every built-in URL-backed framework.
+`apply_targets(...)` writes direct sibling `hz_<field>` values for scalars,
+additional tag/value rows for tag-shaped data, and sibling lists for container
+values. It adds term IDs and ontology IDs when available. Malformed paths and
+skipped targets are ignored.
 
-`OntoStore`, `Owl2json`, and `Owl2jsonParseError` are exported from
-`agentic_curator.curators.ontology_harmonizer`. `OntoStore` stores ontology
-framework config, downloads named frameworks, directly indexes OWL in bounded
-memory, imports legacy JSON caches, and looks up terms. `Owl2json` remains the
-explicit RDF/XML-to-JSON conversion API and is not used by eager direct caching.
+### OntoStore and persistent semantic lookup
 
-`OntoStore(fields=...)` also stores a normalized field dictionary used before
-strategy routing. `lookup_fields(field)` normalizes the incoming field and
-matches it against field keys plus each metadata dict's `label` and `aliases`.
-It returns matched metadata with a `field` key for the canonical field ID, or
-`False` when no configured field matches.
+`OntoStore` owns ontology framework configuration, local OWL/JSON sources, the
+shared SQLite database, field registry, external-response cache, and semantic
+indexes.
 
-Exact normalized term lookup runs before SQLite FTS5 over labels, synonyms,
-complete descriptions, IDs, accessions, and IRIs. Ambiguous exact hits are
-judged by default. FTS results are always judged; when LLM judging is disabled,
-the candidates remain in the trace and no FTS match is accepted.
+Important methods:
 
-The shared SQLite database also owns a persistent controlled field registry and
-external-response cache. `add_field`, `update_field`, `remove_field`,
-`get_field`, `list_fields`, and `set_field_review_status` provide field CRUD.
-LLM-created fields are active immediately with `review_status="unreviewed"`.
-Successful OLS and grounded-search responses are cached for seven days by
-default. `RequestPolicy` controls timeout, retry attempts, exponential jittered
-backoff, cache TTL, and force refresh; transient network, 429, and 5xx failures
-are retried and clients expose request traces.
+- `lookup(...)`, `lookup_with_metadata(...)`, and `lookup_exact(...)`
+- `lookup_rag(label, ontology_id, top_k=10)`
+- `build_rag_index(ontology_id, force=False)`
+- `index_framework(...)`, `index_owl_framework(...)`, `sync_sqlite(...)`,
+  and `remove_indexed_framework(...)`
+- `cache_all(...)`
+- field registry and external-response cache CRUD methods
 
-Framework config uses a nested dictionary:
+Exact normalized lookup precedes FTS5 over labels, synonyms, descriptions, IDs,
+accessions, and IRIs. Indexing can import legacy JSON or stream RDF/XML classes
+through a bounded temporary SQLite staging database. Framework replacement is
+transactional and freshness uses source path, size, and nanosecond mtime.
 
-```python
-{
-    "efo": {
-        "title": "Experimental Factor Ontology",
-        "url": "http://www.ebi.ac.uk/efo/efo.owl",
-        "version": None,
-        "description": "...",
-    },
-    "mondo": {
-        "title": "Mondo Disease Ontology",
-        "url": "http://purl.obolibrary.org/obo/mondo/releases/2026-06-02/mondo-international.owl",
-        "version": "2026-06-02",
-        "description": "...",
-    },
-    "CL": {"url": "https://example.org/cl.owl"},
-    "UBERON": {"url": "https://example.org/uberon.owl", "version": "v2"},
-}
-```
+`lookup_rag(...)` never downloads an uncached framework. It returns an empty
+list unless a local JSON or OWL source already exists. For a cached framework it
+ensures SQLite terms exist, builds or reuses one USearch cosine index partition,
+embeds the query, retrieves top-k vector IDs, joins those IDs back to canonical
+SQLite term payloads, and returns terms with `ontology_id` and `rag_score`.
 
-Every `OntoStore` starts with built-in framework configs for EFO, MONDO,
-UBERON, HP, CL, ChEBI, PATO, OBI, SNOMED CT, NCIT, and NCBITaxon unless a
-caller overrides those entries in the constructor. Each built-in config
-includes OLS4-sourced `title`, `description`, `version`, and `url` metadata.
-Most default `url` values use OLS4 `versionIri` values; EFO and UBERON use
-stable current URLs. Framework configs are normalized at construction time with
-concrete `owl_path` and `json_path` fields. `OntoStore.add_url(...)` adds or
-replaces one URL-backed framework and accepts optional `owl_path`, `json_path`,
-`title`, `description`, and `version` metadata. `OntoStore.add_urls(...)` merges
-a framework mapping with the same supported fields. `configure_framework(...)`
-is the lower-level add/replace/remove API. Removal deletes the framework entry.
-`OntoStore.get(name, force=False)` is the ontology-serving entrypoint. It
-returns the parsed JSON `Path` stored in `ontology_frameworks[name]["json_path"]`,
-reusing existing JSON unless `force=True`. Existing JSON is repaired in place
-when `ontology["id"]` is missing or does not match the requested framework name.
-When JSON is missing for a URL-backed framework, it parses the configured
-`owl_path` if present or downloads the `.owl` there first. With `force=True`,
-URL-backed frameworks redownload the `.owl` before reparsing, and path-backed
-frameworks reparse the configured local `owl_path` without network I/O.
-`OntoStore.lookup(label, ontology_id)` keeps its two-argument API but serves
-lookups from a shared SQLite index. The default database is
-`storage_dir/sqlite/ontologies.sqlite3`; callers may override it with
-`sqlite_path`. On first lookup, the store imports an existing legacy JSON cache,
-or calls `index_owl_framework(...)` when JSON is absent. Later calls compare the
-source kind, resolved path, size, and nanosecond modification time and rebuild
-only that framework when stale. Lookup searches `label`, `id`,
-`accession`, and `iri` in the existing order and returns the same deduped term
-dictionaries with `ontology_id` added. Normalized JSON keys remain required.
+Each ontology term is one chunk containing its framework ID, title, synonyms,
+complete description, ID, accession, and IRI. The default
+`GeminiEmbeddingProvider` calls Vertex AI through the Google Gen AI SDK with
+model `gemini-embedding-001`, 768 dimensions,
+`RETRIEVAL_DOCUMENT` for chunks, and `RETRIEVAL_QUERY` for queries. Document
+requests are batched to at most 250 texts.
 
-`index_framework(ontology_id, force=False)` explicitly adds or refreshes one
-framework, preferring an existing legacy JSON cache and otherwise delegating to
-`index_owl_framework(ontology_id, force=False, batch_size=1000)`. The direct OWL
-path uses RDFLib's RDF/XML parser with a lightweight SQLite triple sink instead
-of an in-memory `Graph`. It batches triples into
-`sqlite/staging/<ontology_id>.sqlite3`, streams URI-backed `owl:Class` subjects
-in deterministic order into the final term, lookup, and FTS tables, and removes
-the staging database in both success and failure cases. Only the current term
-and bounded insert batches reside in Python memory. Final framework replacement
-is one transaction, so a failed refresh rolls back to the previous usable
-index. Framework metadata records `source_kind` (`json` or `owl`) and source
-path/size/mtime; schema-v2 databases migrate in place with existing rows marked
-as JSON sources. `remove_indexed_framework(ontology_id)` removes its SQLite rows
-without deleting OWL or JSON caches. `sync_sqlite(frameworks=None, force=False)`
-indexes selected frameworks, or all configured frameworks with existing JSON
-or OWL caches,
-and reports status plus term and lookup counts. Imports use batched inserts in
-a framework-scoped transaction. The normalized schema stores each term payload
-once and maps lookup keys to it; WAL mode and a busy timeout support concurrent
-readers.
+Semantic partitions and their SQLite mappings are guarded by a file lock.
+Manifests bind the index to source freshness, embedding model/dimensions, chunk
+schema, index path, and term count. A stale or missing manifest triggers a
+rebuild; a new process can reuse a current on-disk partition without re-embedding
+documents.
 
-`cache_all(frameworks=None, force=False, force_frameworks=(),
-fail_on_error=True)` eagerly downloads and indexes every selected active
-framework in configuration order without creating new JSON files. Existing JSON
-caches remain compatible and are imported unless that framework is forced.
-`force=True` redownloads/reindexes every URL-backed framework;
-`force_frameworks` selectively forces named frameworks. It records cache status,
-source kind, paths, sizes, elapsed time, and index success, and continues after
-individual failures. The manifest includes the SQLite path and ordered
-successful/failed lists. After all attempts, the default policy raises
-`OntologyCacheError` with the manifest attached at `.results`;
-`fail_on_error=False` returns partial results. Removed frameworks are not
-processed.
-`OntoStore.download(name)` downloads only URL-backed frameworks with
-`requests.get(url, timeout=30)`, calls `raise_for_status()`, and returns the
-configured `owl_path`. Path-backed frameworks validate and return the configured
-local `owl_path` without calling `requests`.
+The shared schema also stores framework metadata, term payloads, exact lookup
+entries, FTS rows, persistent controlled fields, external response cache rows,
+semantic manifests, and vector-to-term mappings. WAL mode and a busy timeout
+support concurrent readers.
 
-When no explicit path is supplied, URL-backed `.owl` files are saved under
-`src/agentic_curator/curators/ontology_harmonizer/ontology_frameworks/` using
-the URL basename, and parsed JSON files are saved under the sibling `jsons/`
-directory within `storage_dir`; SQLite is stored under the sibling `sqlite/`
-directory. The default storage directory is ignored by git. Existing downloaded
-files are skipped by `download()`, and existing JSON is
-reused by `get()` after `ontology["id"]` repair unless `force=True`. Unknown
-framework names raise `KeyError`; missing or invalid URLs or paths raise
-`ValueError`, and missing local path files raise `FileNotFoundError`.
+`build_ontology_cache --rag-index` first materializes framework JSON and
+synchronizes SQLite, then builds semantic partitions for successful frameworks.
+Its JSON manifest records per-framework semantic success or failure. Without
+the flag, cache building does not call the embedding API.
 
-`agentic_curator.curators.ontology_harmonizer.cache_builder` is the package
-cache-build workflow for preparing all built-in ontology JSON files. It can be
-run as `build_ontology_cache` after installation or as
-`python -m agentic_curator.curators.ontology_harmonizer.cache_builder`. The
-builder submits one job per framework through a parent `ThreadPoolExecutor` and
-keeps each job in an isolated child Python process that calls
-`OntoStore().get(name, force=force)`. This overlaps downloads/parses across
-frameworks while keeping RDFLib parse memory isolated per child. The parent
-then synchronizes successful JSON caches into SQLite and includes its path and
-framework counts in the manifest. The default
-worker count is `min(4, os.cpu_count() or 1)` with a floor of one, and
-`--max-workers` overrides it. `--force-framework` may be passed repeatedly to
-redownload/reparse specific URL-backed frameworks or reparse path-backed
-frameworks. The builder writes a JSON manifest and text log to `.dev/` by
-default, preserves manifest result order in framework order, records per
-framework `cached`, `parsed`, `downloaded_parsed`, `force_rebuilt`, `failed`,
-or `timeout` status, validates successful JSON files, and continues collecting
-other framework results when one framework fails.
+### External calls
 
-`Owl2json(owl_path)` accepts a local `.owl` path and uses RDFLib to parse it as
-RDF/XML. `parse(ontology_id=None)` returns:
-
-```python
-{
-    "ontology": {
-        "id": "chebi",
-        "iri": "...",
-        "version_iri": "...",
-        "title": "...",
-        "description": "...",
-        "version": "...",
-        "license": "...",
-    },
-    "terms": {
-        "accession": {
-            "chebi:100": {
-                "iri": "http://purl.obolibrary.org/obo/CHEBI_100",
-                "accession": "CHEBI:100",
-                "title": "...",
-                "description": "...",
-                "parents": ["CHEBI:16114"],
-                "parent_iris": ["http://purl.obolibrary.org/obo/CHEBI_16114"],
-                "synonyms": {"exact": [], "related": [], "broad": [], "narrow": []},
-                "xrefs": [],
-                "subsets": [],
-                "deprecated": False,
-                "replaced_by": None,
-                "properties": {},
-            }
-        },
-        "id": {"chebi:100": "..."},
-        "iri": {"http://purl.obolibrary.org/obo/chebi_100": "..."},
-        "label": {"term_label": ["..."]},
-    },
-}
-```
-
-Top-level terms are URI-backed `owl:Class` subjects; blank-node class
-expressions are ignored as entries. Labels come from `rdfs:label`, descriptions
-from `obo:IAO_0000115`, accessions from `oboInOwl:id` with an OBO IRI fallback,
-parents from URI-valued `rdfs:subClassOf`, synonyms and xrefs from common
-`oboInOwl` predicates, deprecation from `owl:deprecated`, and replacements from
-`obo:IAO_0100001`. The `terms` object indexes the same normalized term records
-by harmonized accession, ID, IRI, and label keys. Label values are lists because
-labels are not guaranteed unique. Terms without accessions or labels are
-omitted from those specific indexes but remain available by IRI. Unmapped
-literal annotations are preserved in `properties` by predicate IRI.
-`write_json(output_path, ontology_id=None)` writes deterministic pretty JSON and
-returns the output path. HTML-like files, such as a bad `.owl` download that
-starts with `<!DOCTYPE html>` or `<html`, and RDFLib parse failures raise
-`Owl2jsonParseError`.
-
-`HarmonizationTargetExtractor` lives in
-`ontology_harmonizer/harmonization_target_extractor.py` and extracts editable
-metadata targets for ontology harmonization. `OntologyHarmonizer` owns
-`self.target_extractor`, keeps `_extract_harmonization_targets(...)` as a
-private compatibility wrapper around `self.target_extractor.extract(...)`, and
-returns harmonized targets from `harmonize(...)`. The extractor still supports
-root-level default path specs:
-
-```python
-[
-    {"path": "/organism", "mode": "container_value"},
-    {"path": "/characteristics", "mode": "tag_value"},
-]
-```
-
-`HarmonizationTargetExtractor.extract(metadata, start_paths=...)` traverses
-dictionaries and lists, skips raw string metadata, skips `None`, and does not
-create targets for scalar list items without an object key. Raw extracted targets
-includes:
-
-```python
-{
-    "id": "target-0",
-    "source": "metadata",
-    "pre_hz_field": "tissue",
-    "pre_hz_label": "lung",
-    "pre_hz_field_path": "/sample/tissue",
-    "pre_hz_label_path": "/sample/tissue",
-    "parent_path": "/sample",
-    "hz_field": "tissue",
-    "hz_label": "lung",
-}
-```
-
-After `dedupe_targets(...)`, target-level paths are moved into `occurrences`:
-
-```python
-{
-    "id": "target-0",
-    "source": "metadata",
-    "pre_hz_field": "tissue",
-    "pre_hz_label": "lung",
-    "hz_field": "tissue",
-    "hz_label": "lung",
-    "occurrences": [
-        {
-            "pre_hz_field_path": "/sample/tissue",
-            "pre_hz_label_path": "/sample/tissue",
-            "parent_path": "/sample",
-            "hz_field": "tissue",
-            "hz_label": "lung",
-        }
-    ],
-}
-```
-
-`pre_hz_field_path`, `pre_hz_label_path`, and `parent_path` use JSON
-Pointer-style paths with escaped path segments (`~` becomes `~0`, `/` becomes
-`~1`). Deduped targets keep these paths only inside `occurrences`. These
-coordinates drive `apply_targets(...)` after harmonization. `hz_field` and
-`hz_label` are initialized from the extracted values, then mutated by lookup,
-field assignment, and label strategy steps.
-
-`HarmonizationTargetExtractor.extract(metadata, start_paths=None)` can also
-receive a list of JSON Pointer start paths or path specs. When `start_paths` is
-omitted, extraction starts at the metadata root. Plain string paths use the
-default `scalar` mode and preserve the original behavior: only resolved
-dictionaries or lists are traversed, output target paths remain absolute from
-the metadata root, and missing, invalid, scalar, or unresolvable start paths are
-skipped. The empty string `""` means the metadata root.
-
-Path specs allow selected metadata subtrees to use domain-aware extraction
-modes:
-
-```python
-start_paths=[
-    "/sample",
-    {"path": "/characteristics", "mode": "tag_value"},
-    {"path": "/organism", "mode": "container_value"},
-]
-```
-
-Supported modes:
-
-- `scalar`: default mode; extracts each scalar dictionary field as a separate
-  target.
-- `tag_value`: for objects such as `{"tag": "tissue", "value": "lung"}`;
-  emits one target with `pre_hz_field_path` pointing to `tag` and
-  `pre_hz_label_path` pointing to `value`.
-- `container_value`: for containers such as
-  `"organism": [{"taxid": "9606", "value": "Homo sapiens"}]`; emits one target
-  per nested object with a scalar `value`, using the selected container path as
-  the pre-harmonization field path.
-
-Invalid path specs, unsupported modes, missing `tag`/`value` fields, non-scalar
-labels, and scalar start paths are skipped.
-
+- Ontology downloads: `requests.get(...)` under `RequestPolicy`.
+- OLS: OLS4 ontology metadata, search, and term endpoints under the same retry
+  and response-cache policy.
+- Embeddings: `google.genai.Client(...).models.embed_content(...)`.
+- Structured judgements and assignments:
+  `GeminiEnterprisePlatform.generate_response(...)` through the LLM facade.
 <a id="reviewer-workflow"></a>
 ## Reviewer Workflow
 
@@ -791,11 +445,10 @@ The CLI configures standard-library logging to stderr. Curator workflows emit
 INFO logs for orchestration boundaries and DEBUG logs for detailed internal
 choices. Provider exceptions are not wrapped; they propagate to callers.
 
-`OntologyHarmonizer.harmonize(...)` normalizes target input, validates the
-strategy, runs exact-then-FTS SQLite lookup, and always calls
-`harmonize_field(...)`. Framework assignment and label strategy routing run
-only when local lookup has no accepted match. Post-strategy enrichment uses
-exact selected-term identifiers and cannot replace the judged identity.
+`OntologyHarmonizer.harmonize(...)` normalizes target input, then runs the fixed
+local exact/FTS, local semantic, and OLS sequence. A successful earlier stage
+skips later term searches. After selecting and promoting a term label, it calls
+`harmonize_field(...)`; identifier enrichment cannot replace the judged identity.
 `harmonize_miniml_json(...)` additionally derives the compact metadata context
 before delegation, so ontology prompts receive relevant sample values without
 serializing the full MINiML document.
@@ -950,452 +603,167 @@ def _prompt_text(value):
 
 ### `OntologyHarmonizer`
 
-Role: metadata harmonization curator. It delegates structured edit target
-discovery to `HarmonizationTargetExtractor` and ontology JSON lookup to an
-injected `OntoStore`.
+Role: fixed local exact/FTS → local semantic → OLS term harmonization followed
+by label promotion and field harmonization.
 
 ```python
 class OntologyHarmonizer:
-    DEFAULT_TARGET_PATHS = HarmonizationTargetExtractor.DEFAULT_TARGET_PATHS
-
-    def __init__(ontostore=None, llm=None, request_policy=None):
-        self.request_policy = request_policy or store policy or RequestPolicy()
-        self.ontostore = OntoStore(request_policy=self.request_policy) if ontostore is None else ontostore
-        self.llm = llm
-        self.target_extractor = HarmonizationTargetExtractor()
+    WORKFLOW = "local_rag_ols"
 
     def harmonize(
         publication_context=None,
+        metadata_context=None,
         harmonization_targets=None,
         target=None,
-        strategy="websearch",
         ontostore=None,
         target_paths=None,
         lookup_llm_judge=True,
-        lookup_llm_threshold=2,
         search_llm_judge=True,
         llm=True,
     ):
-        effective_ontostore = self._effective_ontostore(ontostore)
-        strategy = self._normalize_strategy(strategy)
-        targets = self._normalize_targets(
-            harmonization_targets=harmonization_targets,
-            target=target,
-        )
+        store = effective OntoStore
+        targets = normalize target or target list
         for target in targets:
-            self._harmonize_target(target, effective_ontostore)
-            lookup = self.lookup_label(
+            normalize pre_hz values into working hz_field and hz_label
+
+            match = lookup_label(
                 target,
-                publication_context=publication_context,
-                ontostore=effective_ontostore,
-                strategy=strategy,
-                lookup_llm_judge=lookup_llm_judge,
-                lookup_llm_threshold=lookup_llm_threshold,
+                publication_context,
+                metadata_context,
+                store,
+                lookup_llm_judge=lookup_llm_judge and llm,
             )
-            if not lookup:
-                self._mark_ontology_miss(target)
-                if llm:
-                    self.assign_onto_framework(
-                        target,
-                        publication_context=publication_context,
-                        ontostore=effective_ontostore,
-                    )
-            self.harmonize_field(
+            if target was terminally skipped:
+                continue
+
+            if not match and llm:
+                match = lookup_rag_label(
+                    target,
+                    publication_context,
+                    metadata_context,
+                    store,
+                    lookup_llm_judge=lookup_llm_judge,
+                )
+            if target was terminally skipped:
+                continue
+
+            if not match:
+                clear stale ontology match state
+                ols = harmonize_label(
+                    target,
+                    publication_context,
+                    metadata_context,
+                    store,
+                    search_llm_judge=search_llm_judge and llm,
+                )
+                if ols matched:
+                    enrich the selected identity from local exact lookup
+                if ols terminally skipped:
+                    continue
+
+            promote selected ontology title to hz_label
+            harmonize_field(
                 target,
-                publication_context=publication_context,
-                ontostore=effective_ontostore,
+                publication_context,
+                metadata_context,
+                store,
                 llm=llm,
             )
-            if not lookup:
-                if strategy in self.STRATEGY_HANDLERS:
-                    self.harmonize_label(
-                        target,
-                        publication_context=publication_context,
-                        ontostore=effective_ontostore,
-                        strategy=strategy,
-                    )
-                    self._lookup_harmonized_label(
-                        target,
-                        ontostore=effective_ontostore,
-                    )
-        return {
-            "publication_context": publication_context,
-            "harmonization_targets": targets,
-            "strategy": strategy,
-            "target_paths": target_paths,
-        }
 
-    def lookup_label(
-        target,
-        *,
-        publication_context,
-        ontostore,
-        strategy,
-        lookup_llm_judge=True,
-        lookup_llm_threshold=2,
-    ):
-        self._harmonize_target(target, ontostore)
-        label = target.get("hz_label")
-        if label is None:
+        return wrapper with workflow="local_rag_ols"
+
+    def lookup_label(...):
+        search each locally cached candidate framework with lookup_with_metadata
+        prefer exact hits; otherwise use FTS hits and retain FTS ranking
+        if no hits:
             return False
+        if FTS and judging disabled:
+            retain candidates and return False
+        selected = _select_lookup_hit(source="local")
+        on selection, set ontology_id, ontology_lookup, hits, and match=True
+        return selected or False
 
-        exact_hits = []
-        fts_hits = []
-        for ontology_id in self._candidate_ontology_ids(target, ontostore):
-            details = ontostore.lookup_with_metadata(str(label), ontology_id)
-            collect details["hits"] by details["match_type"]
-        hits = exact_hits or fts_hits
-        if hits:
-            if hits are FTS and lookup judging is disabled:
-                retain candidates and return False
-            selected = hits[0]
-            if hits are FTS or len(hits) >= lookup_llm_threshold:
-                judgement = self.judge_lookup(target, publication_context, hits)
-                selected = hit whose id equals judgement["decision"]
-                target["ontology_lookup_judgement"] = judgement
-            target["ontology_id"] = selected["ontology_id"]
-            target["ontology_lookup"] = selected
-            target["ontology_lookup_hits"] = hits
-            target["ontology_match"] = True
-            return selected
+    def lookup_rag_label(...):
+        for each locally cached candidate framework:
+            hits += store.lookup_rag(hz_label, framework, top_k=10)
+            preserve per-framework errors
+        dedupe and rank all hits by rag_score; retain top 10
+        write ontology_rag trace
+        if no candidates or judging disabled:
+            return False
+        selected = _select_lookup_hit(source="rag")
+        on selection, set ontology lookup state and RAG status="matched"
+        on no_match, set RAG status="no_match" and return False
+        on false, mark target skipped and return False
 
-        return False
+    def _select_lookup_hit(target, hits, source, lookup_llm_judge):
+        if judging disabled:
+            return hits[0]
+        judgement = judge_lookup(compact target and top 10 hits)
+        append source-tagged judgement to ontology_lookup_judgements
+        if decision == "no_match":
+            return False
+        if decision == "false":
+            mark target terminally skipped at local or RAG judge stage
+            return False
+        return supplied hit whose id equals decision, else raise ValueError
 
-    def assign_onto_framework(
-        target,
-        *,
-        publication_context,
-        ontostore,
-    ):
-        self._mark_ontology_miss(target)
-        framework_configs = self._assignment_candidate_frameworks(target, ontostore)
-        framework_configs contains only id, title, and complete description
-        prompt = self._assign_onto_framework_prompt(
-            target=target,
-            publication_context=publication_context,
-            ontology_frameworks=framework_configs,
-        )
-        response = self._llm().generate_response(
-            prompt,
-            config={
-                "response_mime_type": "application/json",
-                "response_schema": self._assign_onto_framework_response_schema(),
-            },
-        )
-        assignment = parse_json_response(response)
-        require assignment contains decision, confidence, and reason
-        target["ontology_framework_assignment"] = assignment
-        if assignment["decision"] is a configured framework ID:
-            target["ontology_id"] = assignment["decision"]
-        return assignment
+    def harmonize_label(...):
+        return OlsStrategyHandler(search_judge=judge_search_results).handle(...)
 
-    def harmonize_field(
-        target,
-        *,
-        publication_context,
-        ontostore,
-        llm=True,
-    ):
-        lookup = ontostore.lookup_fields(target["hz_field"])
+    def harmonize_field(...):
+        lookup = store.lookup_fields(hz_field)
         if lookup:
-            target["hz_field"] = lookup["field"]
-            target["field_lookup"] = lookup
-            return lookup
-        if not llm:
+            replace hz_field with canonical field and return lookup
+        if llm is disabled:
             return False
-        return self.assign_field(
-            target,
-            publication_context=publication_context,
-            ontostore=ontostore,
+        return assign_field(
+            semantic target containing current hz_label and original pre_hz_label
         )
 
-    def assign_field(
-        target,
-        *,
-        publication_context,
-        ontostore,
-    ):
-        prompt = self._assign_field_prompt(
-            target=target,
-            publication_context=publication_context,
-            fields=ontostore.fields,
-        )
-        response = self._llm().generate_response(
-            prompt,
-            config={
-                "response_mime_type": "application/json",
-                "response_schema": self._assign_field_response_schema(),
-            },
-        )
-        assignment = parse_json_response(response)
-        require assignment contains decision, confidence, reason, and new_field
-        target["field_assignment"] = assignment
-        target["hz_field"] = normalized assignment decision
-        if assignment["new_field"]:
-            ontostore.add_field(
-                target["hz_field"],
-                assignment metadata with source="llm" and review_status="unreviewed",
-                replace=True,
-            )
-        return assignment
-
-    def harmonize_label(
-        target,
-        *,
-        publication_context,
-        ontostore,
-        strategy,
-        search_llm_judge=True,
-    ):
-        handler = WebsearchStrategyHandler(
-            search_client=GeminiGroundedSearchClient(llm=self._llm()),
-            search_judge=self.judge_search_results,
-        ) if strategy == "websearch" and search_llm_judge else self.STRATEGY_HANDLERS[strategy]()
-        return handler.handle(
-            target,
-            publication_context=publication_context,
-            ontostore=ontostore,
-        )
-
-    class WebsearchStrategyHandler:
-        restricted_hits = OLS search(label, ontology=target["ontology_id"], rows=25)
-        if restricted_hits:
-            judgement = judge top 10 compact restricted hits
-            if judgement selects a supplied id, accession, or iri:
-                accept selected hit
-            if judgement fails: return not_harmonized
-            if judgement is false: continue expanded search
-
-        unrestricted_hits = OLS search(label, rows=25)
-        web_hits = search_client.search(f"{pre_hz_field}: {pre_hz_label} ontology", max_results=25)
-        extract IDs from grounded web evidence and retain only IDs resolved through OLS
-        web_search_error = search_client.last_error if available
-        expanded_hits = dedupe unrestricted hits plus resolved web candidates
-        if expanded_hits:
-            judgement = judge top 10 compact expanded hits plus compact web evidence
-            if judgement selects a supplied id, accession, or iri:
-                require complete framework metadata, configure store, and accept hit
-            otherwise return not_harmonized with judgement trace
-        return not_harmonized strategy result, including web_search_error when present
-
-    class GeminiGroundedSearchClient:
-        if request_budget is exhausted:
-            set last_error and return []
-        response = llm.generate_response_with_metadata(
-            prompt_for_ontology_evidence(query),
-            tools=[{"type": "google_search"}],
-        )
-        last_response = response
-        return citation annotations as web_hits
-
-    def _candidate_ontology_ids(target, ontostore):
-        configured_ids = target.get("ontology_frameworks", target.get("ontology_ids"))
-        if configured_ids is not None:
-            return self._normalize_ontology_ids(configured_ids)
-        return [
-            ontology_id
-            for ontology_id, framework in ontostore.ontology_frameworks.items()
-            if framework is path-backed and has an existing local owl_path or json_path
-        ]
-
-    def _harmonize_target(target, ontostore):
-        target["hz_field"] = ontostore.harmonize_key(target hz_field or pre_hz_field)
-        target["hz_label"] = ontostore.harmonize_key(target hz_label or pre_hz_label)
-        normalize each occurrence hz_field and hz_label the same way
-
-    def _mark_ontology_miss(target):
-        remove stale ontology_id and ontology_lookup
-        target["ontology_match"] = False
-        return False
-
-    def harmonize_miniml_json(
-        publication_context=None,
-        miniml_json=None,
-        ontostore=None,
-        target_paths=None,
-        strategy="websearch",
-    ):
-        should_dedupe_targets = target_paths is None
-        effective_target_paths = target_paths
-        if effective_target_paths is None:
-            effective_target_paths = (
-                self.target_extractor.build_miniml_sample_target_paths(miniml_json)
-            )
-        harmonization_targets = self.target_extractor.extract(
-            miniml_json,
-            start_paths=effective_target_paths,
-        )
-        if should_dedupe_targets:
-            harmonization_targets = (
-                self.target_extractor.dedupe_targets(harmonization_targets)
-            )
-        result = self.harmonize(
-            publication_context=publication_context,
-            harmonization_targets=harmonization_targets,
-            target=None,
-            strategy=strategy,
-            ontostore=ontostore,
-            target_paths=effective_target_paths,
-        )
-        result["miniml_json"] = self.apply_targets(
-            miniml_json,
-            result["harmonization_targets"],
-        )
+    def harmonize_miniml_json(...):
+        discover paths when omitted
+        extract and optionally dedupe targets
+        create compact metadata_context
+        result = harmonize(...)
+        result["miniml_json"] = apply_targets(input object, result targets)
         return result
-
-    def apply_targets(miniml_json, harmonization_targets):
-        for target in harmonization_targets:
-            for occurrence in target["occurrences"] or [target]:
-                field = target["hz_field"]
-                label = target["hz_label"]
-                term_id = target ontology lookup id or accession
-                ontology_id = target ontology_id or lookup ontology_id
-                parent = resolve_json_pointer(miniml_json, occurrence["parent_path"])
-                if parent is not dict:
-                    continue
-                if occurrence field path equals label path:
-                    set parent["hz_{field}"] = label
-                    set optional parent["hz_{field}_id"] = term_id
-                    set optional parent["hz_{field}_onto"] = ontology_id
-                    use suffixes like "_1" for scalar key collisions
-                elif occurrence parent is a tag/value object:
-                    append {"tag": "hz_{field}", "value": label} to the same list
-                    append optional id and onto tag/value rows
-                else:
-                    append {"value": label, "id": term_id, "onto": ontology_id}
-                    to sibling parent["hz_{field}"] list
-        return miniml_json
 ```
-
-`lookup_label()` calls `OntoStore.lookup_with_metadata(...)`, which refreshes a
-framework's SQLite index from its JSON cache when needed. For unconstrained
-targets it only considers path-backed local frameworks. Explicit URL-backed
-frameworks may reach `requests.get(...)` through `OntoStore.download(...)`.
-When `lookup_label()` returns `False`, `harmonize(...)` marks the target
-unmatched. With `llm=True`, it calls `assign_onto_framework()` with the packaged
-`assign_onto_framework.md` prompt and returns the parsed assignment JSON.
-`harmonize()` then runs `harmonize_field()` regardless of first lookup outcome.
-When local lookup misses, strategy handling may select a term and
-`_lookup_harmonized_label()` resolves that selected term's `id`, `accession`,
-or `iri` through `OntoStore.lookup_exact(...)`. Local metadata may enrich the
-selected term but cannot replace it with another same-label term.
-Ontology prompt builders use purpose-specific sanitized target context instead
-of serializing the whole mutable target, so lookup hits, strategy results,
-match flags, and previous assignments do not leak into later LLM calls.
 
 ```python
-def _extract_harmonization_targets(metadata, start_paths=None):
-    return self.target_extractor.extract(metadata, start_paths=start_paths)
+class OlsStrategyHandler:
+    def handle(target, publication_context, metadata_context, ontostore):
+        hits = OLS search for current hz_label
+        if judging enabled and hits:
+            judgement = judge top 10 candidates
+            if judgement selects supplied id/accession/IRI:
+                selected = candidate
+            elif judgement == "no_match":
+                return not_harmonized result
+            elif judgement == "false":
+                mark target terminally skipped
+                return skipped result
+            else:
+                fail closed
+        elif hits:
+            selected = hits[0]
+        else:
+            return not_harmonized result
+
+        require complete OLS framework metadata
+        configure selected framework locally
+        set target ontology state from selected hit
+        store result at ontology_ols_result with source="ols"
+        return matched result
 ```
 
-### `HarmonizationTargetExtractor`
+The OLS handler does not use grounded web search and does not perform a
+restricted/unrestricted two-stage search. Search-judge prompts receive a neutral
+candidate list and no search-stage literal.
 
-Role: extract normalized metadata edit targets from dictionaries and lists.
-Location: `ontology_harmonizer/harmonization_target_extractor.py`.
-
-```python
-class HarmonizationTargetExtractor:
-    DEFAULT_TARGET_PATHS = [
-        {"path": "/organism", "mode": "container_value"},
-        {"path": "/characteristics", "mode": "tag_value"},
-    ]
-
-    def build_miniml_sample_target_paths(miniml_json):
-        ...
-
-    def extract(metadata, start_paths=None):
-        ...
-
-    def dedupe_targets(targets):
-        ...
-```
-
-Target extraction flow:
-
-```python
-def extract(metadata, start_paths=None):
-    targets = []
-    if metadata is not dict or list:
-        return targets
-
-    if start_paths is None:
-        self._collect_targets(value=metadata, path="", targets=targets)
-        return targets
-
-    for start_path_spec in start_paths:
-        start_path, mode = self._path_spec(start_path_spec)
-        if start_path is None:
-            continue
-
-        resolved = self._resolve_json_pointer(metadata, start_path)
-        if resolved is dict or list:
-            self._collect_targets_by_mode(
-                value=resolved,
-                path=start_path,
-                mode=mode,
-                targets=targets,
-            )
-        elif mode == "field_value" and resolved is scalar:
-            create one target for the direct field value
-    return targets
-```
-
-`build_miniml_sample_target_paths(...)` walks a MINiML package dict, or each
-package in a top-level list, and returns path specs for every sample channel's
-`source`, `molecule`, `organism`, and `characteristics`. It intentionally skips
-channel `position` and long protocol fields.
-
-`dedupe_targets(...)` preserves first-seen target order, removes top-level path
-fields, adds `occurrences` with every matched path/value location, and reassigns
-stable sequential ids. The dedupe identity is the exact
-`pre_hz_field:pre_hz_label` pair.
-
-Internal target extraction dispatch:
-
-- `_path_spec(...)` validates a string path or dict path spec.
-- `_resolve_json_pointer(...)` locates the configured subtree.
-- `_collect_targets_by_mode(...)` dispatches to one of three subtree collectors;
-  direct scalar fields use the `field_value` mode.
-
-```python
-def _collect_targets_by_mode(value, path, mode, targets):
-    if mode == "scalar":
-        self._collect_targets(value=value, path=path, targets=targets)
-    elif mode == "tag_value":
-        self._collect_tag_value_targets(value=value, path=path, targets=targets)
-    elif mode == "container_value":
-        self._collect_container_value_targets(
-            value=value,
-            path=path,
-            field_path=path,
-            field=self._field_from_path(path),
-            targets=targets,
-        )
-```
-
-Path specs support these modes:
-
-- `scalar`: recursively collect scalar dictionary values under a subtree.
-- `field_value`: collect a direct scalar field value.
-- `tag_value`: collect `{tag, value}` entries where the tag is `pre_hz_field`.
-- `container_value`: collect nested `{value}` entries using the selected
-  container name as `pre_hz_field`.
-
-Collector behavior:
-
-- `_collect_targets(...)`: recursively walks dictionaries and lists; each scalar
-  dictionary value becomes a target.
-- `_collect_tag_value_targets(...)`: recognizes objects with scalar `tag` and
-  `value`; emits one target whose `pre_hz_field` is the tag and `pre_hz_label`
-  is the value.
-- `_collect_container_value_targets(...)`: recognizes nested objects with scalar
-  `value`; emits one target using the selected container path as the
-  `pre_hz_field_path`.
-- `_target(...)` constructs the normalized target dictionary.
-- `_join_json_pointer(...)`, `_escape_json_pointer_segment(...)`,
-  `_unescape_json_pointer_segment(...)`, and `_field_from_path(...)` maintain
-  JSON Pointer coordinates.
-
+`apply_targets(...)` resolves each occurrence JSON pointer, writes harmonized
+scalar siblings, tag/value rows, or container lists, and copies optional term
+and ontology IDs. It ignores skipped targets and malformed paths.
 ### `OntoStore`
 
 Role: ontology framework/configuration store, SQLite lookup engine, persistent
@@ -1479,6 +847,23 @@ def lookup_with_metadata(label, ontology_id):
     ensure FTS rows exist for legacy indexes
     fts_hits, ranking = query FTS5 over labels, synonyms, descriptions, and identifiers
     return {"match_type": "fts" or "none", "hits": fts_hits, "ranking": ranking}
+
+def lookup_rag(label, ontology_id, top_k=10):
+    if framework has no cached local JSON or OWL source:
+        return []
+    index_path = build_rag_index(ontology_id)
+    query = embedding_provider.embed_query(label)
+    vector_ids, distances = USearch cosine top-k query
+    join vector IDs through rag_term_map to canonical SQLite term payloads
+    return payloads with ontology_id and rag_score=1-distance
+
+def build_rag_index(ontology_id, force=False):
+    require an existing local framework source; never download
+    ensure canonical SQLite terms are current
+    acquire framework/model-specific file lock
+    reuse a current manifest and partition, otherwise batch-embed every term
+    atomically replace the partition and transactionally replace its mappings
+    return index path
 
 def index_framework(ontology_id, force=False):
     transactionally add or refresh one stale JSON cache in SQLite
@@ -1901,17 +1286,14 @@ complementary Europe PMC topical clauses, short per-query purposes, and a
 strategy summary. It forbids dataset-link filters because the curator adds them
 deterministically.
 
-The ontology harmonizer prompt files are:
+The active ontology harmonizer prompt files are:
 
-- `assign_onto_framework.md` instructs the model to choose a configured
-  ontology framework ID, `"false"`, or `"unsure"` and return `decision`,
-  `confidence`, and `reason`.
 - `assign_field.md` instructs the model to choose or create a normalized field
   key and return `decision`, `confidence`, `reason`, and `new_field`.
-- `judge_lookup.md` instructs the model to choose the best lookup hit ID and
-  return `decision`, `confidence`, and `reason`.
+- `judge_lookup.md` instructs the model to choose the best local or semantic
+  lookup hit ID, return `no_match`, or terminally reject with `false`.
 - `judge_search.md` instructs the model to select one supplied OLS candidate or
-  reject all candidates using target context and grounded web evidence.
+  return `no_match` or `false` using the supplied target context.
 
 <a id="llm-wrapper"></a>
 ## LLM Wrapper
@@ -2058,7 +1440,8 @@ from one to three, and `--out`. Theme files take precedence over direct text.
 
 `build_ontology_cache` prepares OWL/JSON caches for configured built-in
 ontology frameworks. Options include `--timeout`, `--out-dir`, `--out-prefix`,
-`--max-workers`, and repeated `--force-framework FRAMEWORK_ID`.
+`--max-workers`, repeated `--force-framework FRAMEWORK_ID`, and `--rag-index`
+to build persistent Gemini/USearch semantic partitions after SQLite sync.
 
 `cli_thematic_reviewer` exposes `ThematicReviewer` methods:
 
@@ -2092,9 +1475,7 @@ Ontology inputs include:
 - `--harmonization-targets` or `--harmonization-targets-file`
 - `--miniml-json` or `--miniml-json-file`
 - `--target-paths` or `--target-paths-file`
-- `--strategy websearch|rag`
 - `--lookup-llm-judge` or `--no-lookup-llm-judge` (enabled by default)
-- `--lookup-llm-threshold`
 - `--search-llm-judge` or `--no-search-llm-judge` (enabled by default)
 - `--llm` or `--no-llm`
 - `--ontology-frameworks` or `--ontology-frameworks-file`
@@ -2119,13 +1500,12 @@ Test coverage includes:
   malformed responses, and CLI direct/file inputs
 - reviewer instantiation, public exports, missing legacy module, prompt
   construction, schema construction, and two-call ordering
-- ontology harmonizer imports, root exports, target wrapper behavior,
-  `lookup_label()` lookup mutation, fallback assignment, MINiML target
-  application, Gemini grounded search client citation/error handling,
-  websearch strategy fallback behavior, and `OntoStore`
-  defaults/overrides/download/get/lookup behavior
+- ontology harmonizer imports, root exports, fixed local-semantic-OLS routing,
+  local and OLS `no_match`/`false` behavior, MINiML target application,
+  persistent semantic index build/reuse, and `OntoStore`
+  defaults/overrides/download/get/exact/FTS/RAG behavior
 - ontology cache builder framework ordering, default worker count, threaded
-  scheduling, force flags, failure collection, SQLite synchronization,
+  scheduling, force flags, failure collection, SQLite/RAG synchronization,
   manifest/log writing, and console script metadata
 - Owl2json imports, ontology metadata extraction, normalized term JSON,
   accession fallback, deprecated/replaced terms, HTML rejection, and JSON file
@@ -2210,6 +1590,8 @@ Build ontology OWL/JSON caches with concurrent framework jobs:
   --max-workers 4 \
   --timeout 2700
 ```
+
+Add `--rag-index` to embed cached ontology terms and persist semantic indexes.
 
 Run the CLI against local fixtures, if present:
 

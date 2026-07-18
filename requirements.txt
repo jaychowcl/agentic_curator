@@ -9,7 +9,9 @@
 
 -e .
 anthropic[vertex]>=0.107,<1
+filelock>=3,<4
 google-genai>=1.72,<2
 rdflib>=7,<8
 requests>=2,<3
+usearch>=2,<3
 pytest>=8
