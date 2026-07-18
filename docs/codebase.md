@@ -271,7 +271,7 @@ paths, prior traces, or internal framework file metadata.
 | Local lookup judge | Exact or FTS candidates exist and judging is enabled. | Publication context; metadata context; semantic target with original field/label; top 10 compact local hits. |
 | Semantic lookup judge | Local lookup misses and semantic neighbours meet their thresholds. | The same contexts and target; balanced compact RAG hits including ontology IDs and scores. Up to two hits are reserved per qualifying ontology; the list expands beyond 10 when required, otherwise remaining seats are filled globally by similarity. When hierarchy expansion is enabled, accepted relatives also include `rag_relation`, `rag_depth`, and `rag_seed_id`. |
 | OLS judge | Local and semantic lookup miss and OLS returns candidates. | Publication context; metadata context; semantic target; one neutral OLS candidate list. No restricted/unrestricted stage literal is included. |
-| Field assignment | Registry lookup misses after label harmonization. | Publication context; metadata context; semantic target containing the current harmonized label plus `pre_hz_label`; current ontology ID when known; configured field projections. |
+| Field assignment | Registry lookup misses after label harmonization. | Publication context; metadata context; semantic target containing the original field, current harmonized label, and `pre_hz_label`; current ontology ID; compact selected-term identifiers, title, and description; configured field keys, labels, aliases, and descriptions. |
 
 Compact candidate hits contain identifiers, title, complete description, and
 ontology ID; semantic hits also contain their RAG score and optional hierarchy
@@ -301,10 +301,22 @@ built-in frameworks, 22 reserved semantic candidates can grow to at most 55.
 The `ontology_rag.hierarchy` trace records enabled depths, offset, and selected
 relatives.
 
-The maximum is four logical LLM calls per target: local judge, semantic judge,
+The maximum is four logical LLM stages per target: local judge, semantic judge,
 OLS judge, and field assignment. A stage without candidates makes no judge call.
-A successful earlier term match skips later term-search calls. Retry policy can
-make multiple provider attempts for one logical call.
+A successful earlier term match skips later term-search calls. Field assignment
+can make one additional correction call when its first model response is
+malformed or semantically inconsistent. Provider retry policy remains separate
+and can make multiple transport attempts for one model call.
+
+Field assignment treats the field as the semantic category and the harmonized
+ontology label as its value. An existing-field decision resolves through field
+keys, labels, and aliases and is canonicalized; a decision marked as new must
+not resolve to an existing field or merely repeat the normalized target label.
+Contradictory or malformed responses receive one correction prompt. A second
+invalid response falls back to the normalized `pre_hz_field`, records
+`field_assignment_attempts` and `field_assignment_fallback`, and does not write
+that fallback to the field registry. Accepted new fields use non-replacing
+insertion so an LLM cannot overwrite an existing definition.
 
 ### MINiML extraction and application
 
@@ -795,9 +807,15 @@ class OntologyHarmonizer:
             replace hz_field with canonical field and return lookup
         if llm is disabled:
             return False
-        return assign_field(
-            semantic target containing current hz_label and original pre_hz_label
+        assignment = assign_field(
+            original field/label, current hz_label, selected term, contexts, fields
         )
+        validate field/value separation and new_field against the registry
+        if invalid or malformed:
+            call the field LLM once more with a correction section
+        if the correction is invalid:
+            use normalized pre_hz_field without persisting it
+        return accepted assignment or fallback trace
 
     def harmonize_miniml_json(...):
         discover paths when omitted
@@ -1366,8 +1384,9 @@ deterministically.
 
 The active ontology harmonizer prompt files are:
 
-- `assign_field.md` instructs the model to choose or create a normalized field
-  key and return `decision`, `confidence`, `reason`, and `new_field`.
+- `assign_field.md` distinguishes field categories from ontology values, asks the
+  model to reason over the original field/label pair and wider context, prefers
+  existing keys, and returns `decision`, `confidence`, `reason`, and `new_field`.
 - `judge_lookup.md` instructs the model to choose the best local or semantic
   lookup hit ID, return `no_match`, or terminally reject with `false`.
 - `judge_search.md` instructs the model to select one supplied OLS candidate or

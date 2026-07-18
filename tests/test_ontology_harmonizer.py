@@ -2218,7 +2218,15 @@ def test_assign_field_prompt_prunes_lookup_and_strategy_context(
         "hz_field": "sample_source",
         "hz_label": "lung",
         "ontology_id": "uberon",
-        "ontology_lookup": {"title": "polluting lookup"},
+        "ontology_lookup": {
+            "id": None,
+            "accession": "UBERON:0002048",
+            "iri": "http://purl.obolibrary.org/obo/UBERON_0002048",
+            "title": "lung",
+            "description": "A respiratory organ.",
+            "synonyms": ["polluting lookup"],
+            "ontology_id": "uberon",
+        },
         "ontology_lookup_hits": [{"title": "polluting hit"}],
         "ontology_lookup_judgement": {"decision": "polluting decision"},
         "ontology_match": True,
@@ -2246,6 +2254,11 @@ def test_assign_field_prompt_prunes_lookup_and_strategy_context(
     assert '"source"' not in prompt
     assert '"confidence"' not in prompt
     assert "Internal provenance." not in prompt
+    assert "Selected Ontology Term:" in prompt
+    assert '"accession": "UBERON:0002048"' in prompt
+    assert '"title": "lung"' in prompt
+    assert "A respiratory organ." in prompt
+    assert '"synonyms"' not in prompt
     assert '"ontology_lookup"' not in prompt
     assert '"ontology_lookup_hits"' not in prompt
     assert '"ontology_lookup_judgement"' not in prompt
@@ -2255,6 +2268,254 @@ def test_assign_field_prompt_prunes_lookup_and_strategy_context(
     assert '"field_lookup"' not in prompt
     assert '"field_assignment"' not in prompt
     assert "polluting" not in prompt
+
+
+def test_assign_field_retries_unknown_existing_decision_and_resolves_alias(
+    tmp_path: Path,
+) -> None:
+    fake_llm = FakeLLM(
+        responses=[
+            {
+                "decision": "total_rna",
+                "confidence": "high",
+                "reason": "The value names the field.",
+                "new_field": False,
+            },
+            {
+                "decision": "Extracted molecule",
+                "confidence": "high",
+                "reason": "The field describes the molecular assay input.",
+                "new_field": False,
+            },
+        ]
+    )
+    store = OntoStore(
+        fields={
+            "molecule": {
+                "label": "Extracted molecule",
+                "aliases": ["molecule_ch1"],
+                "description": "Molecular material used as assay input.",
+            }
+        },
+        storage_dir=tmp_path,
+    )
+    target = {
+        "pre_hz_field": "molecule_ch1",
+        "pre_hz_label": "total RNA",
+        "hz_field": "molecule_ch1",
+        "hz_label": "total RNA",
+        "ontology_id": "efo",
+    }
+
+    result = OntologyHarmonizer(llm=fake_llm).assign_field(
+        target,
+        publication_context="RNA sequencing study",
+        ontostore=store,
+    )
+
+    assert result == {
+        "decision": "Extracted molecule",
+        "confidence": "high",
+        "reason": "The field describes the molecular assay input.",
+        "new_field": False,
+    }
+    assert target["hz_field"] == "molecule"
+    assert target["field_assignment"] == result
+    assert target["field_lookup"]["field"] == "molecule"
+    assert [attempt["status"] for attempt in target["field_assignment_attempts"]] == [
+        "invalid",
+        "accepted",
+    ]
+    assert target["field_assignment_attempts"][0]["assignment"]["decision"] == (
+        "total_rna"
+    )
+    assert len(fake_llm.calls) == 2
+    assert "Correction Required:" in fake_llm.calls[1]["prompt"]
+    assert "total_rna" in fake_llm.calls[1]["prompt"]
+
+
+def test_assign_field_retries_malformed_output_then_falls_back_without_persisting(
+    tmp_path: Path,
+) -> None:
+    fake_llm = FakeLLM(
+        responses=[
+            "not json",
+            {
+                "decision": "total_rna",
+                "confidence": "high",
+                "reason": "The ontology label is total RNA.",
+                "new_field": True,
+            },
+        ]
+    )
+    store = OntoStore(fields={}, storage_dir=tmp_path)
+    target = {
+        "pre_hz_field": "molecule",
+        "pre_hz_label": "total RNA",
+        "hz_field": "molecule",
+        "hz_label": "total RNA",
+    }
+
+    result = OntologyHarmonizer(llm=fake_llm).assign_field(
+        target,
+        publication_context=None,
+        ontostore=store,
+    )
+
+    assert result == {
+        "field": "molecule",
+        "reason": "field_assignment_invalid_after_retry",
+        "attempts": 2,
+    }
+    assert target["hz_field"] == "molecule"
+    assert "field_assignment" not in target
+    assert target["field_assignment_fallback"] == result
+    assert [attempt["status"] for attempt in target["field_assignment_attempts"]] == [
+        "invalid",
+        "invalid",
+    ]
+    assert "assignment" not in target["field_assignment_attempts"][0]
+    assert target["field_assignment_attempts"][1]["assignment"]["decision"] == (
+        "total_rna"
+    )
+    assert store.fields == {}
+    assert len(fake_llm.calls) == 2
+    assert "Correction Required:" in fake_llm.calls[1]["prompt"]
+
+
+def test_assign_field_does_not_convert_provider_failure_into_fallback(
+    tmp_path: Path,
+) -> None:
+    class FailingLLM:
+        def generate_response(self, *args, **kwargs):
+            raise RuntimeError("provider unavailable")
+
+    target = {
+        "pre_hz_field": "molecule",
+        "pre_hz_label": "total RNA",
+        "hz_field": "molecule",
+        "hz_label": "total RNA",
+    }
+
+    with pytest.raises(RuntimeError, match="provider unavailable"):
+        OntologyHarmonizer(llm=FailingLLM()).assign_field(
+            target,
+            publication_context=None,
+            ontostore=OntoStore(fields={}, storage_dir=tmp_path),
+        )
+
+    assert "field_assignment_fallback" not in target
+
+
+@pytest.mark.parametrize(
+    ("assignment", "message"),
+    [
+        (
+            {
+                "decision": "",
+                "confidence": "low",
+                "reason": "Empty.",
+                "new_field": True,
+            },
+            "cannot be empty",
+        ),
+        (
+            {
+                "decision": "new_category",
+                "confidence": "low",
+                "reason": "Wrong flag type.",
+                "new_field": "true",
+            },
+            "must be a boolean",
+        ),
+        (
+            {
+                "decision": "Tissue",
+                "confidence": "high",
+                "reason": "Already registered.",
+                "new_field": True,
+            },
+            "already resolves to field 'tissue'",
+        ),
+    ],
+)
+def test_field_assignment_semantic_validation_rejects_contradictions(
+    tmp_path: Path,
+    assignment: dict,
+    message: str,
+) -> None:
+    store = OntoStore(
+        fields={"tissue": {"label": "Tissue"}},
+        storage_dir=tmp_path,
+    )
+
+    with pytest.raises(ValueError, match=message):
+        OntologyHarmonizer()._validate_field_assignment_response(
+            assignment,
+            target={"pre_hz_field": "sample type", "hz_label": "lung"},
+            ontostore=store,
+        )
+
+
+def test_field_assignment_ontology_context_caps_description() -> None:
+    context = OntologyHarmonizer()._field_assignment_ontology_context(
+        {
+            "ontology_lookup": {
+                "accession": "EFO:1",
+                "title": "term",
+                "description": "x" * 600,
+                "synonyms": ["excluded"],
+            }
+        }
+    )
+
+    assert context["accession"] == "EFO:1"
+    assert context["title"] == "term"
+    assert len(context["description"]) == 500
+    assert context["description"].endswith("…")
+    assert "synonyms" not in context
+
+
+def test_field_assignment_fallback_applies_harmonized_value_under_original_field(
+    tmp_path: Path,
+) -> None:
+    miniml_json = {"sample": {"molecule": "total RNA"}}
+    target = {
+        "id": "target-0",
+        "pre_hz_field": "molecule",
+        "pre_hz_label": "total RNA",
+        "hz_field": "molecule",
+        "hz_label": "total_rna",
+        "occurrences": [
+            {
+                "pre_hz_field_path": "/sample/molecule",
+                "pre_hz_label_path": "/sample/molecule",
+                "parent_path": "/sample",
+                "hz_field": "molecule",
+                "hz_label": "total_rna",
+            }
+        ],
+    }
+    fake_llm = FakeLLM(
+        response={
+            "decision": "total_rna",
+            "confidence": "high",
+            "reason": "The value names the field.",
+            "new_field": True,
+        }
+    )
+    harmonizer = OntologyHarmonizer(llm=fake_llm)
+
+    harmonizer.assign_field(
+        target,
+        publication_context=None,
+        ontostore=OntoStore(fields={}, storage_dir=tmp_path),
+    )
+    harmonizer.apply_targets(miniml_json, [target])
+
+    assert target["hz_field"] == "molecule"
+    assert miniml_json["sample"]["hz_molecule"] == "total_rna"
+    assert "hz_total_rna" not in miniml_json["sample"]
 
 
 def test_assign_field_prompt_uses_harmonized_label() -> None:
@@ -2326,15 +2587,20 @@ def test_assign_field_response_schema_requires_assignment_fields() -> None:
     }
 
 
-def test_assign_field_raises_value_error_for_invalid_json_response() -> None:
+def test_assign_field_falls_back_after_two_invalid_json_responses(
+    tmp_path: Path,
+) -> None:
     target = {"id": "target-0", "pre_hz_field": "stage"}
 
-    with pytest.raises(ValueError, match="valid JSON"):
-        OntologyHarmonizer(llm=FakeLLM(response="not json")).assign_field(
-            target,
-            publication_context=None,
-            ontostore=OntoStore(),
-        )
+    result = OntologyHarmonizer(llm=FakeLLM(response="not json")).assign_field(
+        target,
+        publication_context=None,
+        ontostore=OntoStore(storage_dir=tmp_path),
+    )
+
+    assert result["field"] == "stage"
+    assert result["attempts"] == 2
+    assert target["hz_field"] == "stage"
 
 
 def test_harmonize_assigns_ontology_metadata_from_store(tmp_path: Path) -> None:

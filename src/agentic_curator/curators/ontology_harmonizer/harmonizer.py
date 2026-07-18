@@ -49,6 +49,8 @@ class OntologyHarmonizer:
     RAG_CHILD_DEPTH = 1
     RAG_HIERARCHY_THRESHOLD_OFFSET = 0.1
     METADATA_CONTEXT_MAX_CHARS = 500
+    FIELD_TERM_DESCRIPTION_MAX_CHARS = 500
+    FIELD_ASSIGNMENT_MAX_ATTEMPTS = 2
     WORKFLOW = "local_rag_ols"
 
     def __init__(
@@ -1060,35 +1062,96 @@ class OntologyHarmonizer:
         ontostore: OntoStore,
     ) -> dict[str, Any]:
         LOGGER.info("Assigning harmonized field with LLM.")
-        prompt = self._assign_field_prompt(
-            target=target,
-            publication_context=publication_context,
-            metadata_context=metadata_context,
-            fields=ontostore.fields,
-        )
-        response = self._generate_response(
-            prompt,
-            config={
-                "response_mime_type": "application/json",
-                "response_schema": self._assign_field_response_schema(),
-            },
-        )
-        assignment = parse_json_response(response)
-        self._validate_field_assignment_response(assignment)
-        target["field_assignment"] = assignment
+        target.pop("field_assignment", None)
+        target.pop("field_assignment_attempts", None)
+        target.pop("field_assignment_fallback", None)
+        target.pop("field_lookup", None)
+        attempts: list[dict[str, Any]] = []
+        correction: dict[str, Any] | None = None
+        for attempt_number in range(1, self.FIELD_ASSIGNMENT_MAX_ATTEMPTS + 1):
+            prompt = self._assign_field_prompt(
+                target=target,
+                publication_context=publication_context,
+                metadata_context=metadata_context,
+                fields=ontostore.fields,
+                correction=correction,
+            )
+            response = self._generate_response(
+                prompt,
+                config={
+                    "response_mime_type": "application/json",
+                    "response_schema": self._assign_field_response_schema(),
+                },
+            )
+            assignment: Any = None
+            try:
+                assignment = parse_json_response(response)
+                decision, field_lookup = self._validate_field_assignment_response(
+                    assignment,
+                    target=target,
+                    ontostore=ontostore,
+                )
+                if assignment["new_field"]:
+                    ontostore.add_field(
+                        decision,
+                        {
+                            "label": decision,
+                            "source": "llm",
+                            "confidence": assignment["confidence"],
+                            "reason": assignment["reason"],
+                            "review_status": "unreviewed",
+                        },
+                        replace=False,
+                    )
+            except ValueError as exc:
+                invalid_attempt = {
+                    "attempt": attempt_number,
+                    "status": "invalid",
+                    "error": str(exc),
+                }
+                if isinstance(assignment, dict):
+                    invalid_attempt["assignment"] = assignment
+                attempts.append(invalid_attempt)
+                correction = {
+                    "validation_error": str(exc),
+                    "previous_response": self._field_response_for_correction(
+                        response
+                    ),
+                }
+                continue
 
-        decision = ontostore.harmonize_key(assignment["decision"])
-        target["hz_field"] = decision
-        if assignment["new_field"]:
-            ontostore.add_field(decision, {
-                "label": decision,
-                "source": "llm",
-                "confidence": assignment["confidence"],
-                "reason": assignment["reason"],
-                "review_status": "unreviewed",
-            }, replace=True)
+            attempts.append(
+                {
+                    "attempt": attempt_number,
+                    "status": "accepted",
+                    "assignment": assignment,
+                }
+            )
+            target["field_assignment"] = assignment
+            target["hz_field"] = decision
+            if field_lookup is not None:
+                target["field_lookup"] = field_lookup
+            if attempt_number > 1:
+                target["field_assignment_attempts"] = attempts
+            return assignment
 
-        return assignment
+        fallback_field = ontostore.harmonize_key(
+            target.get("pre_hz_field", target.get("hz_field", ""))
+        )
+        target["hz_field"] = fallback_field
+        target["field_assignment_attempts"] = attempts
+        fallback = {
+            "field": fallback_field,
+            "reason": "field_assignment_invalid_after_retry",
+            "attempts": len(attempts),
+        }
+        target["field_assignment_fallback"] = fallback
+        LOGGER.warning(
+            "Field assignment remained invalid after %d attempts; using %s.",
+            len(attempts),
+            fallback_field,
+        )
+        return fallback
 
     def harmonize_label(
         self,
@@ -1429,6 +1492,7 @@ class OntologyHarmonizer:
         publication_context: str | None,
         metadata_context: str | None,
         fields: dict[str, Any],
+        correction: dict[str, Any] | None = None,
     ) -> str:
         initial_prompt = files(PROMPT_PACKAGE).joinpath(
             "prompts/assign_field.md"
@@ -1441,7 +1505,12 @@ class OntologyHarmonizer:
                 "Harmonization Target",
                 self._field_assignment_target_context(target),
             ),
+            (
+                "Selected Ontology Term",
+                self._field_assignment_ontology_context(target),
+            ),
             ("Fields", self._field_prompt_context(fields)),
+            ("Correction Required", correction),
         )
 
     def _judge_lookup_prompt(
@@ -1531,6 +1600,33 @@ class OntologyHarmonizer:
             for field_id, metadata in fields.items()
         }
 
+    def _field_assignment_ontology_context(
+        self,
+        target: dict[str, Any],
+    ) -> dict[str, Any]:
+        lookup = target.get("ontology_lookup")
+        if not isinstance(lookup, dict):
+            return {}
+        allowed = ("id", "accession", "iri", "title", "ontology_id")
+        context = {
+            key: lookup[key]
+            for key in allowed
+            if lookup.get(key) is not None
+        }
+        description = lookup.get("description")
+        if isinstance(description, str) and description.strip():
+            compact = " ".join(description.split())
+            if len(compact) > self.FIELD_TERM_DESCRIPTION_MAX_CHARS:
+                compact = compact[: self.FIELD_TERM_DESCRIPTION_MAX_CHARS - 1] + "…"
+            context["description"] = compact
+        return context
+
+    @staticmethod
+    def _field_response_for_correction(response: Any) -> Any:
+        if isinstance(response, (dict, list, bool, int, float)) or response is None:
+            return response
+        return str(response)[:1_000]
+
     def _candidate_prompt_context(
         self,
         hits: list[dict[str, Any]],
@@ -1615,7 +1711,13 @@ class OntologyHarmonizer:
                 "LLM assignment response must include decision, confidence, and reason."
             )
 
-    def _validate_field_assignment_response(self, assignment: Any) -> None:
+    def _validate_field_assignment_response(
+        self,
+        assignment: Any,
+        *,
+        target: dict[str, Any],
+        ontostore: OntoStore,
+    ) -> tuple[str, dict[str, Any] | None]:
         if not isinstance(assignment, dict):
             raise ValueError("LLM field assignment response must be a JSON object.")
 
@@ -1625,6 +1727,39 @@ class OntologyHarmonizer:
                 "LLM field assignment response must include decision, confidence, "
                 "reason, and new_field."
             )
+        if not isinstance(assignment["new_field"], bool):
+            raise ValueError("LLM field assignment new_field must be a boolean.")
+        if not isinstance(assignment["decision"], str):
+            raise ValueError("LLM field assignment decision must be a string.")
+
+        decision = ontostore.harmonize_key(assignment["decision"])
+        if not decision:
+            raise ValueError("LLM field assignment decision cannot be empty.")
+        field_lookup = ontostore.lookup_fields(decision)
+        if not assignment["new_field"]:
+            if not field_lookup:
+                raise ValueError(
+                    "LLM field assignment marked new_field=false but the decision "
+                    f"{decision!r} does not resolve to an existing field."
+                )
+            return str(field_lookup["field"]), field_lookup
+
+        if field_lookup:
+            raise ValueError(
+                "LLM field assignment marked new_field=true but the decision "
+                f"{decision!r} already resolves to field {field_lookup['field']!r}."
+            )
+        value_keys = {
+            ontostore.harmonize_key(value)
+            for value in (target.get("hz_label"), target.get("pre_hz_label"))
+            if value is not None
+        }
+        if decision in value_keys:
+            raise ValueError(
+                "LLM field assignment decision must describe the field category, "
+                "not repeat the target label value."
+            )
+        return decision, None
 
     def _validate_lookup_judge_response(self, judgement: Any) -> None:
         if not isinstance(judgement, dict):
