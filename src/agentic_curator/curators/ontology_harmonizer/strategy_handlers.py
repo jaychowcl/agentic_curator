@@ -18,33 +18,6 @@ from agentic_curator.curators.ontology_harmonizer.ontology_store import OntoStor
 from agentic_curator.curators.ontology_harmonizer.request_policy import RequestPolicy, request_with_retry
 
 
-class PlaceholderStrategyHandler:
-    """Base placeholder handler for ontology harmonization strategies."""
-
-    strategy = ""
-    reason = ""
-
-    def handle(
-        self,
-        target: dict[str, Any],
-        *,
-        publication_context: str | None,
-        metadata_context: str | None = None,
-        ontostore: OntoStore,
-    ) -> dict[str, str]:
-        del publication_context, metadata_context, ontostore
-
-        result = {
-            "strategy": self.strategy,
-            "status": "placeholder",
-            "decision": "false",
-            "confidence": "none",
-            "reason": self.reason,
-        }
-        target["ontology_strategy_result"] = result
-        return result
-
-
 class OlsClient:
     """Small client for the OLS4 search and ontology metadata API."""
 
@@ -109,7 +82,7 @@ class OlsClient:
 
 
 class OlsStrategyHandler:
-    strategy = "ols"
+    source = "ols"
     max_results = 25
     judge_candidate_limit = 10
 
@@ -178,6 +151,13 @@ class OlsStrategyHandler:
                 )
             judgements.append({"stage": "restricted", **judgement})
             target["search_llm_judgements"] = judgements
+            if str(judgement["decision"]).lower() == "no_match":
+                return self._not_harmonized(
+                    target,
+                    reason=str(judgement["reason"]),
+                    ols_hits=restricted_hits,
+                    search_llm_judgements=judgements,
+                )
             if str(judgement["decision"]).lower() != "false":
                 hit = self._selected_hit(restricted_hits, judgement["decision"])
                 return self._accept_hit(
@@ -234,6 +214,13 @@ class OlsStrategyHandler:
                 )
             judgements.append({"stage": "unrestricted", **judgement})
             target["search_llm_judgements"] = judgements
+            if str(judgement["decision"]).lower() == "no_match":
+                return self._not_harmonized(
+                    target,
+                    reason=str(judgement["reason"]),
+                    ols_hits=all_hits,
+                    search_llm_judgements=judgements,
+                )
             if str(judgement["decision"]).lower() != "false":
                 hit = self._selected_hit(unrestricted_hits, judgement["decision"])
                 return self._accept_hit(
@@ -301,7 +288,7 @@ class OlsStrategyHandler:
         )
 
         result = {
-            "strategy": self.strategy,
+            "source": self.source,
             "status": "matched",
             "decision": self._hit_decision(hit),
             "confidence": confidence,
@@ -315,7 +302,7 @@ class OlsStrategyHandler:
         target["ontology_lookup"] = hit
         target["ontology_lookup_hits"] = hits
         target["ontology_match"] = True
-        target["ontology_strategy_result"] = result
+        target["ontology_ols_result"] = result
         return result
 
     def _skipped(
@@ -328,7 +315,7 @@ class OlsStrategyHandler:
         search_llm_judgements: list[dict[str, Any]],
     ) -> dict[str, Any]:
         result = {
-            "strategy": self.strategy,
+            "source": self.source,
             "status": "skipped",
             "decision": "false",
             "confidence": str(judgement["confidence"]),
@@ -347,7 +334,7 @@ class OlsStrategyHandler:
             "confidence": result["confidence"],
             "reason": result["reason"],
         }
-        target["ontology_strategy_result"] = result
+        target["ontology_ols_result"] = result
         return result
 
     def _not_harmonized(
@@ -360,7 +347,7 @@ class OlsStrategyHandler:
         search_llm_judge_error: str | None = None,
     ) -> dict[str, Any]:
         result = {
-            "strategy": self.strategy,
+            "source": self.source,
             "status": "not_harmonized",
             "decision": "false",
             "confidence": "none",
@@ -375,7 +362,7 @@ class OlsStrategyHandler:
         target["ontology_match"] = False
         target.pop("ontology_lookup", None)
         target.pop("ontology_lookup_hits", None)
-        target["ontology_strategy_result"] = result
+        target["ontology_ols_result"] = result
         return result
 
     def _judge_search_hits(
@@ -403,7 +390,7 @@ class OlsStrategyHandler:
                 "Search LLM judgement must include decision, confidence, and reason."
             )
         candidates = [*restricted_hits, *unrestricted_hits]
-        if str(judgement["decision"]).lower() != "false":
+        if str(judgement["decision"]).lower() not in {"false", "no_match"}:
             self._selected_hit(candidates, judgement["decision"])
         return judgement
 
@@ -495,8 +482,3 @@ class OlsStrategyHandler:
             if value:
                 return str(value)
         return "false"
-
-
-class RagStrategyHandler(PlaceholderStrategyHandler):
-    strategy = "rag"
-    reason = "RAG ontology harmonization is not implemented yet."

@@ -46,7 +46,6 @@ def _add_store_options(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_harmonize_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--strategy", choices=["ols", "rag"], default="ols")
     parser.add_argument("--target-paths", default=None)
     parser.add_argument("--target-paths-file", default=None)
     parser.add_argument("--lookup-llm-judge", dest="lookup_llm_judge", action="store_true", default=True)
@@ -188,7 +187,6 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Any:
                 file=args.target_file,
                 name="target",
             ),
-            strategy=args.strategy,
             target_paths=_target_paths(args, parser),
             lookup_llm_judge=args.lookup_llm_judge,
             search_llm_judge=args.search_llm_judge,
@@ -205,7 +203,6 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Any:
                 name="miniml-json",
             ),
             target_paths=_target_paths(args, parser),
-            strategy=args.strategy,
             lookup_llm_judge=args.lookup_llm_judge,
             search_llm_judge=args.search_llm_judge,
             llm=args.llm,

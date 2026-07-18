@@ -28,7 +28,6 @@ from agentic_curator.curators.ontology_harmonizer.request_policy import RequestP
 from agentic_curator.curators.ontology_harmonizer.strategy_handlers import (
     OlsClient,
     OlsStrategyHandler,
-    RagStrategyHandler,
 )
 from agentic_curator.wrappers import LLM
 
@@ -43,14 +42,7 @@ class OntologyHarmonizer:
     DEFAULT_TARGET_PATHS = HarmonizationTargetExtractor.DEFAULT_TARGET_PATHS
     LLM_CANDIDATE_LIMIT = 10
     METADATA_CONTEXT_MAX_CHARS = 500
-    STRATEGY_ALIASES = {
-        "ols": "ols",
-        "rag": "rag",
-    }
-    STRATEGY_HANDLERS = {
-        "ols": OlsStrategyHandler,
-        "rag": RagStrategyHandler,
-    }
+    WORKFLOW = "local_rag_ols"
 
     def __init__(
         self,
@@ -69,7 +61,6 @@ class OntologyHarmonizer:
         metadata_context: str | None = None,
         harmonization_targets: dict[str, Any] | list[dict[str, Any]] | None = None,
         target: dict[str, Any] | None = None,
-        strategy: str = "ols",
         ontostore: OntoStore | None = None,
         target_paths: list[StartPathSpec] | None = None,
         lookup_llm_judge: bool = True,
@@ -78,14 +69,13 @@ class OntologyHarmonizer:
     ) -> dict[str, Any]:
         LOGGER.info("Starting ontology harmonization.")
         effective_ontostore = self._effective_ontostore(ontostore)
-        normalized_strategy = self._normalize_strategy(strategy)
         normalized_targets = self._normalize_targets(
             harmonization_targets=harmonization_targets,
             target=target,
         )
         LOGGER.debug(
             "Ontology harmonization using strategy %s for %d targets.",
-            normalized_strategy,
+            self.WORKFLOW,
             len(normalized_targets),
         )
         for normalized_target in normalized_targets:
@@ -95,12 +85,22 @@ class OntologyHarmonizer:
                 normalized_target,
                 publication_context=publication_context,
                 ontostore=effective_ontostore,
-                strategy=normalized_strategy,
                 lookup_llm_judge=lookup_llm_judge and llm,
                 **self._metadata_context_kwargs(metadata_context),
             )
             if self._is_harmonization_skipped(normalized_target):
                 continue
+            if not lookup and llm:
+                lookup = self.lookup_rag_label(
+                    normalized_target,
+                    publication_context=publication_context,
+                    ontostore=effective_ontostore,
+                    lookup_llm_judge=lookup_llm_judge,
+                    **self._metadata_context_kwargs(metadata_context),
+                )
+            if self._is_harmonization_skipped(normalized_target):
+                continue
+
             if not lookup:
                 LOGGER.info(
                     "Ontology lookup missed for target %s.",
@@ -109,27 +109,20 @@ class OntologyHarmonizer:
                 self._mark_ontology_miss(normalized_target)
 
             if not lookup:
-                if normalized_strategy in self.STRATEGY_HANDLERS:
-                    LOGGER.info(
-                        "Routing target %s to %s strategy handler.",
-                        normalized_target.get("id"),
-                        normalized_strategy,
-                    )
-                    strategy_result = self.harmonize_label(
+                ols_result = self.harmonize_label(
+                    normalized_target,
+                    publication_context=publication_context,
+                    ontostore=effective_ontostore,
+                    search_llm_judge=search_llm_judge and llm,
+                    **self._metadata_context_kwargs(metadata_context),
+                )
+                if ols_result.get("status") == "matched":
+                    self._lookup_harmonized_label(
                         normalized_target,
-                        publication_context=publication_context,
                         ontostore=effective_ontostore,
-                        strategy=normalized_strategy,
-                        search_llm_judge=search_llm_judge and llm,
-                        **self._metadata_context_kwargs(metadata_context),
                     )
-                    if strategy_result.get("status") == "matched":
-                        self._lookup_harmonized_label(
-                            normalized_target,
-                            ontostore=effective_ontostore,
-                        )
-                    elif strategy_result.get("status") == "skipped":
-                        continue
+                elif ols_result.get("status") == "skipped":
+                    continue
 
             self._apply_selected_ontology_label(normalized_target)
             self.harmonize_field(
@@ -145,18 +138,18 @@ class OntologyHarmonizer:
             self._is_harmonization_skipped(item) for item in normalized_targets
         )
         LOGGER.info(
-            "Completed ontology harmonization. targets=%s matched=%s skipped=%s unmatched=%s strategy=%s.",
+            "Completed ontology harmonization. targets=%s matched=%s skipped=%s unmatched=%s workflow=%s.",
             len(normalized_targets),
             matched,
             skipped,
             len(normalized_targets) - matched - skipped,
-            normalized_strategy,
+            self.WORKFLOW,
         )
         return {
             "publication_context": publication_context,
             "metadata_context": metadata_context,
             "harmonization_targets": normalized_targets,
-            "strategy": normalized_strategy,
+            "workflow": self.WORKFLOW,
             "target_paths": target_paths,
         }
 
@@ -166,7 +159,6 @@ class OntologyHarmonizer:
         miniml_json: dict[str, Any] | list[Any] | None = None,
         ontostore: OntoStore | None = None,
         target_paths: list[StartPathSpec] | None = None,
-        strategy: str = "ols",
         lookup_llm_judge: bool = True,
         search_llm_judge: bool = True,
         llm: bool = True,
@@ -196,7 +188,6 @@ class OntologyHarmonizer:
             metadata_context=metadata_context,
             harmonization_targets=harmonization_targets,
             target=None,
-            strategy=strategy,
             ontostore=ontostore,
             target_paths=effective_target_paths,
             lookup_llm_judge=lookup_llm_judge,
@@ -507,16 +498,6 @@ class OntologyHarmonizer:
     def _unescape_json_pointer_segment(segment: str) -> str:
         return segment.replace("~1", "/").replace("~0", "~")
 
-    def _normalize_strategy(self, strategy: str) -> str:
-        normalized = self.STRATEGY_ALIASES.get(strategy)
-        if normalized is None:
-            supported = ", ".join(sorted(self.STRATEGY_ALIASES))
-            raise ValueError(
-                f"Unknown harmonization strategy {strategy!r}. "
-                f"Supported strategies: {supported}."
-            )
-        return normalized
-
     def lookup_label(
         self,
         target: dict[str, Any],
@@ -524,11 +505,8 @@ class OntologyHarmonizer:
         publication_context: str | None,
         metadata_context: str | None = None,
         ontostore: OntoStore,
-        strategy: str,
         lookup_llm_judge: bool = True,
     ) -> Any:
-        del strategy
-
         self._harmonize_target(target, ontostore)
         label = target.get("hz_label")
         if label is None:
@@ -571,6 +549,7 @@ class OntologyHarmonizer:
             metadata_context=metadata_context,
             hits=hits,
             lookup_llm_judge=lookup_llm_judge,
+            source="local",
         )
         if not lookup:
             return False
@@ -593,6 +572,7 @@ class OntologyHarmonizer:
         metadata_context: str | None = None,
         hits: list[dict[str, Any]],
         lookup_llm_judge: bool,
+        source: str,
     ) -> dict[str, Any] | bool:
         if not lookup_llm_judge:
             return hits[0]
@@ -606,11 +586,16 @@ class OntologyHarmonizer:
             hits=judged_hits,
         )
         target["ontology_lookup_judgement"] = judgement
+        target.setdefault("ontology_lookup_judgements", []).append(
+            {"source": source, **judgement}
+        )
         decision = str(judgement["decision"])
+        if decision.lower() == "no_match":
+            return False
         if decision.lower() == "false":
             self._mark_harmonization_skip(
                 target,
-                stage="lookup_judge",
+                stage="rag_judge" if source == "rag" else "lookup_judge",
                 judgement=judgement,
             )
             return False
@@ -621,6 +606,77 @@ class OntologyHarmonizer:
         raise ValueError(
             "LLM lookup judgement decision must match a known lookup hit id."
         )
+
+    def lookup_rag_label(
+        self,
+        target: dict[str, Any],
+        *,
+        publication_context: str | None,
+        metadata_context: str | None = None,
+        ontostore: OntoStore,
+        lookup_llm_judge: bool = True,
+    ) -> Any:
+        """Run semantic lookup across cached local ontology frameworks."""
+        label = target.get("hz_label")
+        if label is None:
+            return False
+        hits: list[dict[str, Any]] = []
+        errors: list[dict[str, str]] = []
+        frameworks = self._candidate_ontology_ids(target, ontostore)
+        for ontology_id in frameworks:
+            try:
+                hits.extend(
+                    ontostore.lookup_rag(
+                        str(label), ontology_id, top_k=self.LLM_CANDIDATE_LIMIT
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - preserve local RAG trace.
+                errors.append({"ontology_id": ontology_id, "error": str(exc)})
+        hits = sorted(
+            self._dedupe_semantic_hits(hits),
+            key=lambda hit: float(hit.get("rag_score", 0.0)),
+            reverse=True,
+        )[: self.LLM_CANDIDATE_LIMIT]
+        target["ontology_rag"] = {
+            "status": "candidates" if hits else "error" if errors else "missed",
+            "frameworks": frameworks,
+            "hits": hits,
+            **({"errors": errors} if errors else {}),
+        }
+        if not hits or not lookup_llm_judge:
+            return False
+        selected = self._select_lookup_hit(
+            target=target,
+            publication_context=publication_context,
+            metadata_context=metadata_context,
+            hits=hits,
+            lookup_llm_judge=True,
+            source="rag",
+        )
+        if not selected:
+            target["ontology_rag"]["status"] = (
+                "skipped" if self._is_harmonization_skipped(target) else "no_match"
+            )
+            return False
+        target["ontology_id"] = selected["ontology_id"]
+        target["ontology_lookup"] = selected
+        target["ontology_lookup_hits"] = hits
+        target["ontology_lookup_match_type"] = "rag"
+        target["ontology_match"] = True
+        target["ontology_rag"]["status"] = "matched"
+        return selected
+
+    @staticmethod
+    def _dedupe_semantic_hits(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        deduped: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for hit in hits:
+            key = str(hit.get("id") or hit.get("accession") or hit.get("iri"))
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(hit)
+        return deduped
 
     def judge_lookup(
         self,
@@ -788,27 +844,13 @@ class OntologyHarmonizer:
         publication_context: str | None,
         metadata_context: str | None = None,
         ontostore: OntoStore,
-        strategy: str,
         search_llm_judge: bool = True,
     ) -> dict[str, Any]:
-        handler_class = self.STRATEGY_HANDLERS.get(strategy)
-        if handler_class is None:
-            supported = ", ".join(sorted(self.STRATEGY_HANDLERS))
-            raise ValueError(
-                f"Unknown harmonization strategy {strategy!r}. "
-                f"Supported strategies: {supported}."
-            )
-
-        LOGGER.info("Running ontology harmonization strategy %s.", strategy)
-        if handler_class is OlsStrategyHandler:
-            handler = handler_class(
-                ols_client=OlsClient(request_policy=self.request_policy, cache_store=ontostore),
-                search_judge=(
-                    self.judge_search_results if search_llm_judge else None
-                ),
-            )
-        else:
-            handler = handler_class()
+        LOGGER.info("Running OLS ontology lookup.")
+        handler = OlsStrategyHandler(
+            ols_client=OlsClient(request_policy=self.request_policy, cache_store=ontostore),
+            search_judge=(self.judge_search_results if search_llm_judge else None),
+        )
         return handler.handle(
             target,
             publication_context=publication_context,

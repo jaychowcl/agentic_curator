@@ -4,9 +4,10 @@ Use the publication context, compact metadata context, target context, and
 supplied OLS candidates to select the single best supplied ontology candidate.
 
 Return JSON only with:
-- decision: the id, accession, or IRI of one supplied OLS candidate, or "false"
-  when none is a sufficiently good semantic match or the target should not be
-  ontology harmonized. A false decision terminally skips the target.
+- decision: the id, accession, or IRI of one supplied OLS candidate, "no_match"
+  when none is sufficiently good but the target remains semantically valid, or
+  "false" when the target should not be ontology harmonized. A false decision
+  terminally skips the target.
 - confidence: high, medium, low, or none.
 - reason: a short explanation grounded in the target and supplied evidence.
 

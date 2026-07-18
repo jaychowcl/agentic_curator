@@ -80,20 +80,17 @@ def test_ols_strategy_uses_only_unrestricted_ols_after_local_miss() -> None:
     assert client.search_calls == [
         {"label": "lung", "ontology_id": None, "rows": 25}
     ]
-    assert result["strategy"] == "ols"
+    assert result["source"] == "ols"
     assert result["status"] == "matched"
     assert result["decision"] == "UBERON_0002048"
     assert "web_hits" not in result
     assert "web_search_error" not in result
 
 
-def test_harmonizer_defaults_to_ols_and_rejects_removed_websearch_name() -> None:
-    assert OntologyHarmonizer().harmonize(harmonization_targets=[])["strategy"] == "ols"
-    with pytest.raises(ValueError, match="strategy"):
-        OntologyHarmonizer().harmonize(
-            harmonization_targets=[],
-            strategy="websearch",
-        )
+def test_harmonizer_uses_fixed_local_rag_ols_workflow() -> None:
+    assert OntologyHarmonizer().harmonize(harmonization_targets=[])["workflow"] == (
+        "local_rag_ols"
+    )
 
 
 def test_lookup_judge_false_terminally_skips_search_and_field(monkeypatch) -> None:

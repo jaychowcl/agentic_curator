@@ -26,7 +26,6 @@ from agentic_curator.curators.ontology_harmonizer.owl2json import (
 from agentic_curator.curators.ontology_harmonizer.strategy_handlers import (
     OlsClient,
     OlsStrategyHandler,
-    RagStrategyHandler,
 )
 
 __all__ = [
@@ -40,5 +39,4 @@ __all__ = [
     "Owl2jsonParseError",
     "OlsClient",
     "OlsStrategyHandler",
-    "RagStrategyHandler",
 ]

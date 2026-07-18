@@ -26,7 +26,6 @@ from agentic_curator.curators.ontology_harmonizer import (
     OntologyCacheError,
     OntologyHarmonizer as SubpackageOntologyHarmonizer,
     Owl2jsonParseError,
-    RagStrategyHandler,
     OlsStrategyHandler,
 )
 from agentic_curator.curators.ontology_harmonizer.harmonization_target_extractor import (
@@ -200,18 +199,17 @@ class NoSearchOntologyHarmonizer(OntologyHarmonizer):
         publication_context,
         metadata_context=None,
         ontostore,
-        strategy,
         search_llm_judge=True,
     ):
         result = {
-            "strategy": strategy,
+            "source": "ols",
             "status": "not_harmonized",
             "decision": "false",
             "confidence": "none",
             "reason": "No search candidates.",
             "ols_hits": [],
         }
-        target["ontology_strategy_result"] = result
+        target["ontology_ols_result"] = result
         return result
 
 
@@ -262,9 +260,8 @@ def test_ontostore_can_be_imported_from_subpackage() -> None:
     assert OntoStore.__name__ == "OntoStore"
 
 
-def test_strategy_handlers_can_be_imported_from_subpackage() -> None:
+def test_ols_handler_can_be_imported_from_subpackage() -> None:
     assert OlsStrategyHandler.__name__ == "OlsStrategyHandler"
-    assert RagStrategyHandler.__name__ == "RagStrategyHandler"
 
 
 def test_harmonization_target_extractor_can_be_imported_from_subpackage() -> None:
@@ -1320,7 +1317,6 @@ def test_lookup_label_matches_available_store_framework(
         target,
         publication_context=None,
         ontostore=store,
-        strategy="ols",
         lookup_llm_judge=False,
     )
 
@@ -1362,7 +1358,6 @@ def test_lookup_label_uses_existing_hz_label_after_harmonizing_it(
         target,
         publication_context=None,
         ontostore=store,
-        strategy="ols",
         lookup_llm_judge=False,
     )
 
@@ -1415,7 +1410,6 @@ def test_lookup_label_judges_ambiguous_exact_hits_by_default(
         target,
         publication_context="lung sample context",
         ontostore=store,
-        strategy="ols",
     )
 
     expected_hits = [
@@ -1458,7 +1452,6 @@ def test_lookup_label_llm_judge_is_called_for_single_exact_hit(
         target,
         publication_context="context",
         ontostore=store,
-        strategy="ols",
         lookup_llm_judge=True,
     )
 
@@ -1513,7 +1506,6 @@ def test_lookup_label_llm_judge_selects_best_hit_by_id(
         publication_context="sample is oral buccal tissue",
         metadata_context="tissue=lung",
         ontostore=store,
-        strategy="ols",
         lookup_llm_judge=True,
     )
 
@@ -1636,7 +1628,7 @@ def test_lookup_judge_prompt_prunes_derived_target_context(
         "ontology_lookup_hits": [{"title": "polluting hit"}],
         "ontology_lookup_judgement": {"decision": "polluting decision"},
         "ontology_match": True,
-        "ontology_strategy_result": {"reason": "polluting strategy"},
+        "ontology_ols_result": {"reason": "polluting strategy"},
         "ontology_framework_assignment": {"reason": "polluting framework"},
         "field_lookup": {"field": "polluting field lookup"},
         "field_assignment": {"reason": "polluting field assignment"},
@@ -1646,7 +1638,6 @@ def test_lookup_judge_prompt_prunes_derived_target_context(
         target,
         publication_context="sample is oral buccal tissue",
         ontostore=store,
-        strategy="ols",
         lookup_llm_judge=True,
     )
 
@@ -1661,7 +1652,7 @@ def test_lookup_judge_prompt_prunes_derived_target_context(
     assert '"ontology_lookup_hits"' not in prompt
     assert '"ontology_lookup_judgement"' not in prompt
     assert '"ontology_match"' not in prompt
-    assert '"ontology_strategy_result"' not in prompt
+    assert '"ontology_ols_result"' not in prompt
     assert '"ontology_framework_assignment"' not in prompt
     assert '"field_lookup"' not in prompt
     assert '"field_assignment"' not in prompt
@@ -1739,7 +1730,6 @@ def test_lookup_label_llm_judge_rejects_unknown_decision(
             {"id": "target-0", "pre_hz_label": "lung"},
             publication_context=None,
             ontostore=store,
-            strategy="ols",
             lookup_llm_judge=True,
         )
 
@@ -1776,7 +1766,6 @@ def test_lookup_label_llm_judge_raises_value_error_for_invalid_json_response(
             {"id": "target-0", "pre_hz_label": "lung"},
             publication_context=None,
             ontostore=store,
-            strategy="ols",
             lookup_llm_judge=True,
         )
 
@@ -1813,7 +1802,6 @@ def test_lookup_label_respects_target_framework_subset(
         target,
         publication_context=None,
         ontostore=store,
-        strategy="ols",
     )
 
     assert result is False
@@ -1927,7 +1915,7 @@ def test_assign_onto_framework_prompt_prunes_derived_target_context(
         "ontology_lookup_hits": [{"title": "polluting hit"}],
         "ontology_lookup_judgement": {"decision": "polluting decision"},
         "ontology_match": True,
-        "ontology_strategy_result": {"reason": "polluting strategy"},
+        "ontology_ols_result": {"reason": "polluting strategy"},
         "ontology_framework_assignment": {"reason": "polluting framework"},
         "field_lookup": {"field": "polluting field lookup"},
         "field_assignment": {"reason": "polluting field assignment"},
@@ -1964,7 +1952,7 @@ def test_assign_onto_framework_prompt_prunes_derived_target_context(
     assert '"ontology_lookup_hits"' not in prompt
     assert '"ontology_lookup_judgement"' not in prompt
     assert '"ontology_match"' not in prompt
-    assert '"ontology_strategy_result"' not in prompt
+    assert '"ontology_ols_result"' not in prompt
     assert '"ontology_framework_assignment"' not in prompt
     assert '"field_lookup"' not in prompt
     assert '"field_assignment"' not in prompt
@@ -2155,7 +2143,7 @@ def test_assign_field_prompt_prunes_lookup_and_strategy_context(
         "ontology_lookup_hits": [{"title": "polluting hit"}],
         "ontology_lookup_judgement": {"decision": "polluting decision"},
         "ontology_match": True,
-        "ontology_strategy_result": {"reason": "polluting strategy"},
+        "ontology_ols_result": {"reason": "polluting strategy"},
         "ontology_framework_assignment": {"reason": "polluting framework"},
         "field_lookup": {"field": "polluting field lookup"},
         "field_assignment": {"reason": "polluting field assignment"},
@@ -2183,7 +2171,7 @@ def test_assign_field_prompt_prunes_lookup_and_strategy_context(
     assert '"ontology_lookup_hits"' not in prompt
     assert '"ontology_lookup_judgement"' not in prompt
     assert '"ontology_match"' not in prompt
-    assert '"ontology_strategy_result"' not in prompt
+    assert '"ontology_ols_result"' not in prompt
     assert '"ontology_framework_assignment"' not in prompt
     assert '"field_lookup"' not in prompt
     assert '"field_assignment"' not in prompt
@@ -2312,13 +2300,12 @@ def test_harmonize_llm_false_skips_framework_and_field_assignment() -> None:
             publication_context,
             metadata_context=None,
             ontostore,
-            strategy,
             search_llm_judge=True,
         ):
             search_calls.append(
                 {
                     "publication_context": publication_context,
-                    "strategy": strategy,
+                    "source": "ols",
                     "search_llm_judge": search_llm_judge,
                 }
             )
@@ -2344,7 +2331,7 @@ def test_harmonize_llm_false_skips_framework_and_field_assignment() -> None:
     assert search_calls == [
         {
             "publication_context": "context",
-            "strategy": "ols",
+            "source": "ols",
             "search_llm_judge": False,
         }
     ]
@@ -2411,7 +2398,7 @@ def test_harmonize_returns_targets_wrapper() -> None:
         "publication_context": "Full publication context",
         "metadata_context": "Study: Oral disease | tissue=buccal mucosa",
         "harmonization_targets": harmonization_targets,
-        "strategy": "ols",
+        "workflow": "local_rag_ols",
         "target_paths": ["/sample"],
     }
 
@@ -2430,7 +2417,7 @@ def test_harmonize_accepts_single_target() -> None:
         "publication_context": None,
         "metadata_context": None,
         "harmonization_targets": [target],
-        "strategy": "ols",
+        "workflow": "local_rag_ols",
         "target_paths": None,
     }
 
@@ -2458,41 +2445,6 @@ def test_harmonize_rejects_target_and_targets_together() -> None:
         )
 
 
-def test_harmonize_rejects_noop_strategy() -> None:
-    with pytest.raises(ValueError, match="strategy"):
-        OntologyHarmonizer().harmonize(
-            harmonization_targets=[],
-            strategy="noop",
-        )
-
-
-def test_harmonize_rejects_identity_strategy() -> None:
-    with pytest.raises(ValueError, match="strategy"):
-        OntologyHarmonizer().harmonize(
-            harmonization_targets=[],
-            strategy="identity",
-        )
-
-
-def test_harmonize_accepts_ols_and_rag_strategies() -> None:
-    assert OntologyHarmonizer().harmonize(
-        harmonization_targets=[], strategy="ols"
-    )["strategy"] == "ols"
-    assert OntologyHarmonizer().harmonize(harmonization_targets=[], strategy="rag")[
-        "strategy"
-    ] == "rag"
-
-
-def test_harmonize_rejects_unknown_strategy() -> None:
-    with pytest.raises(ValueError, match="strategy"):
-        OntologyHarmonizer().harmonize(strategy="exact_match")
-
-
-def test_harmonize_rejects_direct_strategy() -> None:
-    with pytest.raises(ValueError, match="strategy"):
-        OntologyHarmonizer().harmonize(strategy="direct")
-
-
 def test_harmonize_signature_excludes_old_metadata_api() -> None:
     parameters = inspect.signature(OntologyHarmonizer.harmonize).parameters
 
@@ -2509,7 +2461,7 @@ def test_harmonize_defaults_to_empty_targets() -> None:
         "publication_context": None,
         "metadata_context": None,
         "harmonization_targets": [],
-        "strategy": "ols",
+        "workflow": "local_rag_ols",
         "target_paths": None,
     }
 
@@ -2565,7 +2517,7 @@ def test_harmonize_accepts_ontostore_override() -> None:
         "publication_context": None,
         "metadata_context": None,
         "harmonization_targets": [],
-        "strategy": "ols",
+        "workflow": "local_rag_ols",
         "target_paths": None,
     }
 
@@ -2580,7 +2532,6 @@ def test_harmonize_routes_each_lookup_miss_directly_to_search() -> None:
             *,
             publication_context,
             ontostore,
-            strategy,
             lookup_llm_judge=False,
         ):
             return False
@@ -2597,7 +2548,6 @@ def test_harmonize_routes_each_lookup_miss_directly_to_search() -> None:
             *,
             publication_context,
             ontostore,
-            strategy,
             search_llm_judge=True,
         ):
             calls.append(
@@ -2605,7 +2555,7 @@ def test_harmonize_routes_each_lookup_miss_directly_to_search() -> None:
                     "target": target,
                     "publication_context": publication_context,
                     "ontostore": ontostore,
-                    "strategy": strategy,
+                    "source": "ols",
                 }
             )
             return {"status": "not_harmonized"}
@@ -2627,13 +2577,13 @@ def test_harmonize_routes_each_lookup_miss_directly_to_search() -> None:
             "target": targets[0],
             "publication_context": "context",
             "ontostore": store,
-            "strategy": "ols",
+            "source": "ols",
         },
         {
             "target": targets[1],
             "publication_context": "context",
             "ontostore": store,
-            "strategy": "ols",
+            "source": "ols",
         },
     ]
 
@@ -2648,10 +2598,9 @@ def test_harmonize_calls_lookup_then_search_then_field_without_framework_assignm
             *,
             publication_context,
             ontostore,
-            strategy,
             lookup_llm_judge=False,
         ):
-            calls.append(("lookup", target["id"], publication_context, strategy))
+            calls.append(("lookup", target["id"], publication_context))
             return False
 
         def assign_onto_framework(self, *args, **kwargs):
@@ -2667,10 +2616,9 @@ def test_harmonize_calls_lookup_then_search_then_field_without_framework_assignm
             *,
             publication_context,
             ontostore,
-            strategy,
             search_llm_judge=True,
         ):
-            calls.append(("search", target["id"], publication_context, strategy))
+            calls.append(("search", target["id"], publication_context))
             return {"status": "not_harmonized"}
 
     target = {"id": "target-0", "pre_hz_label": "lung"}
@@ -2681,8 +2629,8 @@ def test_harmonize_calls_lookup_then_search_then_field_without_framework_assignm
     )
 
     assert calls == [
-        ("lookup", "target-0", "context", "ols"),
-        ("search", "target-0", "context", "ols"),
+        ("lookup", "target-0", "context"),
+        ("search", "target-0", "context"),
         ("field", "target-0", "context"),
     ]
 
@@ -2697,7 +2645,6 @@ def test_harmonize_skips_assign_onto_framework_when_lookup_label_succeeds() -> N
             *,
             publication_context,
             ontostore,
-            strategy,
             lookup_llm_judge=False,
         ):
             calls.append("lookup")
@@ -2740,7 +2687,6 @@ def test_harmonize_successful_lookup_passes_llm_false_to_field_harmonization() -
             *,
             publication_context,
             ontostore,
-            strategy,
             lookup_llm_judge=False,
         ):
             target["ontology_match"] = True
@@ -2766,7 +2712,6 @@ def test_harmonize_successful_lookup_passes_llm_false_to_field_harmonization() -
             *,
             publication_context,
             ontostore,
-            strategy,
             search_llm_judge=True,
         ):
             calls.append("strategy")
@@ -2796,7 +2741,6 @@ def test_harmonize_single_target_never_assigns_framework_before_search() -> None
             *,
             publication_context,
             ontostore,
-            strategy,
             search_llm_judge=True,
         ):
             search_calls.append(target)
@@ -2847,7 +2791,6 @@ def test_harmonize_search_receives_ontostore_override() -> None:
             *,
             publication_context,
             ontostore,
-            strategy,
             search_llm_judge=True,
         ):
             calls.append(ontostore)
@@ -2874,7 +2817,6 @@ def test_harmonize_calls_field_harmonization_after_strategy_handler() -> None:
             *,
             publication_context,
             ontostore,
-            strategy,
             lookup_llm_judge=False,
         ):
             calls.append("lookup")
@@ -2893,21 +2835,19 @@ def test_harmonize_calls_field_harmonization_after_strategy_handler() -> None:
             *,
             publication_context,
             ontostore,
-            strategy,
             search_llm_judge=True,
         ):
-            calls.append(("strategy", strategy))
-            return {"strategy": strategy}
+            calls.append(("ols", "ols"))
+            return {"source": "ols"}
 
     RecordingHarmonizer().harmonize(
         publication_context="context",
         target={"id": "target-0", "pre_hz_field": "tissue", "pre_hz_label": "lung"},
-        strategy="ols",
     )
 
     assert calls == [
         "lookup",
-        ("strategy", "ols"),
+        ("ols", "ols"),
         "harmonize_field",
     ]
 
@@ -2922,7 +2862,6 @@ def test_harmonize_supplies_local_canonical_label_to_field_harmonization() -> No
             *,
             publication_context,
             ontostore,
-            strategy,
             lookup_llm_judge=False,
         ):
             target["ontology_id"] = "uberon"
@@ -2963,7 +2902,6 @@ def test_harmonize_supplies_searched_canonical_label_to_field_harmonization() ->
             *,
             publication_context,
             ontostore,
-            strategy,
             lookup_llm_judge=False,
         ):
             calls.append("lookup")
@@ -2975,7 +2913,6 @@ def test_harmonize_supplies_searched_canonical_label_to_field_harmonization() ->
             *,
             publication_context,
             ontostore,
-            strategy,
             search_llm_judge=True,
         ):
             calls.append("search")
@@ -2986,7 +2923,7 @@ def test_harmonize_supplies_searched_canonical_label_to_field_harmonization() ->
                 "ontology_id": "uberon",
             }
             target["ontology_match"] = True
-            return {"strategy": strategy, "status": "matched"}
+            return {"source": "ols", "status": "matched"}
 
         def _lookup_harmonized_label(self, target, *, ontostore):
             return target["ontology_lookup"]
@@ -3064,13 +3001,20 @@ def test_harmonize_selected_term_without_title_keeps_normalized_label() -> None:
     assert target["hz_label"] == "pulmonary_specimen"
 
 
-def test_harmonize_routes_failed_lookup_to_strategy_handler() -> None:
+def test_harmonize_routes_failed_lookup_to_ols() -> None:
     calls = []
 
-    class RecordingHandler:
-        def handle(self, target, *, publication_context, ontostore):
+    class RecordingHarmonizer(OntologyHarmonizer):
+        def harmonize_label(
+            self,
+            target,
+            *,
+            publication_context,
+            ontostore,
+            search_llm_judge=True,
+        ):
             result = {
-                "strategy": "ols",
+                "source": "ols",
                 "status": "recorded",
                 "reason": "recorded strategy call",
             }
@@ -3081,11 +3025,8 @@ def test_harmonize_routes_failed_lookup_to_strategy_handler() -> None:
                     "ontostore": ontostore,
                 }
             )
-            target["ontology_strategy_result"] = result
+            target["ontology_ols_result"] = result
             return result
-
-    class RecordingHarmonizer(OntologyHarmonizer):
-        STRATEGY_HANDLERS = {"ols": RecordingHandler}
 
     store = OntoStore()
     target = {"id": "target-0", "pre_hz_label": "lung"}
@@ -3093,10 +3034,9 @@ def test_harmonize_routes_failed_lookup_to_strategy_handler() -> None:
     result = RecordingHarmonizer(ontostore=store, llm=FakeLLM()).harmonize(
         publication_context="context",
         target=target,
-        strategy="ols",
     )
 
-    assert result["strategy"] == "ols"
+    assert result["workflow"] == "local_rag_ols"
     assert calls == [
         {
             "target": target,
@@ -3104,8 +3044,8 @@ def test_harmonize_routes_failed_lookup_to_strategy_handler() -> None:
             "ontostore": store,
         }
     ]
-    assert target["ontology_strategy_result"] == {
-        "strategy": "ols",
+    assert target["ontology_ols_result"] == {
+        "source": "ols",
         "status": "recorded",
         "reason": "recorded strategy call",
     }
@@ -3152,7 +3092,6 @@ def test_harmonize_looks_up_strategy_harmonized_label_with_stored_ontology_id(
             *,
             publication_context,
             ontostore,
-            strategy,
             lookup_llm_judge=False,
         ):
             return False
@@ -3170,25 +3109,23 @@ def test_harmonize_looks_up_strategy_harmonized_label_with_stored_ontology_id(
             *,
             publication_context,
             ontostore,
-            strategy,
             search_llm_judge=True,
         ):
             target["hz_label"] = "lung"
             target["ontology_id"] = "uberon"
             target["ontology_lookup"] = {**term, "ontology_id": "uberon"}
-            target["ontology_strategy_result"] = {
-                "strategy": strategy,
+            target["ontology_ols_result"] = {
+                "source": "ols",
                 "status": "matched",
                 "decision": "UBERON:0002048",
                 "confidence": "medium",
                 "reason": "strategy assigned label and framework",
             }
-            return target["ontology_strategy_result"]
+            return target["ontology_ols_result"]
 
     result = RecordingHarmonizer(ontostore=store, llm=FakeLLM()).harmonize(
         publication_context="context",
         target=target,
-        strategy="ols",
     )
 
     assert result["harmonization_targets"] == [target]
@@ -3196,8 +3133,8 @@ def test_harmonize_looks_up_strategy_harmonized_label_with_stored_ontology_id(
     assert target["ontology_id"] == "uberon"
     assert target["ontology_lookup"] == {**term, "ontology_id": "uberon"}
     assert target["ontology_local_enrichment"]["status"] == "matched"
-    assert target["ontology_strategy_result"] == {
-        "strategy": "ols",
+    assert target["ontology_ols_result"] == {
+        "source": "ols",
         "status": "matched",
         "decision": "UBERON:0002048",
         "confidence": "medium",
@@ -3226,7 +3163,6 @@ def test_harmonize_post_strategy_lookup_ignores_unconfigured_ontology_id(
             *,
             publication_context,
             ontostore,
-            strategy,
             lookup_llm_judge=False,
         ):
             return False
@@ -3243,29 +3179,27 @@ def test_harmonize_post_strategy_lookup_ignores_unconfigured_ontology_id(
             *,
             publication_context,
             ontostore,
-            strategy,
             search_llm_judge=True,
         ):
             target["ontology_id"] = "missing"
-            target["ontology_strategy_result"] = {
-                "strategy": strategy,
+            target["ontology_ols_result"] = {
+                "source": "ols",
                 "status": "matched",
                 "decision": "missing",
                 "confidence": "low",
                 "reason": "strategy produced an unknown framework",
             }
-            return target["ontology_strategy_result"]
+            return target["ontology_ols_result"]
 
     RecordingHarmonizer(ontostore=store, llm=FakeLLM()).harmonize(
         target=target,
-        strategy="ols",
     )
 
     assert target["ontology_id"] == "missing"
     assert target["ontology_match"] is False
     assert "ontology_lookup" not in target
     assert "ontology_lookup_hits" not in target
-    assert target["ontology_strategy_result"]["status"] == "matched"
+    assert target["ontology_ols_result"]["status"] == "matched"
 
 
 def test_harmonize_post_strategy_lookup_miss_preserves_strategy_result(
@@ -3289,7 +3223,6 @@ def test_harmonize_post_strategy_lookup_miss_preserves_strategy_result(
             *,
             publication_context,
             ontostore,
-            strategy,
             lookup_llm_judge=False,
         ):
             return False
@@ -3307,29 +3240,27 @@ def test_harmonize_post_strategy_lookup_miss_preserves_strategy_result(
             *,
             publication_context,
             ontostore,
-            strategy,
             search_llm_judge=True,
         ):
             target["hz_label"] = "not in store"
-            target["ontology_strategy_result"] = {
-                "strategy": strategy,
+            target["ontology_ols_result"] = {
+                "source": "ols",
                 "status": "matched",
                 "decision": "UBERON:9999999",
                 "confidence": "low",
                 "reason": "strategy result should remain visible",
             }
-            return target["ontology_strategy_result"]
+            return target["ontology_ols_result"]
 
     RecordingHarmonizer(ontostore=store, llm=FakeLLM()).harmonize(
         target=target,
-        strategy="ols",
     )
 
     assert target["ontology_match"] is False
     assert "ontology_lookup" not in target
     assert "ontology_lookup_hits" not in target
-    assert target["ontology_strategy_result"] == {
-        "strategy": "ols",
+    assert target["ontology_ols_result"] == {
+        "source": "ols",
         "status": "matched",
         "decision": "UBERON:9999999",
         "confidence": "low",
@@ -3390,7 +3321,7 @@ def test_ols_strategy_uses_restricted_ols_hit_without_fallbacks() -> None:
         "type": None,
     }
     assert result == {
-        "strategy": "ols",
+        "source": "ols",
         "status": "matched",
         "decision": "UBERON_0002048",
         "confidence": "medium",
@@ -3404,7 +3335,7 @@ def test_ols_strategy_uses_restricted_ols_hit_without_fallbacks() -> None:
             "url": "https://example.org/uberon.owl",
         },
     }
-    assert target["ontology_strategy_result"] == result
+    assert target["ontology_ols_result"] == result
     assert target["ontology_lookup"] == expected_lookup
     assert target["ontology_lookup_hits"] == [expected_lookup]
     assert target["ontology_match"] is True
@@ -3673,14 +3604,14 @@ def test_ols_strategy_does_not_harmonize_without_complete_framework_config() -> 
         ontostore=store,
     )
 
-    assert result["strategy"] == "ols"
+    assert result["source"] == "ols"
     assert result["status"] == "not_harmonized"
     assert result["decision"] == "false"
     assert result["confidence"] == "none"
     assert "complete ontology framework metadata" in result["reason"]
     assert result["ols_hits"][0]["id"] == "UBERON_0002048"
     assert "ontology_framework_config" not in result
-    assert target["ontology_strategy_result"] == result
+    assert target["ontology_ols_result"] == result
     assert target["ontology_match"] is False
     assert "ontology_lookup" not in target
     assert store.ontology_frameworks["uberon"] == before
@@ -3724,28 +3655,10 @@ def test_ols_strategy_without_framework_starts_with_unrestricted_ols() -> None:
     assert ols_client.search_calls == [
         {"label": "lung", "ontology_id": None, "rows": 25}
     ]
-    assert target["ontology_strategy_result"] == result
+    assert target["ontology_ols_result"] == result
 
 
-def test_rag_placeholder_strategy_handler_mutates_target() -> None:
-    target = {"id": "target-rag", "pre_hz_label": "lung"}
-
-    result = OntologyHarmonizer(llm=FakeLLM()).harmonize(
-        target=target,
-        strategy="rag",
-    )
-
-    assert result["strategy"] == "rag"
-    assert target["ontology_strategy_result"] == {
-        "strategy": "rag",
-        "status": "placeholder",
-        "decision": "false",
-        "confidence": "none",
-        "reason": "RAG ontology harmonization is not implemented yet.",
-    }
-
-
-def test_harmonize_default_strategy_routes_to_ols_handler() -> None:
+def test_harmonize_fixed_workflow_routes_to_ols_handler() -> None:
     calls = []
 
     class RecordingHarmonizer(OntologyHarmonizer):
@@ -3761,31 +3674,30 @@ def test_harmonize_default_strategy_routes_to_ols_handler() -> None:
             *,
             publication_context,
             ontostore,
-            strategy,
             search_llm_judge=True,
         ):
-            calls.append(strategy)
+            calls.append("ols")
             result = {
-                "strategy": strategy,
+                "source": "ols",
                 "status": "not_harmonized",
                 "decision": "false",
                 "confidence": "none",
                 "reason": "No usable OLS ontology hit was found.",
                 "ols_hits": [],
             }
-            target["ontology_strategy_result"] = result
+            target["ontology_ols_result"] = result
             return result
 
     target = {"id": "target-ols", "pre_hz_label": "lung"}
 
     result = RecordingHarmonizer(llm=FakeLLM()).harmonize(target=target)
 
-    assert result["strategy"] == "ols"
+    assert result["workflow"] == "local_rag_ols"
     assert target["ontology_match"] is False
     assert "ontology_framework_assignment" not in target
     assert calls == ["ols"]
-    assert target["ontology_strategy_result"] == {
-        "strategy": "ols",
+    assert target["ontology_ols_result"] == {
+        "source": "ols",
         "status": "not_harmonized",
         "decision": "false",
         "confidence": "none",
@@ -3794,7 +3706,7 @@ def test_harmonize_default_strategy_routes_to_ols_handler() -> None:
     }
 
 
-def test_harmonize_skips_strategy_handler_when_lookup_label_succeeds() -> None:
+def test_harmonize_skips_ols_when_lookup_label_succeeds() -> None:
     calls = []
 
     class RecordingHarmonizer(OntologyHarmonizer):
@@ -3804,7 +3716,6 @@ def test_harmonize_skips_strategy_handler_when_lookup_label_succeeds() -> None:
             *,
             publication_context,
             ontostore,
-            strategy,
             lookup_llm_judge=False,
         ):
             target["ontology_match"] = True
@@ -3816,19 +3727,18 @@ def test_harmonize_skips_strategy_handler_when_lookup_label_succeeds() -> None:
             *,
             publication_context,
             ontostore,
-            strategy,
             search_llm_judge=True,
         ):
             calls.append(target)
 
     target = {"id": "target-0", "pre_hz_label": "lung"}
 
-    result = RecordingHarmonizer().harmonize(target=target, strategy="rag")
+    result = RecordingHarmonizer().harmonize(target=target)
 
     assert calls == []
-    assert result["strategy"] == "rag"
+    assert result["workflow"] == "local_rag_ols"
     assert target["ontology_match"] is True
-    assert "ontology_strategy_result" not in target
+    assert "ontology_ols_result" not in target
 
 
 def test_harmonize_rejects_dict_ontostore_override() -> None:
@@ -4422,18 +4332,17 @@ def test_harmonize_miniml_json_accepts_explicit_target_paths(tmp_path: Path) -> 
             publication_context,
             metadata_context=None,
             ontostore,
-            strategy,
             search_llm_judge=True,
         ):
             result = {
-                "strategy": strategy,
+                "source": "ols",
                 "status": "not_harmonized",
                 "decision": "false",
                 "confidence": "none",
                 "reason": "No usable OLS ontology hit was found.",
                 "ols_hits": [],
             }
-            target["ontology_strategy_result"] = result
+            target["ontology_ols_result"] = result
             return result
 
     miniml_json = {"sample": {"tissue": "lung"}}
@@ -4458,6 +4367,11 @@ def test_harmonize_miniml_json_accepts_explicit_target_paths(tmp_path: Path) -> 
                 "parent_path": "/sample",
                 "hz_field": "tissue",
                 "hz_label": "lung",
+                "ontology_rag": {
+                    "status": "missed",
+                    "frameworks": [],
+                    "hits": [],
+                },
                 "ontology_match": False,
                 "field_assignment": {
                     "decision": "tissue",
@@ -4465,8 +4379,8 @@ def test_harmonize_miniml_json_accepts_explicit_target_paths(tmp_path: Path) -> 
                     "reason": "No clear field match.",
                     "new_field": True,
                 },
-                "ontology_strategy_result": {
-                    "strategy": "ols",
+                "ontology_ols_result": {
+                    "source": "ols",
                     "status": "not_harmonized",
                     "decision": "false",
                     "confidence": "none",
@@ -4475,7 +4389,7 @@ def test_harmonize_miniml_json_accepts_explicit_target_paths(tmp_path: Path) -> 
                 },
             }
         ],
-        "strategy": "ols",
+        "workflow": "local_rag_ols",
         "target_paths": ["/sample"],
         "miniml_json": {
             "sample": {
@@ -4497,7 +4411,6 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
             metadata_context=None,
             harmonization_targets=None,
             target=None,
-            strategy="ols",
             ontostore=None,
             target_paths=None,
             lookup_llm_judge=False,
@@ -4510,7 +4423,7 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
                     "metadata_context": metadata_context,
                     "harmonization_targets": harmonization_targets,
                     "target": target,
-                    "strategy": strategy,
+                    "source": "ols",
                     "ontostore": ontostore,
                     "target_paths": target_paths,
                     "lookup_llm_judge": lookup_llm_judge,
@@ -4573,7 +4486,7 @@ def test_harmonize_miniml_json_delegates_to_harmonize() -> None:
                 }
             ],
             "target": None,
-            "strategy": "ols",
+            "source": "ols",
             "ontostore": store,
             "target_paths": ["/sample"],
             "lookup_llm_judge": True,
@@ -4725,7 +4638,7 @@ def test_harmonize_accepts_target_paths() -> None:
         "publication_context": None,
         "metadata_context": None,
         "harmonization_targets": [],
-        "strategy": "ols",
+        "workflow": "local_rag_ols",
         "target_paths": [],
     }
 

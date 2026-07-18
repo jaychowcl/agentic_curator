@@ -55,10 +55,9 @@ def test_ontology_harmonizer_logs_target_workflow(caplog) -> None:
             *,
             publication_context,
             ontostore,
-            strategy,
             search_llm_judge=True,
         ):
-            return {"strategy": strategy, "status": "not_harmonized"}
+            return {"source": "ols", "status": "not_harmonized"}
 
     store = OntoStore(ontology_frameworks={}, fields={"organism": {"label": "organism"}})
     harmonizer = NoNetworkOntologyHarmonizer(ontostore=store)
@@ -78,7 +77,7 @@ def test_ontology_harmonizer_logs_target_workflow(caplog) -> None:
     assert "Ontology lookup missed for target target-1." in messages
     assert (
         "Completed ontology harmonization. targets=1 matched=0 skipped=0 unmatched=1 "
-        "strategy=ols."
+        "workflow=local_rag_ols."
     ) in messages
 
 
