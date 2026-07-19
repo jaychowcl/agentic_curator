@@ -1,33 +1,36 @@
 # agentic-curator
 
-LLM-assisted thematic review and ontology metadata harmonization for life-science publications & metadata.
+LLM-assisted query generation, thematic publication review, and ontology metadata harmonization for life-science curation.
 
 ## Description
 
-`agentic-curator` provides three curator workflows: a Europe PMC query
-generator, a thematic reviewer that extracts and judges publication evidence,
-and an ontology harmonizer that maps metadata fields and values to controlled
-terms. It includes MINiML target
-extraction/application, OWL-to-JSON conversion, exact and FTS5 SQLite lookup,
-OLS and grounded-web search, LLM candidate judging, persistent field and
-response caches, and provider routing for Gemini Enterprise and Claude on
-Vertex AI.
+`agentic-curator` provides three main curator workflows: it generates bounded
+Europe PMC queries from a research theme, evaluates publications and accessions
+against thematic criteria, and maps metadata fields and values to controlled
+ontology terms. It also includes MINiML target extraction and application,
+local exact and FTS5 search, Gemini/USearch semantic retrieval, OLS4 fallback,
+controlled-field assignment, ontology cache construction, and provider adapters
+for Gemini and Claude on Vertex AI.
+
+The principal entrypoints are the public Python API and four installed console
+commands. Detailed architecture and internal behavior live in the
+[codebase handoff](docs/codebase.md#project-purpose-and-layout).
 
 ## Installation
 
-Install the package and console scripts from this repository:
+Install the package and console commands from a checkout:
 
 ```bash
 python -m pip install -e .
 ```
 
-Install development dependencies:
+Install development dependencies as well:
 
 ```bash
 python -m pip install -e ".[dev]"
 ```
 
-Or install the mirrored direct dependencies:
+Alternatively, install the mirrored dependency set from `requirements.txt`:
 
 ```bash
 python -m pip install -r requirements.txt
@@ -35,32 +38,122 @@ python -m pip install -r requirements.txt
 
 ### Requirements
 
-- Python 3.10 or newer
-- `anthropic[vertex]>=0.107,<1`
-- `google-genai>=1.72,<2`
-- `rdflib>=7,<8`
-- `requests>=2,<3`
-- `pytest>=8` for development
-- Google Cloud credentials and project configuration for live Gemini Enterprise
-  or Claude Vertex calls
-- Network access for live LLM, OLS, web-search, and ontology-download requests
+- Python 3.10 or newer.
+- Runtime packages declared in `pyproject.toml`: `anthropic[vertex]`,
+  `filelock`, `google-genai`, `ijson`, `rdflib`, `requests`, and `usearch`.
+- `pytest>=8` for development and test execution.
+- Google Cloud Application Default Credentials and an accessible Vertex AI
+  project for live Gemini, Claude, or embedding calls.
+- Network access for live provider calls, OLS4 searches, and ontology downloads.
+- Local disk space for ontology OWL/JSON files, SQLite data, and USearch indexes
+  when ontology caching is enabled.
+
+The repository does not currently provide a Dockerfile or Docker Compose
+configuration. Docker is therefore not a supported interface.
+
+## Configuration
+
+The package does not automatically load a dotenv file. Authenticate the Google
+SDK with Application Default Credentials, then pass project/location explicitly
+when required by your environment:
+
+```bash
+gcloud auth application-default login
+```
+
+```python
+from agentic_curator.wrappers import LLM
+
+llm = LLM(
+    platform="gemini_enterprise",
+    project="my-gcp-project",
+    location="global",
+)
+```
+
+The default LLM platform is `gemini_enterprise` with model
+`gemini-2.5-flash`. Select `claude_vertex` for Claude; a call-level model name
+beginning with `claude-` is also routed to the Claude adapter. Both adapters
+accept `project`, `location`, `model`, a default generation `config`, default
+`tools`, an injected `client`, and provider client options. See the
+[LLM internals](docs/codebase.md#llm-wrapper).
+
+Ontology behavior is configured with these cooperating objects:
+
+```python
+from agentic_curator import OntologyHarmonizer
+from agentic_curator.curators.ontology_harmonizer import OntoStore, RequestPolicy
+
+policy = RequestPolicy(
+    timeout_seconds=30,
+    max_attempts=3,
+    backoff_base_seconds=1,
+    cache_ttl_seconds=604800,
+    force_refresh=False,
+)
+store = OntoStore(
+    ontology_frameworks={
+        "custom": {
+            "url": "https://example.org/custom.owl",
+            "title": "Custom ontology",
+            "rag_similarity_threshold": 0.6,
+        }
+    },
+    preferred_ontology_ids=["custom"],
+    fields={"organism": {"label": "Organism"}},
+    storage_dir=".cache/ontologies",
+    request_policy=policy,
+)
+harmonizer = OntologyHarmonizer(
+    ontostore=store,
+    request_policy=policy,
+    rag_similarity_threshold=0.5,
+    rag_hierarchy=False,
+    rag_parent_depth=2,
+    rag_child_depth=1,
+    rag_hierarchy_threshold_offset=0.1,
+)
+```
+
+- `ontology_frameworks` extends or replaces built-in framework definitions by
+  ID; framework data may come from a URL, OWL path, or JSON path.
+- `preferred_ontology_ids` is an ordered, advisory judge preference. It does
+  not restrict retrieval and must refer to configured frameworks.
+- `fields` seeds the persistent controlled-field registry.
+- `storage_dir` contains ontology sources, SQLite, response cache data, and
+  vector indexes.
+- `RequestPolicy` controls external timeout, retry attempts, exponential
+  backoff, response-cache TTL, and forced refresh.
+- `rag_similarity_threshold` is inclusive and may be overridden per framework.
+  Hierarchy expansion is off by default and uses cached parents/children only.
+
+Equivalent CLI configuration is available through `--ontology-frameworks`,
+`--fields`, `--storage-dir`, request/cache flags, and RAG hierarchy flags in the
+[CLI guide](#cli-guide). Full ontology behavior is documented in the
+[ontology harmonizer handoff](docs/codebase.md#ontology-harmonizer).
 
 ## Quickstart
 
+The major supported interfaces are the Python API and installed CLI commands.
+
 ### Python Query Generation
+
+See the [Python API guide](#python-api-guide) and
+[query-generator internals](docs/codebase.md#query-generator).
 
 ```python
 from agentic_curator import QueryGenerator
 
 result = QueryGenerator().generate_queries(
-    "Include publications about fibrosis and fibrotic biology."
+    "Human fibrosis transcriptomics studies with linked datasets.",
+    max_queries=3,
 )
 print(result["queries"])
 ```
 
-The returned `queries` list can be passed directly to ThematicAtlases.
-
 ### CLI Query Generation
+
+See the [CLI guide](#cli-guide).
 
 ```bash
 cli_query_generator --theme-file theme.md --max-queries 3 --out queries.json
@@ -68,542 +161,459 @@ cli_query_generator --theme-file theme.md --max-queries 3 --out queries.json
 
 ### Python Thematic Review
 
-See the [Python thematic reviewer guide](#python-thematic-reviewer).
+See the [Python API guide](#python-api-guide) and
+[reviewer workflow](docs/codebase.md#reviewer-workflow).
 
 ```python
 from agentic_curator import ThematicReviewer
 
 result = ThematicReviewer().review_relevancy(
     publication_text="Full publication text",
-    theme="fibrosis",
-    metadata={"organism": "human", "tissue": "lung"},
+    theme="Human fibrosis transcriptomics with accession-linked evidence",
+    metadata={"GSE110147": "organism=human; tissue=lung"},
     title="Publication title",
-    accessions=["GSE110147", "GSE102674"],
+    accessions=["GSE110147"],
 )
 print(result["judgement"])
 ```
 
 ### CLI Thematic Review
 
-See the [thematic reviewer CLI guide](#thematic-reviewer-cli).
+See the [CLI guide](#cli-guide).
 
 ```bash
 cli_thematic_reviewer review \
   --publication-text-file publication.txt \
-  --theme-file theme.txt \
-  --metadata-file metadata.json \
+  --theme-file theme.md \
+  --metadata-file metadata.txt \
   --title "Publication title" \
+  --accession GSE110147 \
   --out review.json
 ```
 
 ### Python Ontology Harmonization
 
-See the [Python ontology guide](#python-ontology-harmonization).
+See the [Python API guide](#python-api-guide) and
+[ontology harmonizer internals](docs/codebase.md#ontology-harmonizer).
 
 ```python
 from agentic_curator import OntologyHarmonizer
-from agentic_curator.curators.ontology_harmonizer import OntoStore
 
-store = OntoStore(fields={"organism": {"label": "Organism"}})
-result = OntologyHarmonizer(ontostore=store).harmonize(
-    publication_context="Mouse lung study.",
+result = OntologyHarmonizer().harmonize(
+    publication_context="Human lung study.",
     target={
         "id": "target-1",
         "pre_hz_field": "organism",
-        "pre_hz_label": "Mus musculus",
+        "pre_hz_label": "Homo sapiens",
         "ontology_ids": ["ncbitaxon"],
     },
 )
+print(result["harmonization_targets"])
 ```
 
 ### CLI Ontology Harmonization
 
-See the [ontology harmonizer CLI guide](#ontology-harmonizer-cli).
+See the [CLI guide](#cli-guide).
 
 ```bash
 cli_ontology_harmonizer harmonize \
   --publication-context-file publication.txt \
   --target-file target.json \
   --fields-file fields.json \
-  --out targets.json
+  --out harmonized.json
 ```
 
 ### Ontology Cache Builder
 
-See the [cache-builder guide](#ontology-cache-builder-guide).
+See the [Ontology cache builder guide](#ontology-cache-builder-guide).
 
 ```bash
-build_ontology_cache --max-workers 4 --timeout 2700
+build_ontology_cache --max-workers 4 --timeout 2700 --rag-index
 ```
-
-### Python LLM Facade
-
-See the [LLM facade guide](#python-llm-facade).
-
-```python
-from agentic_curator.wrappers import LLM
-
-llm = LLM(platform="gemini_enterprise", project="my-project", location="global")
-print(llm.generate_response("Summarize this publication."))
-```
-
-### Docker
-
-This repository does not currently provide a Dockerfile or Docker Compose
-interface. Use the Python package or installed console scripts.
 
 ### Inputs & Outputs
 
-Query generation accepts a non-empty theme and returns final Europe PMC query
-strings alongside matching purposes and a strategy summary. Each final query
-includes the dataset-link filter used by ThematicAtlases.
+| Workflow | Main inputs | Main output |
+| --- | --- | --- |
+| Query generation | Non-empty theme; maximum of 1–3 queries | `queries`, per-query `details`, and `strategy_summary`; every query includes the ThematicAtlases dataset-link filter |
+| Thematic review | Publication text, theme, optional title/metadata, accession list, review strategy | Publication `judgement`, reasoning, confidence, accession assessments, and high-confidence removals |
+| Ontology harmonization | One target, a target list, or MINiML JSON; optional publication/metadata context and stage controls | Harmonized fields/labels, selected term identifiers, per-stage traces, controls, and optionally updated MINiML JSON |
+| Ontology cache builder | Configured built-in frameworks, concurrency/timeout options, optional semantic-index flag | Cached ontology data, synchronized SQLite index, optional USearch partitions, log, and JSON manifest |
+| LLM facade | Prompt plus optional model, generation config, and tools | Text, or metadata containing text, raw response, citations, tool calls, and provider |
 
-The thematic reviewer accepts publication text, a theme, optional metadata and
-title, and accession identifiers. Direct review is the default and returns one
-flat structured decision over the complete publication:
-
-```json
-{
-  "judgement": "relevant",
-  "reasoning": "...",
-  "confidence": "high",
-  "accessions_to_remove": [],
-  "strategy": "direct"
-}
-```
-
-Ontology harmonization accepts a target, a target list, or MINiML-style JSON.
-Targets use human-readable `pre_hz_field` and `pre_hz_label`; outputs add
-normalized `hz_field`, `hz_label`, ontology match metadata, assignments, and
-stage traces. The wrapper is:
-
-```json
-{
-  "publication_context": "...",
-  "harmonization_targets": [],
-  "workflow": "local_rag_ols",
-  "controls": {},
-  "target_paths": []
-}
-```
-
-`harmonize_miniml_json(...)` also returns the same input object under
-`miniml_json` after applying direct `hz_<field>`, `hz_<field>_id`, and
-`hz_<field>_onto` values. Tag/value inputs receive additional tag/value rows;
-container inputs receive a sibling `hz_<field>` list. Its `target_checker`
-trace describes dataset-level compound-label additions and conservative target
-pruning made before lookup; pruning never deletes raw metadata.
-
-`OntoStore.lookup(...)` returns term dictionaries with `ontology_id`.
-`LLM.generate_response_with_metadata(...)` returns `text`, `raw_response`,
-`citations`, `tool_calls`, and `provider`.
+Direct CLI values and their `--*-file` equivalents accept UTF-8 text. File
+arguments take precedence. Ontology, evidence, framework, field, target-path,
+and MINiML inputs documented as JSON are parsed before dispatch. Curator CLI
+results are pretty JSON on stdout unless `--out` is supplied; logs use stderr.
 
 ## Guide
 
-### Python Query Generator
+### Python API Guide
 
-`QueryGenerator(llm=None).generate_queries(theme, max_queries=3)` makes one
-schema-constrained LLM call and returns `queries`, matching `details`, and a
-short `strategy_summary`. The domain-neutral prompt prefers one comprehensive
-query made of AND-joined mandatory concept groups with extensive OR synonyms;
-more queries require an unbridgeable logical, semantic, syntax, or length gap.
-It adds `(HAS_DATA:y OR HAS_LABSLINKS:y)` programmatically to every query.
+The canonical imports are:
 
-At DEBUG/INFO, shared LLM telemetry reports platform/model, prompt and response
-sizes, tool/citation counts, duration, and failures. Curators add aggregate
-query, evidence, judgement, ontology-target, and cache-framework statistics.
-Prompt/response bodies, publication and metadata contexts, credentials, and
-headers are not logged.
-The curator does not call Europe PMC or estimate hit counts.
+```python
+from agentic_curator import OntologyHarmonizer, QueryGenerator, ThematicReviewer
+```
 
-### Query Generator CLI
+All curator classes accept an injected LLM-like object for testing or custom
+provider integration and otherwise create the default facade lazily.
 
-| Option | Behavior |
-| --- | --- |
-| `--theme`, `--theme-file` | Theme definition; file takes precedence |
-| `--max-queries {1,2,3}` | Maximum complementary queries; default `3` |
-| `--verbosity {debug,error,info,quiet,warning}` | Logging level on stderr |
-| `--out` | Pretty JSON file; otherwise stdout |
+#### QueryGenerator
 
-### Python Thematic Reviewer
+```python
+QueryGenerator(llm=None)
+generate_queries(theme, max_queries=3) -> dict
+```
 
-`ThematicReviewer(llm=None)` accepts an injected LLM-like object or lazily
-creates `LLM()`.
+`theme` must be non-empty and `max_queries` must be an integer from 1 to 3. One
+schema-constrained model call returns topical clauses; Python validates unique,
+non-empty details and adds `(HAS_DATA:y OR HAS_LABSLINKS:y)`. The class does not
+call Europe PMC, count results, or retry generation. See
+[query generation](docs/codebase.md#query-generator).
 
-| Method | Inputs | Output |
+#### ThematicReviewer
+
+```python
+ThematicReviewer(llm=None)
+
+review_relevancy(
+    publication_text=None,
+    theme=None,
+    metadata=None,
+    title=None,
+    accessions=None,
+    strategy="direct",
+) -> dict
+
+extract_evidence(
+    publication_text=None,
+    theme=None,
+    metadata=None,
+    title=None,
+    accessions=None,
+) -> dict | list
+
+judge_evidence(
+    evidences,
+    theme=None,
+    title=None,
+    accessions=None,
+) -> dict | list
+```
+
+`strategy` is `direct` or the legacy `evidence_then_judgement`. Direct review
+uses one model call and deterministically derives publication/accession
+decisions from four criterion assessments. The legacy strategy extracts
+evidence and judges it in two calls. Unknown or duplicate accessions are
+discarded, missing assessments become uncertain, and only medium/high-confidence
+failures become removals. See the
+[reviewer workflow](docs/codebase.md#reviewer-workflow).
+
+#### OntologyHarmonizer
+
+```python
+OntologyHarmonizer(
+    ontostore=None,
+    llm=None,
+    request_policy=None,
+    rag_similarity_threshold=0.5,
+    rag_hierarchy=False,
+    rag_parent_depth=2,
+    rag_child_depth=1,
+    rag_hierarchy_threshold_offset=0.1,
+)
+```
+
+Main workflow methods and all stage controls:
+
+```python
+harmonize(
+    publication_context=None,
+    metadata_context=None,
+    harmonization_targets=None,
+    target=None,
+    ontostore=None,
+    target_paths=None,
+    target_checker=True,
+    direct_lookup_judge=True,
+    rag_lookup=True,
+    rag_lookup_judge=True,
+    ols_lookup=True,
+    ols_lookup_judge=True,
+    field_assignment_judge=True,
+) -> dict
+
+harmonize_miniml_json(
+    publication_context=None,
+    miniml_json=None,
+    ontostore=None,
+    target_paths=None,
+    target_checker=True,
+    direct_lookup_judge=True,
+    rag_lookup=True,
+    rag_lookup_judge=True,
+    ols_lookup=True,
+    ols_lookup_judge=True,
+    field_assignment_judge=True,
+) -> dict
+
+apply_targets(miniml_json, harmonization_targets) -> dict | list | None
+```
+
+Additional public workflow helpers are `lookup_label(...)`,
+`lookup_rag_label(...)`, `judge_lookup(..., candidate_limit=10)`,
+`harmonize_label(...)`, `harmonize_field(...)`, and `assign_field(...)`.
+
+The fixed term workflow is target checker → local exact/FTS lookup → cached
+semantic lookup → unrestricted OLS4 lookup → label promotion → controlled-field
+resolution. `no_match` continues to the next term strategy; `false` terminally
+skips the target. Disabling a judge retains ambiguous candidates as trace
+evidence rather than applying the first candidate. MINiML mode extracts and
+deduplicates meaningful sample/channel values, delegates to the same workflow,
+and applies non-skipped results back to the object. See the complete
+[ontology harmonizer guide](docs/codebase.md#ontology-harmonizer).
+
+#### OntoStore and ontology utilities
+
+```python
+OntoStore(
+    ontology_frameworks=None,
+    preferred_ontology_ids=None,
+    fields=None,
+    storage_dir=None,
+    sqlite_path=None,
+    request_policy=None,
+    embedding_provider=None,
+)
+```
+
+Important public operations include:
+
+- Framework configuration: `configure_framework(...)`, `add_url(...)`,
+  `add_urls(...)`, `set_preferred_ontology_ids(...)`, `get(...)`, and
+  `download(...)`.
+- Lexical/semantic lookup: `lookup(...)`, `lookup_with_metadata(...)`,
+  `lookup_exact(...)`, `lookup_rag(...)`, and `lookup_rag_many(...)`.
+- Indexing/caching: `index_framework(...)`, `index_owl_framework(...)`,
+  `sync_sqlite(...)`, `build_rag_index(...)`, `cache_all(...)`, and
+  `remove_indexed_framework(...)`.
+- Controlled fields and response cache: field CRUD, review-status operations,
+  `get_cached_response(...)`, `set_cached_response(...)`, and
+  `clear_cached_responses(...)`.
+- Conversion/extraction: `Owl2json.parse()`, `Owl2json.write_json()`,
+  `HarmonizationTargetExtractor`, and `build_miniml_metadata_context(...)`.
+
+Exact lookup and FTS5 use SQLite. Semantic lookup only considers frameworks
+that already have local OWL/JSON data; it does not trigger downloads. USearch
+partitions are persistent and memory-mapped for queries. See
+[ontology SQLite and semantic indexing](docs/codebase.md#ontology-harmonizer).
+
+#### RequestPolicy
+
+```python
+RequestPolicy(
+    timeout_seconds=30,
+    max_attempts=3,
+    backoff_base_seconds=1,
+    cache_ttl_seconds=604800,
+    force_refresh=False,
+)
+```
+
+Transient timeouts, connection failures, HTTP 429, and server errors are
+retried with jittered exponential backoff. Exhausted or non-transient errors
+propagate with a request trace.
+
+#### Python LLM Facade
+
+```python
+LLM(platform="gemini_enterprise", **platform_options)
+
+generate_response(
+    prompt,
+    model=None,
+    config=None,
+    tools=None,
+    **extra_options,
+) -> str
+
+generate_response_with_metadata(
+    prompt,
+    model=None,
+    config=None,
+    tools=None,
+    **extra_options,
+) -> dict
+```
+
+`generate_response_with_metadata()` returns `text`, `raw_response`,
+`citations`, `tool_calls`, and `provider`. Gemini defaults to
+`gemini-2.5-flash`; Claude defaults to `claude-opus-4-8`; both use temperature
+`0.2` and a default maximum of 8192 output tokens. Curator methods may override
+these defaults. See the [LLM wrapper](docs/codebase.md#llm-wrapper),
+[Gemini adapter](docs/codebase.md#gemini-enterprise-platform), and
+[Claude adapter](docs/codebase.md#claude-vertex-platform).
+
+### CLI Guide
+
+All installed curator CLIs support
+`--verbosity {quiet,error,warning,info,debug}`. Logs go to stderr. JSON output
+goes to stdout unless `--out PATH` is provided. Each command also supports
+`-h`/`--help`.
+
+#### CLI Query Generation
+
+Command: `cli_query_generator`
+
+| Option | Default | Behavior |
 | --- | --- | --- |
-| `review_relevancy(..., accessions=None, strategy="direct")` | Text/theme, optional metadata/title, accessions, and `direct` or `evidence_then_judgement` | Flat judgement with trace-only accession exclusions |
-| `extract_evidence(..., accessions=None)` | Legacy reviewer source inputs | Parsed evidence dict/list |
-| `judge_evidence(..., accessions=None)` | Legacy evidence object plus theme/title/accessions | Flat parsed judgement |
+| `--theme TEXT` | `None` | Theme supplied directly |
+| `--theme-file PATH` | `None` | UTF-8 theme file; takes precedence over `--theme` |
+| `--max-queries {1,2,3}` | `3` | Maximum generated queries |
+| `--verbosity LEVEL` | `warning` | Stderr logging level |
+| `--out PATH` | stdout | Pretty JSON destination |
 
-The methods load packaged Markdown prompts, request schema-constrained JSON,
-and parse provider text with `parse_json_response(...)`. Invalid JSON raises
-`ValueError`.
+#### CLI Thematic Review
 
-### Thematic Reviewer CLI
+Command: `cli_thematic_reviewer [review|extract-evidence|judge-evidence]`.
+Omitting the subcommand runs `review` and accepts the legacy top-level option
+form.
+
+| Option | Commands | Default and behavior |
+| --- | --- | --- |
+| `--publication-text TEXT`, `--publication-text-file PATH` | `review`, `extract-evidence` | Publication text; file takes precedence |
+| `--theme TEXT`, `--theme-file PATH` | all | Theme text; file takes precedence |
+| `--metadata TEXT`, `--metadata-file PATH` | `review`, `extract-evidence` | Metadata remains text; file takes precedence |
+| `--title TEXT`, `--title-file PATH` | all | Optional title; file takes precedence |
+| `--accession ID` | `review` | Repeatable supplied accession; default empty |
+| `--strategy {direct,evidence_then_judgement}` | `review` | Default `direct` |
+| `--evidences JSON`, `--evidences-file PATH` | `judge-evidence` | Parsed JSON evidence; file takes precedence |
+| `--verbosity LEVEL` | all | Default `warning`; may follow the subcommand |
+| `--out PATH` | all | Pretty JSON file; otherwise stdout |
+
+#### CLI Ontology Harmonization
 
 Commands:
 
-| Command | Python method |
-| --- | --- |
-| No subcommand or `review` | `review_relevancy(...)` |
-| `extract-evidence` | `extract_evidence(...)` |
-| `judge-evidence` | `judge_evidence(...)` |
+- `cli_ontology_harmonizer harmonize`
+- `cli_ontology_harmonizer harmonize-miniml-json`
 
-Options:
+Shared options:
 
-| Option | Availability and behavior |
-| --- | --- |
-| `--verbosity {debug,error,info,quiet,warning}` | Global or subcommand logging level; logs go to stderr |
-| `--publication-text`, `--publication-text-file` | Review/extraction text; file takes precedence |
-| `--theme`, `--theme-file` | Theme text; file takes precedence |
-| `--metadata`, `--metadata-file` | Review/extraction metadata text; file takes precedence |
-| `--title`, `--title-file` | Optional title; file takes precedence |
-| `--evidences`, `--evidences-file` | JSON for `judge-evidence`; file takes precedence |
-| `--out` | Pretty JSON file; otherwise stdout |
+| Option | Default | Behavior |
+| --- | --- | --- |
+| `--publication-context TEXT`, `--publication-context-file PATH` | `None` | Publication context; file takes precedence |
+| `--ontology-frameworks JSON`, `--ontology-frameworks-file PATH` | built-ins | Framework configuration; file takes precedence |
+| `--fields JSON`, `--fields-file PATH` | `{}` | Controlled fields; file takes precedence |
+| `--storage-dir PATH` | package ontology storage | Cache, SQLite, and vector root |
+| `--target-paths JSON`, `--target-paths-file PATH` | automatic/default | Extraction path specifications; file takes precedence |
+| `--target-checker`, `--no-target-checker` | enabled | Enable/disable compound target checking |
+| `--direct-lookup-judge`, `--no-direct-lookup-judge` | enabled | Enable/disable local candidate judging |
+| `--rag-lookup`, `--no-rag-lookup` | enabled | Enable/disable cached semantic retrieval |
+| `--rag-lookup-judge`, `--no-rag-lookup-judge` | enabled | Enable/disable semantic candidate judging |
+| `--ols-lookup`, `--no-ols-lookup` | enabled | Enable/disable unrestricted OLS4 retrieval |
+| `--ols-lookup-judge`, `--no-ols-lookup-judge` | enabled | Enable/disable OLS candidate judging |
+| `--field-assignment-judge`, `--no-field-assignment-judge` | enabled | Enable/disable model field assignment |
+| `--request-timeout SECONDS` | `30` | External request timeout |
+| `--request-max-attempts N` | `3` | Maximum transport attempts |
+| `--request-backoff SECONDS` | `1` | Exponential-backoff base |
+| `--cache-ttl-seconds N` | `604800` | External-response cache TTL |
+| `--force-refresh` | false | Bypass reusable external-response entries |
+| `--rag-hierarchy` | false | Add cached parents/children to semantic candidates |
+| `--rag-parent-depth N` | `2` when enabled | Parent traversal depth; requires `--rag-hierarchy` |
+| `--rag-child-depth N` | `1` when enabled | Child traversal depth; requires `--rag-hierarchy` |
+| `--rag-hierarchy-threshold-offset FLOAT` | `0.1` when enabled | Relative-score threshold offset; requires `--rag-hierarchy` |
+| `--verbosity LEVEL` | `warning` | Stderr logging level; may follow the subcommand |
+| `--out PATH` | stdout | Pretty JSON destination |
 
-### Python Ontology Harmonization
-
-#### `OntologyHarmonizer`
-
-`OntologyHarmonizer(ontostore=None, llm=None, request_policy=None,
-rag_similarity_threshold=0.5, rag_hierarchy=False, rag_parent_depth=2,
-rag_child_depth=1, rag_hierarchy_threshold_offset=0.1)` coordinates target
-normalization, lookup, assignment, search, enrichment, and application.
-
-| Method | Main options |
-| --- | --- |
-| `harmonize(...)` | User contexts and targets plus independent target-checker, direct, RAG, OLS, and field-stage controls |
-| `harmonize_miniml_json(...)` | User `publication_context`, `miniml_json`, `ontostore`, `target_paths`, and the same stage controls; `metadata_context` is generated automatically |
-| `lookup_label(...)` | Target, publication context, store, and direct judge toggle |
-| `lookup_rag_label(...)` | Target, contexts, store, and semantic judge toggle |
-| `judge_lookup(..., candidate_limit=10)` | Judge compact local or balanced semantic candidates |
-| `harmonize_field(...)` | Target, publication context, store, and field-assignment judge toggle |
-| `harmonize_label(...)` | Target, publication context, store, and OLS judge toggle |
-| `apply_targets(miniml_json, harmonization_targets)` | Mutates and returns MINiML JSON |
-
-Local term lookup uses exact normalized SQLite keys first, then FTS5 over
-labels, synonyms, descriptions, IDs, accessions, and IRIs. Every local candidate
-set is judged by default, including a single exact hit. A local or OLS judge can
-return `decision="false"` to terminally skip a non-harmonizable target. Skipped
-targets record `harmonization_status="skipped"` and a structured
-`harmonization_skip` trace, then bypass OLS fallback, label promotion, field
-harmonization, and MINiML application. A genuine local miss proceeds to
-semantic lookup over cached local frameworks, then to OLS if semantic lookup
-also misses. A selected OLS term supplies its framework metadata and
-may be enriched locally only by matching its identifier. The OLS judge receives
-one neutral `OLS Hits` candidate section without restricted/unrestricted stage
-cues. Field-assignment context includes both the canonical `label` and the
-original `pre_hz_label` when available.
-
-There is no global runtime model toggle. Retrieval and judging are controlled
-independently for each stage. An unjudged direct lookup accepts only one unique
-exact identity; ambiguous exact, FTS, RAG, and OLS candidates remain trace
-evidence and are not applied automatically. The result records the effective
-settings under `controls`.
-
-Before per-target lookup, `harmonize(...)` makes one target-checker LLM call
-over its complete normalized target list, whether supplied directly or by the
-MINiML wrapper. It can append missing atomic concepts from compound labels and
-prune clearly non-harmonizable originals from the active workflow. Only
-medium/high-confidence additions are accepted, capped at three per source;
-equivalent additions are merged with per-source reasons and occurrence paths.
-Same-role abbreviations, synonyms, and broader/narrower restatements are not
-additions. Pruning requires high confidence and retains the original target,
-occurrences, and reason in the trace while leaving raw MINiML unchanged. The
-field is a hint and is finalized by the normal field stage. Invalid calls are
-retried once and then fail open. Set `target_checker=False` to opt out.
-
-Semantic candidates must meet the inclusive default `rag_score >= 0.5`.
-Framework configuration may set `rag_similarity_threshold` to override the
-harmonizer-wide value. Up to two qualifying candidates are reserved from every
-ontology, remaining seats up to 10 are filled by global similarity, and the
-single judge context expands when the reservations exceed 10. Effective
-thresholds and balanced hits are retained in the `ontology_rag` trace.
-
-Hierarchy-aware semantic expansion is disabled by default. When
-`rag_hierarchy=True`, the best two reserved semantic terms in each ontology
-become graph anchors. Cached named `rdfs:subClassOf` edges contribute at most
-one best parent at each configured depth and one best child at each configured
-depth. The defaults inspect parents through depth two and children through
-depth one. Relatives reuse the original query vector and persisted term vectors,
-must meet `max(-1, ontology_threshold - 0.1)`, and are appended to the same
-single semantic judge call with relation, depth, seed, and score provenance.
-
-#### `OntoStore`
-
-`OntoStore(ontology_frameworks=None, fields=None, storage_dir=None,
-sqlite_path=None, request_policy=None)` owns framework files and the shared
-SQLite database.
-
-| Method | Purpose |
-| --- | --- |
-| `configure_framework(...)`, `add_url(...)`, `add_urls(...)` | Add, edit, or remove framework configuration, including an optional RAG similarity threshold |
-| `download(name)`, `get(name, force=False)` | Download OWL and create/reuse JSON |
-| `lookup(value, ontology_id)` | Compatible exact-then-FTS term lookup |
-| `lookup_with_metadata(value, ontology_id)` | Return `match_type`, hits, and FTS ranking |
-| `lookup_exact(value, ontology_id, ensure_index=True)` | Exact normalized lookup only |
-| `lookup_rag(value, ontology_id, top_k=10)` | Semantic top-k lookup over one cached local framework |
-| `lookup_rag_many(value, ontology_ids, top_k=10, parent_depth=0, child_depth=0)` | Embed once and search cached framework partitions sequentially; optional depths return hierarchy hits separately |
-| `build_rag_index(ontology_id, force=False)` | Build or reuse its persistent Gemini/USearch partition |
-| `index_framework(...)`, `index_owl_framework(...)`, `sync_sqlite(...)`, `remove_indexed_framework(...)` | Import legacy JSON or stream OWL into SQLite term indexes |
-| `cache_all(..., force_frameworks=(), semantic_frameworks=None)` | Stream-cache lexical indexes and eagerly build semantic indexes for every selected framework by default; pass a subset or empty collection to limit/disable eager semantic construction |
-| `lookup_fields(field)` | Resolve a canonical field or alias |
-| `add_field(...)`, `update_field(...)`, `remove_field(...)` | Persistent field-registry mutation |
-| `get_field(...)`, `list_fields(...)`, `set_field_review_status(...)` | Retrieve and review fields |
-| `get_cached_response(...)`, `set_cached_response(...)`, `clear_cached_responses(...)` | External-response cache CRUD |
-| `harmonize_key(value)` | Normalize lookup keys |
-
-LLM-created fields are immediately active and persisted as `unreviewed`.
-Field metadata can include canonical labels, aliases, descriptions, expected
-ontologies, allowed extraction modes, source, confidence, and reason.
-
-#### Extraction And OWL Utilities
-
-`HarmonizationTargetExtractor.extract(metadata, start_paths=None)` supports
-`field_value`, `tag_value`, and `container_value` path modes.
-`build_miniml_sample_target_paths(...)` discovers sample channel source,
-molecule, organism, and characteristic paths. `dedupe_targets(...)` combines
-identical field/label targets while retaining all occurrences.
-
-`build_miniml_metadata_context(miniml_json, max_chars=500)` creates the shared
-LLM-facing MINiML summary: first series title plus unique source, molecule,
-organism, and characteristic `field=value` pairs. It is deterministic,
-whitespace-normalized, and excludes unrelated protocol/platform sections.
-
-`Owl2json(owl_path).parse(ontology_id=None)` reads RDF/XML with RDFLib.
-`write_json(output_path, ontology_id=None)` writes label, ID, accession, and
-IRI indexes while retaining ontology and term metadata.
-
-#### Request And Search Controls
-
-`RequestPolicy(timeout_seconds=30, max_attempts=3,
-backoff_base_seconds=1, cache_ttl_seconds=604800, force_refresh=False)` controls
-network/LLM retries and response reuse. Transient network, 429, and 5xx errors
-use exponential jittered backoff.
-
-`OlsClient` calls OLS4 search and ontology APIs. `OlsStrategyHandler`
-implements restricted and unrestricted OLS search judging without grounded web
-search. `RagStrategyHandler` remains a placeholder.
-
-### Ontology Harmonizer CLI
-
-Commands are `harmonize` and `harmonize-miniml-json`. Direct JSON options and
-their `-file` counterparts are mutually substitutable; files take precedence.
+`harmonize`-only options:
 
 | Option | Behavior |
 | --- | --- |
-| `--verbosity {debug,error,info,quiet,warning}` | Logging level; logs go to stderr |
-| `--publication-context`, `--publication-context-file` | User-supplied publication context |
-| `--metadata-context`, `--metadata-context-file` | Compact metadata context for direct `harmonize` only; files take precedence |
-| `--ontology-frameworks`, `--ontology-frameworks-file` | JSON framework configuration |
-| `--fields`, `--fields-file` | JSON controlled-field configuration |
-| `--storage-dir` | OWL, JSON, and SQLite storage root |
-| `--target-paths`, `--target-paths-file` | JSON path specifications |
-| `--target-checker`, `--no-target-checker` | Enable/disable compound-target checking for either harmonization command; enabled by default |
-| `--direct-lookup-judge`, `--no-direct-lookup-judge` | Enable/disable judging ambiguous local exact and FTS candidates; enabled by default |
-| `--rag-lookup`, `--no-rag-lookup` | Enable/disable local semantic retrieval; enabled by default |
-| `--rag-lookup-judge`, `--no-rag-lookup-judge` | Enable/disable judging semantic candidates; enabled by default |
-| `--ols-lookup`, `--no-ols-lookup` | Enable/disable unrestricted OLS retrieval; enabled by default |
-| `--ols-lookup-judge`, `--no-ols-lookup-judge` | Enable/disable judging OLS candidates; enabled by default |
-| `--field-assignment-judge`, `--no-field-assignment-judge` | Enable/disable model assignment when the field registry misses; enabled by default |
-| `--request-timeout SECONDS` | Per-request timeout; default `30` |
-| `--request-max-attempts N` | Maximum attempts; default `3` |
-| `--request-backoff SECONDS` | Exponential backoff base; default `1` |
-| `--cache-ttl-seconds N` | External cache TTL; default seven days |
-| `--force-refresh` | Bypass cached external responses |
-| `--rag-hierarchy` | Enable cached parent/child expansion; disabled by default |
-| `--rag-parent-depth N` | Parent traversal depth; default `2` when hierarchy is enabled |
-| `--rag-child-depth N` | Child traversal depth; default `1` when hierarchy is enabled |
-| `--rag-hierarchy-threshold-offset SCORE` | Relax each ontology threshold for relatives; default `0.1` |
-| `--harmonization-targets`, `--harmonization-targets-file` | Target object/list for `harmonize` |
-| `--target`, `--target-file` | Single target for `harmonize`; cannot accompany target list |
-| `--miniml-json`, `--miniml-json-file` | MINiML JSON for `harmonize-miniml-json` |
-| `--out` | Pretty JSON file; otherwise stdout |
+| `--metadata-context TEXT`, `--metadata-context-file PATH` | Compact metadata context; file takes precedence |
+| `--harmonization-targets JSON`, `--harmonization-targets-file PATH` | Target wrapper/list; file takes precedence |
+| `--target JSON`, `--target-file PATH` | One target; file takes precedence |
 
-The three hierarchy tuning options require `--rag-hierarchy`; using one without
-the enable flag is a parser error.
+`harmonize-miniml-json`-only options:
+
+| Option | Behavior |
+| --- | --- |
+| `--miniml-json JSON`, `--miniml-json-file PATH` | MINiML object/list; file takes precedence |
 
 ### Ontology Cache Builder Guide
 
-`build_ontology_cache` downloads and parses built-in frameworks concurrently,
-then synchronizes successful JSON caches into the shared SQLite database.
-Pass `--rag-index` to build persistent semantic partitions after SQLite sync.
+Command: `build_ontology_cache`. It runs each configured built-in framework in
+an isolated child process, validates successful JSON incrementally, synchronizes
+SQLite, and optionally builds semantic indexes. It prints manifest/log paths and
+records per-framework failures without discarding successful work.
 
-Programmatic callers can eagerly prepare one configured store before a workflow:
+| Option | Default | Behavior |
+| --- | --- | --- |
+| `--timeout SECONDS` | `2700` | Per-framework child-process timeout |
+| `--out-dir PATH` | repository `.dev` | Manifest and log directory |
+| `--out-prefix TEXT` | timestamped | Manifest/log filename prefix |
+| `--max-workers N` | CPU-bounded default | Concurrent framework workers |
+| `--force-framework ID` | none | Redownload/reparse an ID; repeatable |
+| `--rag-index` | false | Build Gemini/USearch partitions after SQLite sync |
+| `-h`, `--help` | — | Display command help |
+
+The programmatic equivalent is:
 
 ```python
-store = OntoStore(storage_dir=".cache/ontologies")
-store.configure_framework("snomed", remove=True)
-manifest = store.cache_all(force_frameworks=["ncbitaxon"])
+from agentic_curator.curators.ontology_harmonizer.cache_builder import (
+    build_ontology_cache,
+)
+
+manifest = build_ontology_cache(
+    frameworks=None,
+    out_dir=".dev",
+    prefix=None,
+    timeout=2700,
+    force_frameworks=(),
+    max_workers=None,
+    rag_index=False,
+)
 ```
-
-`cache_all()` directly streams OWL through a temporary SQLite triple store,
-then builds or reuses each selected Gemini/USearch semantic partition. It does
-not create new JSON caches. Existing JSON remains readable, and
-`Owl2json.write_json()` remains available for explicit conversion. The method
-attempts active frameworks in configuration order before raising
-`OntologyCacheError` for aggregate failures. The exception exposes the complete
-manifest through `.results`; pass `fail_on_error=False` to continue with a
-partial cache. `semantic_frameworks=None` selects every cached framework, a
-framework list limits eager semantic construction, and an empty list disables
-it. This selection does not prevent a later explicit RAG lookup from lazily
-building a missing partition.
-
-Existing legacy JSON caches are also indexed without materializing the complete
-document: `ijson` streams their lookup maps into bounded SQLite batches. A
-URL-backed default framework is eligible for exact, FTS, and semantic lookup
-whenever its configured JSON or OWL cache path exists. An uncached framework is
-skipped—even when explicitly requested—so lookup never downloads ontology data.
-
-For multi-framework semantic lookup, the query is embedded once and each
-ontology's persistent USearch partition is searched sequentially. Query-time
-partitions are memory-mapped from disk. Document embeddings are still generated
-in batches of at most 250 with one model and dimensionality, placing every batch
-in the same vector space. Building a partition keeps that one framework's
-USearch vectors in memory; the indexes remain separate rather than being merged.
-Before the semantic judge call, results are thresholded per ontology and
-balanced by reserving its best two qualifying terms. The base context remains
-10 candidates, but grows when more than five ontologies have two qualifying
-reservations.
-
-| Option | Behavior |
-| --- | --- |
-| `--timeout SECONDS` | Per-framework child-process timeout |
-| `--out-dir PATH` | Output directory for status files |
-| `--out-prefix TEXT` | Status filename prefix |
-| `--max-workers N` | Concurrent framework workers |
-| `--force-framework ID` | Redownload/reparse one framework; repeatable |
-| `--rag-index` | Embed successful framework terms and build USearch partitions |
-
-### Python LLM Facade
-
-`LLM(platform="gemini_enterprise", **platform_options)` supports
-`gemini_enterprise` and `claude_vertex`.
-
-| Method | Output |
-| --- | --- |
-| `generate_response(prompt, model=None, config=None, tools=None, **extra_options)` | Text |
-| `generate_response_with_metadata(prompt, model=None, config=None, tools=None, **extra_options)` | Text plus raw response, citations, tool calls, and provider |
-
-A call-level model beginning with `claude-` routes to a lazily created Claude
-Vertex adapter even when Gemini is the default. `GeminiEnterprisePlatform`
-calls `google.genai.Client.models.generate_content(...)`.
-`ClaudeVertexPlatform` calls
-`anthropic.AnthropicVertex.messages.create(...)`.
 
 ### Code flow
 
-#### Thematic reviewer
+```text
+Python API or CLI
+  ├─ QueryGenerator
+  │    validate theme → structured LLM call → validate JSON → add dataset filter
+  ├─ ThematicReviewer
+  │    direct whole-publication review OR evidence extraction → judgement
+  ├─ OntologyHarmonizer
+  │    normalize/extract targets → target checker
+  │    → SQLite exact/FTS → cached RAG → OLS4
+  │    → promote term → resolve field → optionally update MINiML
+  └─ build_ontology_cache
+       parallel child builds → validate → SQLite sync → optional USearch indexes
 
-```python
-def review_relevancy(inputs):
-    if inputs.strategy == "direct":
-        return direct_whole_publication_judgement(inputs)  # one LLM call
-    evidences = extract_evidence(inputs)                   # legacy call one
-    judgement = judge_evidence(evidences, inputs)          # legacy call two
-    return {**judgement, "evidences": evidences}
+Shared LLM facade → Gemini Vertex or Claude Vertex
+Ontology boundaries → files, SQLite/FTS5, USearch, Gemini embeddings, OLS4 HTTP
 ```
 
-#### Ontology harmonizer
-
-```python
-def harmonize(targets, publication_context):
-    targets = normalize_targets(targets)
-    targets += target_checker_additions(targets)  # one enabled-by-default call
-    for target in targets:
-        normalize_working_field_and_label(target)
-        local = lookup_exact_then_fts(target)
-        if local:
-            local = judge_lookup_or_skip(local[:10], publication_context)
-        if target.is_skipped:
-            continue
-        if not local:
-            semantic = lookup_cached_framework_vectors(target.label)
-            qualifying = apply_per_ontology_similarity_thresholds(semantic)
-            balanced = reserve_two_per_ontology_then_fill_globally(qualifying)
-            if hierarchy_enabled:
-                relatives = best_cached_relatives(top_two_per_ontology(balanced))
-                balanced.extend(apply_relative_thresholds(relatives))
-            local = judge_semantic_candidates_or_continue(balanced)  # one call
-        if not local:
-            unrestricted = OLS.search(target.label)
-            selected = judge_ols_candidates_or_skip(unrestricted)
-            if target.is_skipped:
-                continue
-            if selected:
-                configure_selected_framework_from_OLS(selected)
-            enrich_selected_term_by_exact_identifier_only(selected)
-        promote_selected_term_title_to_harmonized_label(target)
-        resolve_field_from_registry_or_assign_and_persist(target)
-    return target_wrapper
-```
-
-`harmonize_miniml_json(...)` calls target-path discovery, extraction and
-deduplication, delegates the extracted list and target-checker option to
-`harmonize(...)`, then calls `apply_targets(...)`;
-application defensively ignores every skipped target.
-
-#### Ontology store and cache
-
-```python
-def get(framework):
-    owl = existing_file_or_requests_download(framework.url)
-    return Owl2json(owl).write_json(framework.json_path)  # explicit JSON API
-
-def index_owl_framework(framework):
-    owl = existing_file_or_requests_download(framework.url)
-    staging = stream_rdfxml_triples_to_temporary_sqlite(owl)
-    atomically_stream_class_terms_into_shared_sqlite(staging)
-    delete_staging_sqlite(staging)
-
-def lookup(value, framework):
-    exact = lookup_exact(normalize(value), framework)
-    return exact or fts5_rank(value, framework)
-
-def lookup_rag_many(value, cached_frameworks, parent_depth=0, child_depth=0):
-    indexes = build_or_reuse_each_partition_sequentially(cached_frameworks)
-    query_vector = embed_query_once(value)
-    semantic = search_each_memory_mapped_partition(query_vector, indexes)
-    if parent_depth or child_depth:
-        edges = lazily_backfill_named_subclass_edges_from_sqlite_terms()
-        anchors = top_two_per_ontology(semantic)
-        hierarchy = traverse_and_score_relatives(query_vector, anchors, edges)
-    return semantic, hierarchy
-```
-
-The SQLite database stores framework freshness, terms, exact lookup entries,
-FTS5 rows, persistent hierarchy edges, persistent fields/aliases, and cached
-OLS/Gemini responses.
-
-#### CLI and providers
-
-```python
-def cli_main(argv):
-    args = parse_args(argv)
-    read_direct_or_file_inputs(args)
-    result = dispatch_to_reviewer_or_harmonizer(args)
-    write_pretty_json_to_out_or_stdout(result)
-
-def LLM.generate_response_with_metadata(prompt, model=None, **options):
-    platform = route_claude_model_or_use_default(model)
-    return platform.generate_response_with_metadata(prompt, model=model, **options)
-```
-
-External boundaries are Google Gen AI, Anthropic Vertex, OLS4, ontology HTTP
-downloads, SQLite, and RDFLib. See the canonical handoff for method-level call
-graphs and LLM context tables.
+The CLI parses direct/file inputs and writes JSON; curator orchestrators build
+prompts and validate results; the LLM facade performs provider routing; provider
+adapters translate requests and normalize responses. Provider exceptions
+generally propagate, while ontology multi-framework and batch-cache operations
+isolate failures where possible. See the canonical
+[code flow](docs/codebase.md#code-flow) and
+[method pseudocode](docs/codebase.md#method-orchestrator-pseudocode).
 
 ## Docs
 
-- [Documentation index](docs/index.md)
-- [Codebase handoff](docs/codebase.md)
+- [Documentation index](docs/index.md) — routing table for stable handoff anchors.
+- [Codebase handoff](docs/codebase.md) — canonical architecture, APIs,
+  workflows, external calls, tests, and commands.
 
 ## Authors
 
 Created by [jaychowcl](https://github.com/jaychowcl) @
 [Saez-Rodriguez Group](https://saezlab.org) &
-[GSK](https://www.gsk.com/) on June 2026
+[GSK](https://www.gsk.com/) on June 2026.
 
 ### Please cite us using
 

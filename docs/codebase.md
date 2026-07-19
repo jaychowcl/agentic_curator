@@ -94,7 +94,12 @@ header at the top of the file. Python, TOML, requirements, and `.gitignore` use
 `#` comments; all project-owned Markdown other than `README.md` uses a leading
 HTML comment, including packaged prompts. `README.md` keeps linked authorship in
 its visible `## Authors` section and includes a complete software citation
-subsection. The externally sourced GPL `LICENSE` is intentionally unchanged.
+subsection. It is the user-facing installation, configuration, quickstart, and
+interface guide for the Python API and installed CLI commands. Its guide lists
+current public signatures and CLI options, links internal behavior back to the
+stable anchors in this handoff, and records that Docker is not currently a
+supported interface. The externally sourced GPL `LICENSE` is intentionally
+unchanged.
 
 <a id="runtime-and-packaging"></a>
 ## Runtime And Packaging
