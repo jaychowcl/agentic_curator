@@ -108,6 +108,7 @@ def test_readme_has_required_guide_structure_and_links() -> None:
         "## Description",
         "## Installation",
         "### Requirements",
+        "## Configuration",
         "## Quickstart",
         "### Inputs & Outputs",
         "## Guide",
@@ -121,6 +122,36 @@ def test_readme_has_required_guide_structure_and_links() -> None:
     assert "[Codebase handoff](docs/codebase.md)" in readme
     assert "[Documentation index](docs/index.md)" in readme
     assert "Created by [jaychowcl](https://github.com/jaychowcl)" in readme
+
+
+def test_readme_configuration_and_quickstarts_link_to_full_guides() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    for configuration in (
+        "Application Default Credentials",
+        "gemini_enterprise",
+        "claude_vertex",
+        "ontology_frameworks",
+        "preferred_ontology_ids",
+        "RequestPolicy",
+        "rag_similarity_threshold",
+    ):
+        assert configuration in readme
+
+    for guide_link in (
+        "[Python API guide](#python-api-guide)",
+        "[CLI guide](#cli-guide)",
+        "[Ontology cache builder guide](#ontology-cache-builder-guide)",
+    ):
+        assert guide_link in readme
+
+    for codebase_link in (
+        "docs/codebase.md#query-generator",
+        "docs/codebase.md#reviewer-workflow",
+        "docs/codebase.md#ontology-harmonizer",
+        "docs/codebase.md#llm-wrapper",
+    ):
+        assert codebase_link in readme
 
 
 def test_readme_has_linked_authors_and_complete_citation() -> None:
@@ -160,7 +191,22 @@ def test_readme_covers_supported_interfaces_and_current_controls() -> None:
         assert interface in readme
 
     for option in (
+        "--theme-file",
         "--max-queries",
+        "--publication-text-file",
+        "--metadata-file",
+        "--title-file",
+        "--accession",
+        "--strategy",
+        "--evidences-file",
+        "--harmonization-targets-file",
+        "--target-file",
+        "--miniml-json-file",
+        "--target-paths-file",
+        "--ontology-frameworks-file",
+        "--fields-file",
+        "--storage-dir",
+        "--no-target-checker",
         "--no-direct-lookup-judge",
         "--no-rag-lookup",
         "--no-rag-lookup-judge",
@@ -172,6 +218,14 @@ def test_readme_covers_supported_interfaces_and_current_controls() -> None:
         "--request-backoff",
         "--cache-ttl-seconds",
         "--force-refresh",
+        "--rag-hierarchy",
+        "--rag-parent-depth",
+        "--rag-child-depth",
+        "--rag-hierarchy-threshold-offset",
+        "--out-dir",
+        "--out-prefix",
+        "--max-workers",
+        "--rag-index",
         "--force-framework",
     ):
         assert option in readme
