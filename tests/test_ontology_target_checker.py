@@ -87,6 +87,16 @@ def addition(source_target_id: str, **overrides) -> dict:
     return value
 
 
+def prune(target_id: str, **overrides) -> dict:
+    value = {
+        "target_id": target_id,
+        "confidence": "high",
+        "reason": "The value is an operational identifier without an ontology concept.",
+    }
+    value.update(overrides)
+    return value
+
+
 def test_target_checker_batches_originals_and_merges_equivalent_additions(
     tmp_path: Path,
 ) -> None:
@@ -96,7 +106,8 @@ def test_target_checker_batches_originals_and_merges_equivalent_additions(
                 "additions": [
                     addition("target-0"),
                     addition("target-1", reason="The tissue value includes lung."),
-                ]
+                ],
+                "prunes": [],
             }
         ]
     )
@@ -152,7 +163,7 @@ def test_target_checker_batches_originals_and_merges_equivalent_additions(
 def test_target_checker_addition_applies_beside_harmonized_original(
     tmp_path: Path,
 ) -> None:
-    llm = SequencedLLM([{"additions": [addition("target-0")]}])
+    llm = SequencedLLM([{"additions": [addition("target-0")], "prunes": []}])
     miniml_json = [{"sample": [{"channel": [{"source": "IPF lung"}]}]}]
     harmonizer = ApplyingHarmonizer(
         llm=llm,
@@ -179,7 +190,7 @@ def test_target_checker_rejects_existing_low_confidence_unknown_and_excess(
         addition("target-0", field_hint="anatomy", label="pulmonary organ"),
         addition("target-0", field_hint="condition", label="fibrosis"),
     ]
-    llm = SequencedLLM([{"additions": proposals}])
+    llm = SequencedLLM([{"additions": proposals, "prunes": []}])
     miniml_json = [{"sample": [{"channel": [{"source": "IPF lung"}]}]}]
     harmonizer = NoopWorkflowHarmonizer(
         llm=llm,
@@ -202,7 +213,7 @@ def test_target_checker_rejects_existing_low_confidence_unknown_and_excess(
 def test_target_checker_retries_malformed_response_then_succeeds(
     tmp_path: Path,
 ) -> None:
-    llm = SequencedLLM(["not json", {"additions": []}])
+    llm = SequencedLLM(["not json", {"additions": [], "prunes": []}])
     harmonizer = NoopWorkflowHarmonizer(
         llm=llm,
         ontostore=OntoStore(fields={}, storage_dir=tmp_path),
@@ -263,10 +274,10 @@ def test_target_checker_is_disabled_by_its_stage_flag(
     assert llm.calls == []
 
 
-def test_target_checker_response_schema_requires_addition_fields() -> None:
+def test_target_checker_response_schema_requires_addition_and_prune_fields() -> None:
     schema = OntologyHarmonizer()._target_checker_response_schema()
 
-    assert schema["required"] == ["additions"]
+    assert schema["required"] == ["additions", "prunes"]
     item = schema["properties"]["additions"]["items"]
     assert item["required"] == [
         "source_target_id",
@@ -275,12 +286,17 @@ def test_target_checker_response_schema_requires_addition_fields() -> None:
         "confidence",
         "reason",
     ]
+    assert schema["properties"]["prunes"]["items"]["required"] == [
+        "target_id",
+        "confidence",
+        "reason",
+    ]
 
 
 def test_harmonize_runs_target_checker_for_single_target_and_assigns_id(
     tmp_path: Path,
 ) -> None:
-    llm = SequencedLLM([{"additions": [addition("target-0")]}])
+    llm = SequencedLLM([{"additions": [addition("target-0")], "prunes": []}])
     harmonizer = NoopWorkflowHarmonizer(
         llm=llm,
         ontostore=OntoStore(fields={}, storage_dir=tmp_path),
@@ -302,7 +318,7 @@ def test_harmonize_runs_target_checker_for_single_target_and_assigns_id(
 def test_harmonize_assigns_unique_ids_before_batch_target_checking(
     tmp_path: Path,
 ) -> None:
-    llm = SequencedLLM([{"additions": []}])
+    llm = SequencedLLM([{"additions": [], "prunes": []}])
     harmonizer = NoopWorkflowHarmonizer(
         llm=llm,
         ontostore=OntoStore(fields={}, storage_dir=tmp_path),
@@ -342,3 +358,88 @@ def test_harmonize_skips_target_checker_when_there_are_no_targets(
         "added_count": 0,
     }
     assert llm.calls == []
+
+
+def test_target_checker_prunes_high_confidence_target_but_keeps_its_addition(
+    tmp_path: Path,
+) -> None:
+    llm = SequencedLLM(
+        [
+            {
+                "additions": [addition("target-0")],
+                "prunes": [prune("target-0")],
+            }
+        ]
+    )
+    miniml_json = [{"sample": [{"channel": [{"source": "IPF lung"}]}]}]
+    harmonizer = ApplyingHarmonizer(
+        llm=llm,
+        ontostore=OntoStore(fields={}, storage_dir=tmp_path),
+    )
+
+    result = harmonizer.harmonize_miniml_json(miniml_json=miniml_json)
+
+    assert [item["pre_hz_label"] for item in result["harmonization_targets"]] == [
+        "lung"
+    ]
+    assert result["target_checker"]["pruned_count"] == 1
+    assert result["target_checker"]["pruned"][0]["target_id"] == "target-0"
+    assert result["target_checker"]["pruned"][0]["occurrences"]
+    channel = result["miniml_json"][0]["sample"][0]["channel"][0]
+    assert channel["source"] == "IPF lung"
+    assert "hz_disease" not in channel
+    assert channel["hz_tissue"] == "lung"
+
+
+def test_target_checker_rejects_non_high_unknown_and_duplicate_prunes(
+    tmp_path: Path,
+) -> None:
+    llm = SequencedLLM(
+        [
+            {
+                "additions": [],
+                "prunes": [
+                    prune("target-0", confidence="medium"),
+                    prune("missing"),
+                    prune("target-0"),
+                    prune("target-0", reason="duplicate"),
+                ],
+            }
+        ]
+    )
+    harmonizer = NoopWorkflowHarmonizer(
+        llm=llm,
+        ontostore=OntoStore(fields={}, storage_dir=tmp_path),
+    )
+
+    result = harmonizer.harmonize(
+        target={"pre_hz_field": "batch", "pre_hz_label": "batch-123"}
+    )
+
+    assert result["harmonization_targets"] == []
+    assert result["target_checker"]["prune_proposed_count"] == 4
+    assert result["target_checker"]["pruned_count"] == 1
+    assert {item["reason"] for item in result["target_checker"]["rejected"]} >= {
+        "prune_confidence_below_high",
+        "unknown_prune_target",
+        "duplicate_prune",
+    }
+
+
+def test_target_checker_can_prune_all_targets_without_running_lookup(
+    tmp_path: Path,
+) -> None:
+    class UnexpectedWorkflowHarmonizer(OntologyHarmonizer):
+        def lookup_label(self, *args, **kwargs):
+            raise AssertionError("pruned targets must not reach lookup")
+
+    llm = SequencedLLM(
+        [{"additions": [], "prunes": [prune("target-0")]}]
+    )
+    result = UnexpectedWorkflowHarmonizer(
+        llm=llm,
+        ontostore=OntoStore(fields={}, storage_dir=tmp_path),
+    ).harmonize(target={"pre_hz_field": "lane", "pre_hz_label": "L004"})
+
+    assert result["harmonization_targets"] == []
+    assert result["target_checker"]["pruned_count"] == 1

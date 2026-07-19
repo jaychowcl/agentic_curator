@@ -1156,12 +1156,20 @@ def test_cache_all_stream_indexes_active_frameworks_in_order(
         return store.sqlite_path
 
     monkeypatch.setattr(store, "index_owl_framework", index_owl_framework)
+    monkeypatch.setattr(
+        store,
+        "build_rag_index",
+        lambda name, force=False: calls.append(("semantic", name, force))
+        or tmp_path / f"{name}.usearch",
+    )
 
     result = store.cache_all()
 
     assert calls == [
         ("index_owl", "alpha", False),
+        ("semantic", "alpha", False),
         ("index_owl", "beta", False),
+        ("semantic", "beta", False),
     ]
     assert result["successful"] == ["alpha", "beta"]
     assert result["failed"] == []
@@ -1190,6 +1198,11 @@ def test_cache_all_attempts_every_framework_then_raises_aggregate_error(
         return store.sqlite_path
 
     monkeypatch.setattr(store, "index_owl_framework", index_owl_framework)
+    monkeypatch.setattr(
+        store,
+        "build_rag_index",
+        lambda name, force=False: tmp_path / f"{name}.usearch",
+    )
 
     with pytest.raises(OntologyCacheError) as caught:
         store.cache_all()
@@ -1215,11 +1228,93 @@ def test_cache_all_can_return_partial_results_and_respects_removed_frameworks(
         raise RuntimeError("unavailable")
 
     monkeypatch.setattr(store, "index_owl_framework", fail)
+    monkeypatch.setattr(
+        store,
+        "build_rag_index",
+        lambda name, force=False: tmp_path / f"{name}.usearch",
+    )
 
     result = store.cache_all(fail_on_error=False)
 
     assert calls == ["alpha"]
     assert result["failed"] == ["alpha"]
+
+
+def test_cache_all_can_limit_or_disable_eager_semantic_indexes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = OntoStore(ontology_frameworks={}, storage_dir=tmp_path)
+    store.ontology_frameworks = {
+        name: {
+            "owl_path": tmp_path / f"{name}.owl",
+            "json_path": tmp_path / f"{name}.json",
+            "url": f"https://example/{name}.owl",
+        }
+        for name in ("alpha", "beta")
+    }
+    semantic_calls = []
+
+    def index_owl(name, force=False, batch_size=1000):
+        (tmp_path / f"{name}.owl").write_text("owl", encoding="utf-8")
+        return store.sqlite_path
+
+    monkeypatch.setattr(store, "index_owl_framework", index_owl)
+    monkeypatch.setattr(
+        store,
+        "build_rag_index",
+        lambda name, force=False: semantic_calls.append((name, force))
+        or tmp_path / f"{name}.usearch",
+    )
+
+    subset = store.cache_all(semantic_frameworks=["beta"])
+    disabled = store.cache_all(semantic_frameworks=[])
+
+    assert semantic_calls == [("beta", False)]
+    assert subset["frameworks"]["alpha"]["semantic_index"]["status"] == "not_selected"
+    assert subset["frameworks"]["beta"]["semantic_index"]["status"] == "ready"
+    assert disabled["semantic_frameworks"] == []
+
+    with pytest.raises(KeyError, match="Unknown selected semantic frameworks"):
+        store.cache_all(semantic_frameworks=["missing"])
+
+
+def test_cache_all_semantic_failure_is_aggregated_after_every_framework(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = OntoStore(ontology_frameworks={}, storage_dir=tmp_path)
+    store.ontology_frameworks = {
+        name: {
+            "owl_path": tmp_path / f"{name}.owl",
+            "json_path": tmp_path / f"{name}.json",
+            "url": f"https://example/{name}.owl",
+        }
+        for name in ("alpha", "beta")
+    }
+    semantic_calls = []
+
+    def index_owl(name, force=False, batch_size=1000):
+        (tmp_path / f"{name}.owl").write_text("owl", encoding="utf-8")
+        return store.sqlite_path
+
+    def build_semantic(name, force=False):
+        semantic_calls.append((name, force))
+        if name == "alpha":
+            raise RuntimeError("embedding quota exhausted")
+        return tmp_path / f"{name}.usearch"
+
+    monkeypatch.setattr(store, "index_owl_framework", index_owl)
+    monkeypatch.setattr(store, "build_rag_index", build_semantic)
+
+    with pytest.raises(OntologyCacheError) as caught:
+        store.cache_all(force_frameworks=["beta"])
+
+    assert semantic_calls == [("alpha", False), ("beta", True)]
+    assert caught.value.results["successful"] == ["beta"]
+    assert caught.value.results["failed"] == ["alpha"]
+    assert (
+        caught.value.results["frameworks"]["alpha"]["semantic_index"]["status"]
+        == "failed"
+    )
 
 
 def test_lookup_matches_id_accession_and_iri_indexes(tmp_path: Path) -> None:

@@ -103,10 +103,21 @@ def test_cache_all_selectively_forces_one_framework(tmp_path: Path, monkeypatch)
         return store.sqlite_path
 
     monkeypatch.setattr(store, "index_owl_framework", index_owl)
+    monkeypatch.setattr(
+        store,
+        "build_rag_index",
+        lambda name, force=False: calls.append((f"semantic:{name}", force))
+        or tmp_path / f"{name}.usearch",
+    )
 
     result = store.cache_all(force_frameworks=["beta"])
 
-    assert calls == [("alpha", False), ("beta", True)]
+    assert calls == [
+        ("alpha", False),
+        ("semantic:alpha", False),
+        ("beta", True),
+        ("semantic:beta", True),
+    ]
     assert result["successful"] == ["alpha", "beta"]
 
 
