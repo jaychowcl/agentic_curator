@@ -857,15 +857,23 @@ class OntoStore:
 
         index = Index(ndim=int(provider.dimensions), metric="cos", dtype="f32")
         with self._sqlite_connection() as connection:
+            term_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM terms WHERE ontology_id = ?",
+                    (ontology_id,),
+                ).fetchone()[0]
+            )
             cursor = connection.execute(
                 "SELECT term_key, payload FROM terms WHERE ontology_id = ? ORDER BY term_key",
                 (ontology_id,),
             )
             vector_id = 0
+            batch_number = 0
             while True:
                 rows = cursor.fetchmany(self.RAG_BATCH_SIZE)
                 if not rows:
                     break
+                batch_number += 1
                 texts = [
                     self._rag_term_chunk(ontology_id, json.loads(row[1]))
                     for row in rows
@@ -876,6 +884,14 @@ class OntoStore:
                 keys = np.arange(vector_id, vector_id + len(rows), dtype=np.uint64)
                 index.add(keys, np.asarray(vectors, dtype=np.float32))
                 vector_id += len(rows)
+                if batch_number == 1 or batch_number % 100 == 0 or vector_id == term_count:
+                    LOGGER.info(
+                        "Semantic index progress framework=%s embedded=%s total=%s batches=%s.",
+                        ontology_id,
+                        vector_id,
+                        term_count,
+                        batch_number,
+                    )
 
         temporary = index_path.with_name(f".{index_path.name}.{os.getpid()}.tmp")
         try:
@@ -1261,12 +1277,24 @@ class OntoStore:
         *,
         force: bool = False,
         force_frameworks: Iterable[str] = (),
+        semantic_frameworks: Iterable[str] | None = None,
         fail_on_error: bool = True,
     ) -> dict[str, Any]:
-        """Materialize and index every selected active ontology framework."""
+        """Materialize lexical and selected semantic ontology indexes."""
         names = list(self.ontology_frameworks if frameworks is None else frameworks)
+        semantic_names = (
+            list(names) if semantic_frameworks is None else list(semantic_frameworks)
+        )
+        unknown_semantic = set(semantic_names).difference(names)
+        if unknown_semantic:
+            raise KeyError(
+                "Unknown selected semantic frameworks: "
+                f"{sorted(unknown_semantic)}"
+            )
+        semantic_name_set = set(semantic_names)
         results: dict[str, Any] = {
             "sqlite_path": str(self.sqlite_path),
+            "semantic_frameworks": semantic_names,
             "frameworks": {},
             "successful": [],
             "failed": [],
@@ -1281,6 +1309,7 @@ class OntoStore:
         for position, name in enumerate(names, start=1):
             started = time.monotonic()
             framework_result: dict[str, Any] = {"framework": name}
+            lexical_indexed = False
             LOGGER.info(
                 "Ontology cache progress framework=%s position=%s total=%s.",
                 name,
@@ -1299,6 +1328,7 @@ class OntoStore:
                 else:
                     self.index_owl_framework(name, force=force_this)
                     source_kind = "owl"
+                lexical_indexed = True
                 status = (
                     "force_rebuilt"
                     if force_this
@@ -1319,14 +1349,35 @@ class OntoStore:
                         "indexed": True,
                     }
                 )
+                if name in semantic_name_set:
+                    try:
+                        index_path = self.build_rag_index(name, force=force_this)
+                    except Exception as error:
+                        framework_result["semantic_index"] = {
+                            "status": "failed",
+                            "error": repr(error),
+                        }
+                        raise
+                    framework_result["semantic_index"] = {
+                        "status": "ready",
+                        "index_path": str(index_path),
+                    }
+                else:
+                    framework_result["semantic_index"] = {
+                        "status": "not_selected"
+                    }
                 results["successful"].append(name)
             except Exception as error:  # Continue so callers get a complete manifest.
                 framework_result.update(
                     {
                         "status": "failed",
-                        "indexed": False,
+                        "indexed": lexical_indexed,
                         "error": repr(error),
                     }
+                )
+                framework_result.setdefault(
+                    "semantic_index",
+                    {"status": "not_attempted"},
                 )
                 results["failed"].append(name)
             framework_result["elapsed_seconds"] = round(

@@ -121,13 +121,18 @@ class OntologyHarmonizer:
             }
         elif target_checker:
             self._ensure_unique_target_ids(normalized_targets)
-            added_targets, target_checker_trace = self._run_target_checker(
+            added_targets, pruned_target_ids, target_checker_trace = self._run_target_checker(
                 targets=normalized_targets,
                 publication_context=publication_context,
                 metadata_context=metadata_context,
                 ontostore=effective_ontostore,
             )
-            normalized_targets = [*normalized_targets, *added_targets]
+            normalized_targets = [
+                target
+                for target in normalized_targets
+                if str(target.get("id")) not in pruned_target_ids
+            ]
+            normalized_targets.extend(added_targets)
         else:
             target_checker_trace = {
                 "status": "disabled",
@@ -306,7 +311,7 @@ class OntologyHarmonizer:
         publication_context: str | None,
         metadata_context: str | None,
         ontostore: OntoStore,
-    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], set[str], dict[str, Any]]:
         attempts: list[dict[str, Any]] = []
         correction: dict[str, Any] | None = None
         for attempt_number in range(1, self.TARGET_CHECKER_MAX_ATTEMPTS + 1):
@@ -327,7 +332,7 @@ class OntologyHarmonizer:
                     },
                 )
                 parsed = parse_json_response(response)
-                proposals = self._validate_target_checker_response(parsed)
+                proposals, prune_proposals = self._validate_target_checker_response(parsed)
             except Exception as exc:
                 attempts.append(
                     {
@@ -350,18 +355,30 @@ class OntologyHarmonizer:
                 proposals=proposals,
                 ontostore=ontostore,
             )
-            return added_targets, {
+            pruned_target_ids, prune_trace = self._build_target_checker_prunes(
+                targets=targets,
+                proposals=prune_proposals,
+            )
+            rejected = [
+                *addition_trace.pop("rejected"),
+                *prune_trace.pop("rejected"),
+            ]
+            return added_targets, pruned_target_ids, {
                 "status": "completed",
                 "attempts": attempts,
                 "proposed_count": len(proposals),
+                "prune_proposed_count": len(prune_proposals),
                 **addition_trace,
+                **prune_trace,
+                "rejected_count": len(rejected),
+                "rejected": rejected,
             }
 
         LOGGER.warning(
             "Target checker failed after %d attempts; continuing original targets.",
             len(attempts),
         )
-        return [], {
+        return [], set(), {
             "status": "failed",
             "attempts": attempts,
             "proposed_count": 0,
@@ -369,17 +386,96 @@ class OntologyHarmonizer:
             "rejected_count": 0,
             "merged_proposal_count": 0,
             "additions": [],
+            "prune_proposed_count": 0,
+            "pruned_count": 0,
+            "pruned": [],
             "rejected": [],
         }
 
     @staticmethod
-    def _validate_target_checker_response(response: Any) -> list[Any]:
+    def _validate_target_checker_response(
+        response: Any,
+    ) -> tuple[list[Any], list[Any]]:
         if not isinstance(response, dict):
             raise ValueError("Target checker response must be a JSON object.")
         additions = response.get("additions")
         if not isinstance(additions, list):
             raise ValueError("Target checker response additions must be a list.")
-        return additions
+        prunes = response.get("prunes")
+        if not isinstance(prunes, list):
+            raise ValueError("Target checker response prunes must be a list.")
+        return additions, prunes
+
+    def _build_target_checker_prunes(
+        self,
+        *,
+        targets: list[dict[str, Any]],
+        proposals: list[Any],
+    ) -> tuple[set[str], dict[str, Any]]:
+        targets_by_id = {
+            str(target["id"]): target
+            for target in targets
+            if isinstance(target, dict) and target.get("id") is not None
+        }
+        pruned_ids: set[str] = set()
+        pruned: list[dict[str, Any]] = []
+        rejected: list[dict[str, Any]] = []
+        for proposal_index, proposal in enumerate(proposals):
+            rejection = self._target_checker_prune_rejection(
+                proposal=proposal,
+                targets_by_id=targets_by_id,
+                pruned_ids=pruned_ids,
+            )
+            if rejection is not None:
+                rejected.append(
+                    {
+                        "proposal_type": "prune",
+                        "proposal_index": proposal_index,
+                        "reason": rejection,
+                        **({"proposal": proposal} if isinstance(proposal, dict) else {}),
+                    }
+                )
+                continue
+            target_id = str(proposal["target_id"])
+            target = targets_by_id[target_id]
+            pruned_ids.add(target_id)
+            pruned.append(
+                {
+                    "target_id": target_id,
+                    "pre_hz_field": target.get("pre_hz_field"),
+                    "pre_hz_label": target.get("pre_hz_label"),
+                    "occurrences": self._target_occurrences(target),
+                    "confidence": "high",
+                    "reason": str(proposal["reason"]).strip(),
+                }
+            )
+        return pruned_ids, {
+            "pruned_count": len(pruned),
+            "pruned": pruned,
+            "rejected": rejected,
+        }
+
+    @staticmethod
+    def _target_checker_prune_rejection(
+        *,
+        proposal: Any,
+        targets_by_id: dict[str, dict[str, Any]],
+        pruned_ids: set[str],
+    ) -> str | None:
+        if not isinstance(proposal, dict):
+            return "invalid_prune"
+        if not {"target_id", "confidence", "reason"}.issubset(proposal):
+            return "invalid_prune"
+        target_id = str(proposal["target_id"])
+        if target_id not in targets_by_id:
+            return "unknown_prune_target"
+        if target_id in pruned_ids:
+            return "duplicate_prune"
+        if str(proposal["confidence"]).lower() != "high":
+            return "prune_confidence_below_high"
+        if not isinstance(proposal["reason"], str) or not proposal["reason"].strip():
+            return "invalid_prune"
+        return None
 
     def _build_target_checker_additions(
         self,
@@ -2183,9 +2279,24 @@ class OntologyHarmonizer:
                             "reason",
                         ],
                     },
-                }
+                },
+                "prunes": {
+                    "type": "ARRAY",
+                    "items": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "target_id": {"type": "STRING"},
+                            "confidence": {
+                                "type": "STRING",
+                                "enum": ["high", "medium", "low", "none"],
+                            },
+                            "reason": {"type": "STRING"},
+                        },
+                        "required": ["target_id", "confidence", "reason"],
+                    },
+                },
             },
-            "required": ["additions"],
+            "required": ["additions", "prunes"],
         }
 
     def _lookup_judge_response_schema(self) -> dict[str, Any]:

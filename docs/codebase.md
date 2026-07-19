@@ -239,13 +239,17 @@ after target normalization but before any ontology lookup. It applies equally
 to one `target`, a `harmonization_targets` object/list, and targets extracted
 by the MINiML wrapper. It receives every original
 target together with publication context, compact metadata context, and the
-controlled-field registry. The model returns additions only: original targets
-are never replaced or split in place. Only medium/high-confidence proposals
+controlled-field registry. The model returns additions plus conservative prune
+decisions. Only medium/high-confidence addition proposals
 from known source target IDs are accepted, with at most three per source.
 Additions must introduce another semantic role, not a same-role abbreviation,
 synonym, or broader/narrower restatement that later ontology lookup can handle.
 Equivalent field-hint/label additions are merged across source targets while
 preserving source-specific confidence, reason, and occurrence provenance.
+Pruning is accepted only at high confidence for clearly non-harmonizable
+operational/noise targets. Pruned originals leave the active target list but
+remain fully represented in the checker trace, and their raw metadata is never
+deleted. Additions may still inherit occurrences from a pruned compound source.
 Malformed or failed calls receive one correction attempt, then fail open with
 the originals. Missing or duplicate source IDs are assigned deterministic
 unique `target-N` values before the call. `target_checker=False` disables this
@@ -303,7 +307,7 @@ paths, prior traces, or internal framework file metadata.
 
 | Logical call | When | Model-facing context |
 | --- | --- | --- |
-| Target checker | Once per non-empty `harmonize(...)` invocation when enabled. | Publication context; metadata context; the complete list of original target IDs and original field/label pairs; configured field keys, labels, aliases, and descriptions; correction details on the one retry. It returns additional atomic label/field-hint proposals only. |
+| Target checker | Once per non-empty `harmonize(...)` invocation when enabled. | Publication context; metadata context; the complete list of original target IDs and original field/label pairs; configured field keys, labels, aliases, and descriptions; correction details on the one retry. It returns atomic additions and high-confidence prune proposals. |
 | Local lookup judge | Exact or FTS candidates exist and judging is enabled. | Publication context; metadata context; semantic target with original field/label; top 10 compact local hits; ordered preferred ontology IDs when configured. |
 | Semantic lookup judge | Local lookup misses and semantic neighbours meet their thresholds. | The same contexts and target; balanced compact RAG hits including ontology IDs and scores; ordered preferred ontology IDs when configured. Up to two hits are reserved per qualifying ontology; the list expands beyond 10 when required, otherwise remaining seats are filled globally by similarity. When hierarchy expansion is enabled, accepted relatives also include `rag_relation`, `rag_depth`, and `rag_seed_id`. |
 | OLS judge | Local and semantic lookup miss and OLS returns candidates. | Publication context; metadata context; semantic target; one neutral OLS candidate list from one unrestricted request; ordered preferred ontology IDs when configured. |
@@ -404,7 +408,9 @@ Important methods:
 - `build_rag_index(ontology_id, force=False)`
 - `index_framework(...)`, `index_owl_framework(...)`, `sync_sqlite(...)`,
   and `remove_indexed_framework(...)`
-- `cache_all(...)`
+- `cache_all(..., semantic_frameworks=None)` builds lexical plus all selected
+  semantic indexes by default; a subset or empty collection limits eager
+  semantic construction without restricting later explicit RAG lookup.
 - field registry and external-response cache CRUD methods
 
 Exact normalized lookup precedes FTS5 over labels, synonyms, descriptions, IDs,
@@ -583,7 +589,8 @@ INFO logs for orchestration boundaries and DEBUG logs for detailed internal
 choices. Provider exceptions are not wrapped; they propagate to callers.
 
 `OntologyHarmonizer.harmonize(...)` normalizes target input, runs the optional
-target checker once over the complete original list, then runs the fixed local
+target checker once over the complete original list, removes accepted prunes
+from active work while preserving their trace, then runs the fixed local
 exact/FTS, local semantic, and OLS sequence. A successful earlier stage
 skips later term searches. After selecting and promoting a term label, it calls
 `harmonize_field(...)`; identifier enrichment cannot replace the judged identity.

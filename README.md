@@ -191,7 +191,8 @@ stage traces. The wrapper is:
 `miniml_json` after applying direct `hz_<field>`, `hz_<field>_id`, and
 `hz_<field>_onto` values. Tag/value inputs receive additional tag/value rows;
 container inputs receive a sibling `hz_<field>` list. Its `target_checker`
-trace describes dataset-level compound-label additions made before lookup.
+trace describes dataset-level compound-label additions and conservative target
+pruning made before lookup; pruning never deletes raw metadata.
 
 `OntoStore.lookup(...)` returns term dictionaries with `ontology_id`.
 `LLM.generate_response_with_metadata(...)` returns `text`, `raw_response`,
@@ -303,14 +304,15 @@ settings under `controls`.
 
 Before per-target lookup, `harmonize(...)` makes one target-checker LLM call
 over its complete normalized target list, whether supplied directly or by the
-MINiML wrapper. It can append missing atomic
-concepts from compound labels while preserving every original target. Only
+MINiML wrapper. It can append missing atomic concepts from compound labels and
+prune clearly non-harmonizable originals from the active workflow. Only
 medium/high-confidence additions are accepted, capped at three per source;
 equivalent additions are merged with per-source reasons and occurrence paths.
 Same-role abbreviations, synonyms, and broader/narrower restatements are not
-additions. The field is a hint and is finalized by the normal field stage.
-Invalid calls are retried once and then fail open. Set `target_checker=False`
-to opt out.
+additions. Pruning requires high confidence and retains the original target,
+occurrences, and reason in the trace while leaving raw MINiML unchanged. The
+field is a hint and is finalized by the normal field stage. Invalid calls are
+retried once and then fail open. Set `target_checker=False` to opt out.
 
 Semantic candidates must meet the inclusive default `rag_score >= 0.5`.
 Framework configuration may set `rag_similarity_threshold` to override the
@@ -345,7 +347,7 @@ SQLite database.
 | `lookup_rag_many(value, ontology_ids, top_k=10, parent_depth=0, child_depth=0)` | Embed once and search cached framework partitions sequentially; optional depths return hierarchy hits separately |
 | `build_rag_index(ontology_id, force=False)` | Build or reuse its persistent Gemini/USearch partition |
 | `index_framework(...)`, `index_owl_framework(...)`, `sync_sqlite(...)`, `remove_indexed_framework(...)` | Import legacy JSON or stream OWL into SQLite term indexes |
-| `cache_all(..., force_frameworks=())` | Stream-cache every selected active framework, optionally forcing named downloads |
+| `cache_all(..., force_frameworks=(), semantic_frameworks=None)` | Stream-cache lexical indexes and eagerly build semantic indexes for every selected framework by default; pass a subset or empty collection to limit/disable eager semantic construction |
 | `lookup_fields(field)` | Resolve a canonical field or alias |
 | `add_field(...)`, `update_field(...)`, `remove_field(...)` | Persistent field-registry mutation |
 | `get_field(...)`, `list_fields(...)`, `set_field_review_status(...)` | Retrieve and review fields |
@@ -436,13 +438,17 @@ store.configure_framework("snomed", remove=True)
 manifest = store.cache_all(force_frameworks=["ncbitaxon"])
 ```
 
-`cache_all()` directly streams OWL through a temporary SQLite triple store and
-does not create new JSON caches. Existing JSON remains readable, and
+`cache_all()` directly streams OWL through a temporary SQLite triple store,
+then builds or reuses each selected Gemini/USearch semantic partition. It does
+not create new JSON caches. Existing JSON remains readable, and
 `Owl2json.write_json()` remains available for explicit conversion. The method
 attempts active frameworks in configuration order before raising
 `OntologyCacheError` for aggregate failures. The exception exposes the complete
 manifest through `.results`; pass `fail_on_error=False` to continue with a
-partial cache.
+partial cache. `semantic_frameworks=None` selects every cached framework, a
+framework list limits eager semantic construction, and an empty list disables
+it. This selection does not prevent a later explicit RAG lookup from lazily
+building a missing partition.
 
 Existing legacy JSON caches are also indexed without materializing the complete
 document: `ijson` streams their lookup maps into bounded SQLite batches. A
